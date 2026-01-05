@@ -488,7 +488,7 @@ if __name__ == '__main__':
     def get_cur_state_str(ep):
         # return f'id31_{f"Epoch{ep}_" if ep >= 0 else ""}Longitudinal_DeviceInvariant_DRRs_Overlay_Inpaint_MoreData_MoreEntities_NoUnrelated_Dropout_ExtendedConvNet_{"Perc_" if USE_PERC_STYLE else ""}{MASKED_IN_CHANNELS}Channel_{MASK_MODE}{MASK_PATCH_SIZE}_Sched_Decoder6_{"Eff_ViT_" if "Eff" in LOAD_PATH else ""}{"MaskToken_" if USE_MASK_TOKEN else ""}{"MS-SSIM_" if USE_SSIM else ""}{"Adv2x_" if USE_GAN else ""}{"L1" if USE_L1 else ""}{"L2" if USE_L2 else ""}{"Fourier_masked" if USE_FOURIER else ""}{"_PosEmb" if USE_POS_EMBED else ""}_{"BN" if USE_BN else "GN"}'
         # return f'id45_{f"Epoch{ep}_" if ep >= 0 else ""}Longitudinal_AllEntities_DEVICES_FT_Cons_Sharpen_Dropout_ExtendedConvNet_{"Perc_" if USE_PERC_STYLE else ""}{MASKED_IN_CHANNELS}Channel_{MASK_MODE}{MASK_PATCH_SIZE}_Sched_Decoder6_{"Eff_ViT_" if "Eff" in LOAD_PATH else ""}{"MaskToken_" if USE_MASK_TOKEN else ""}{"MS-SSIM_" if USE_SSIM else ""}{"Adv2x_" if USE_GAN else ""}{"L1" if USE_L1 else ""}{"L2" if USE_L2 else ""}{"Fourier_masked" if USE_FOURIER else ""}{"_PosEmb" if USE_POS_EMBED else ""}_{"BN" if USE_BN else "GN"}'
-        return f'sahar_model'
+        return f'sahar_model_test1'
 
         # return f'id18_FTid16_{f"Epoch{ep}_" if ep >= 0 else ""}Longitudinal_Devices2_Dropout_ExtendedConvNet_DiffEncs_DiffGT_BothAbs_NoDiffAbProb_{"Perc_" if USE_PERC_STYLE else ""}{MASKED_IN_CHANNELS}Channel_{MASK_MODE}{MASK_PATCH_SIZE}_Sched_Decoder6_{"Eff_ViT_" if "Eff" in LOAD_PATH else ""}{"MaskToken_" if USE_MASK_TOKEN else ""}{"MS-SSIM_" if USE_SSIM else ""}{"Adv2x_" if USE_GAN else ""}{"L1" if USE_L1 else ""}{"L2" if USE_L2 else ""}{"Fourier_masked" if USE_FOURIER else ""}{"_PosEmb" if USE_POS_EMBED else ""}_{"BN" if USE_BN else "GN"}'
 
@@ -541,8 +541,8 @@ if __name__ == '__main__':
     ))
 
     signal(SIGINT, interrupt_handler)
-    save_folder = '/cs/usr/sahar_aharon/Desktop/sahar_aharon/Longitudinal_MIM'
-    plots_folder = f'/cs/usr/sahar_aharon/Desktop/sahar_aharon/Longitudinal_MIM/training/{get_cur_state_str(-1).split(".")[0]}'
+    save_folder = '/cs/usr/sahar_aharon/Desktop/sahar_aharon/refactored code check'
+    plots_folder = f'/cs/usr/sahar_aharon/Desktop/sahar_aharon/refactored code check/training/{get_cur_state_str(-1).split(".")[0]}'
 
     os.makedirs(plots_folder, exist_ok=True)
 
@@ -576,7 +576,7 @@ if __name__ == '__main__':
     #                  ]
     # DRR_pair_dirs = ['/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/final/train', '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/consolidation_training']
 
-    DRR_pair_dirs = ['/cs/usr/sahar_aharon/Desktop/sahar_aharon/co_devices']
+    DRR_pair_dirs = ['/cs/usr/sahar_aharon/Desktop/sahar_aharon/refactored code check/train_set']
 
     DRR_single_dirs = []
     entity_dirs = []

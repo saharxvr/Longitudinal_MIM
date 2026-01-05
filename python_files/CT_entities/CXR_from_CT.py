@@ -9,7 +9,7 @@ import torch
 import random
 from kornia.geometry import rotate3d
 from constants import DEVICE
-from extra.case_filtering import AFFINE_DCM
+from archive.data_preparation.case_filtering import AFFINE_DCM
 from tqdm import tqdm
 import kornia
 from skimage.morphology import ball
