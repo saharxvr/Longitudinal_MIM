@@ -1,3 +1,29 @@
+"""
+Data augmentation transforms for Longitudinal CXR Analysis.
+
+This module provides augmentation transforms for training, including:
+- Geometric transforms (B-spline, affine, rotation, scaling)
+- Intensity transforms (CLAHE, color jitter)
+- Paired transforms (for baseline-followup pairs)
+- Synthetic abnormality generation
+
+Main Transform Classes:
+-----------------------
+- RandomFlipBLWithFU: Randomly swap baseline/followup images
+- RandomChannelsFlip: Flip channel order
+- CropResizeWithMaskTransform: Crop to lung region and resize
+- RandomScaleTranslationTransform: Random scale and translation
+- RandomBsplineAndSimilarityWithMaskTransform: B-spline deformation
+- RandomAffineWithMaskTransform: Random affine transformation
+- RescaleValuesTransform: Normalize to [0, 1]
+- RandomIntensityTransform: CLAHE and color jitter
+- PairwiseRandomIntensityTransform: Paired intensity augmentation
+- RandomAbnormalizationTransform: Synthetic abnormality overlay
+
+Used by:
+    - datasets.py (LongitudinalMIMDataset)
+"""
+
 import random
 
 import torch
@@ -12,6 +38,10 @@ from skimage import feature
 from utils import get_sep_lung_masks
 from scipy.ndimage import distance_transform_edt
 
+
+# =============================================================================
+# MASK UTILITIES
+# =============================================================================
 
 def get_bounding_rect(mask: torch.tensor):
     # Order of return: y_min, x_min, y_max, x_max
@@ -166,7 +196,13 @@ def get_bspline_tf_of_random_composition(shape: tuple) -> gryds.BSplineTransform
     return bspline
 
 
+# =============================================================================
+# PAIRED IMAGE TRANSFORMS
+# =============================================================================
+
 class RandomFlipBLWithFU:
+    """Randomly swap baseline and followup images (with their masks)."""
+    
     def __init__(self, p=0.5):
         self.p = p
 
@@ -177,6 +213,8 @@ class RandomFlipBLWithFU:
 
 
 class RandomChannelsFlip:
+    """Randomly flip channel order for both baseline and followup."""
+    
     def __init__(self, p=0.5):
         self.p = p
 
@@ -186,6 +224,10 @@ class RandomChannelsFlip:
             fu = torch.flip(fu, dims=(0,))
         return bl, fu
 
+
+# =============================================================================
+# GEOMETRIC TRANSFORMS
+# =============================================================================
 
 class CropResizeWithMaskTransform:
     # def __init__(self, min_sub: int = 30, max_add: torch.tensor = torch.tensor([60, 30])):
