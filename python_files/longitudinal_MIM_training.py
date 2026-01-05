@@ -23,11 +23,15 @@ Data Sources:
 Output:
     - Checkpoints saved to save_folder
     - Training plots saved to plots_folder
+    - Loss curves saved as loss_curves.png
+    - Training parameters saved as training_params.json
 """
 
 import os
 import math
 import random
+import json
+from datetime import datetime
 from signal import signal, SIGINT
 
 import torch
@@ -46,6 +50,138 @@ from utils import MaskProbScheduler, generate_alpha_map
 from time import time
 from torchvision.transforms.v2.functional import adjust_sharpness
 import kornia
+
+
+def save_training_params(params_dict, save_path):
+    """
+    Save all training parameters to a JSON file.
+    
+    Args:
+        params_dict: Dictionary containing all training parameters
+        save_path: Path to save the JSON file
+    """
+    # Convert non-serializable types to strings
+    serializable_dict = {}
+    for key, value in params_dict.items():
+        if isinstance(value, (int, float, str, bool, list, dict, type(None))):
+            serializable_dict[key] = value
+        elif isinstance(value, torch.device):
+            serializable_dict[key] = str(value)
+        else:
+            serializable_dict[key] = str(value)
+    
+    with open(save_path, 'w') as f:
+        json.dump(serializable_dict, f, indent=4)
+    print(f"Training parameters saved to {save_path}")
+
+
+def save_loss_curves(train_losses, val_losses, save_path, params_dict=None):
+    """
+    Save training and validation loss curves as a plot.
+    
+    Args:
+        train_losses: List of training losses per epoch
+        val_losses: List of validation losses per epoch
+        save_path: Path to save the plot
+        params_dict: Optional dict with training params to display in title
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    epochs = range(1, len(train_losses) + 1)
+    
+    # Left plot: Both losses together
+    axes[0].plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2)
+    axes[0].plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2)
+    axes[0].set_xlabel('Epoch', fontsize=12)
+    axes[0].set_ylabel('Loss', fontsize=12)
+    axes[0].set_title('Training vs Validation Loss', fontsize=14)
+    axes[0].legend(fontsize=10)
+    axes[0].grid(True, alpha=0.3)
+    
+    # Right plot: Individual losses with different scales if needed
+    ax1 = axes[1]
+    ax1.plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2)
+    ax1.set_xlabel('Epoch', fontsize=12)
+    ax1.set_ylabel('Training Loss', color='b', fontsize=12)
+    ax1.tick_params(axis='y', labelcolor='b')
+    
+    ax2 = ax1.twinx()
+    ax2.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2)
+    ax2.set_ylabel('Validation Loss', color='r', fontsize=12)
+    ax2.tick_params(axis='y', labelcolor='r')
+    
+    axes[1].set_title('Training and Validation Loss (Dual Scale)', fontsize=14)
+    
+    # Add summary text box
+    if train_losses and val_losses:
+        summary_text = f"Final Train Loss: {train_losses[-1]:.6f}\n"
+        summary_text += f"Final Val Loss: {val_losses[-1]:.6f}\n"
+        summary_text += f"Best Val Loss: {min(val_losses):.6f} (Epoch {val_losses.index(min(val_losses)) + 1})"
+        
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        fig.text(0.5, -0.05, summary_text, ha='center', fontsize=10, 
+                 bbox=props, transform=fig.transFigure)
+    
+    # Add title with key parameters
+    if params_dict:
+        title = f"LR={params_dict.get('MAX_LR', 'N/A')}, BS={params_dict.get('BATCH_SIZE', 'N/A')}x{params_dict.get('UPDATE_EVERY_BATCHES', 'N/A')}, "
+        title += f"L1={params_dict.get('USE_L1', 'N/A')}, L2={params_dict.get('USE_L2', 'N/A')}, SSIM={params_dict.get('USE_SSIM', 'N/A')}"
+        fig.suptitle(title, fontsize=11, y=1.02)
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Loss curves saved to {save_path}")
+
+
+def save_detailed_loss_curves(loss_history, save_path):
+    """
+    Save detailed per-component loss curves.
+    
+    Args:
+        loss_history: Dict with keys like 'train_l1', 'train_l2', 'val_l1', etc.
+        save_path: Path to save the plot
+    """
+    # Get all unique loss types (l1, l2, ssim, perc, style)
+    loss_types = set()
+    for key in loss_history.keys():
+        parts = key.split('_')
+        if len(parts) >= 2:
+            loss_types.add('_'.join(parts[1:]))
+    
+    if not loss_types:
+        return
+    
+    n_types = len(loss_types)
+    fig, axes = plt.subplots(1, n_types, figsize=(5 * n_types, 4))
+    
+    if n_types == 1:
+        axes = [axes]
+    
+    for idx, loss_type in enumerate(sorted(loss_types)):
+        train_key = f'train_{loss_type}'
+        val_key = f'val_{loss_type}'
+        
+        ax = axes[idx]
+        
+        if train_key in loss_history and loss_history[train_key]:
+            epochs = range(1, len(loss_history[train_key]) + 1)
+            ax.plot(epochs, loss_history[train_key], 'b-', label='Train', linewidth=2)
+        
+        if val_key in loss_history and loss_history[val_key]:
+            epochs = range(1, len(loss_history[val_key]) + 1)
+            ax.plot(epochs, loss_history[val_key], 'r-', label='Val', linewidth=2)
+        
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.set_title(f'{loss_type.upper()} Loss')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Detailed loss curves saved to {save_path}")
 
 
 def run_epoch(epoch_num, mode: str):
@@ -498,6 +634,97 @@ if __name__ == '__main__':
     train_losses = []
     val_losses = []
     test_losses = []
+    
+    # Detailed loss history for per-component tracking
+    loss_history = {
+        'train_total': [], 'val_total': [],
+        'train_l1': [], 'val_l1': [],
+        'train_l2': [], 'val_l2': [],
+        'train_ssim': [], 'val_ssim': [],
+        'train_perc': [], 'val_perc': [],
+        'train_style': [], 'val_style': [],
+    }
+    
+    # Collect all training parameters
+    training_params = {
+        # Timestamp
+        'training_start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        
+        # Device & Model
+        'device': str(DEVICE),
+        'model_type': model.__class__.__name__,
+        
+        # Core hyperparameters
+        'BATCH_SIZE': BATCH_SIZE,
+        'UPDATE_EVERY_BATCHES': UPDATE_EVERY_BATCHES,
+        'effective_batch_size': BATCH_SIZE * UPDATE_EVERY_BATCHES,
+        'MAX_LR': MAX_LR,
+        'WEIGHT_DECAY': WEIGHT_DECAY,
+        'epochs': epochs,
+        'start_epoch': start_epoch,
+        
+        # Image settings
+        'IMG_SIZE': IMG_SIZE,
+        'MASK_PATCH_SIZE': MASK_PATCH_SIZE,
+        'MASK_MODE': MASK_MODE,
+        
+        # Loss functions
+        'USE_L1': USE_L1,
+        'USE_L2': USE_L2,
+        'USE_SSIM': USE_SSIM,
+        'USE_PERC_STYLE': USE_PERC_STYLE,
+        'USE_FOURIER': USE_FOURIER,
+        'USE_GAN': USE_GAN,
+        
+        # Loss weights
+        'LAMBDA_L1_ALL': LAMBDA_L1_ALL,
+        'LAMBDA_L2': LAMBDA_L2,
+        'LAMBDA_SSIM': LAMBDA_SSIM,
+        'LAMBDA_P': LAMBDA_P,
+        'LAMBDA_S': LAMBDA_S,
+        
+        # Model settings
+        'USE_BN': USE_BN,
+        'USE_MASK_TOKEN': USE_MASK_TOKEN,
+        'USE_POS_EMBED': USE_POS_EMBED,
+        'USE_PATCH_DEC': USE_PATCH_DEC,
+        'INIT_WEIGHTS': INIT_WEIGHTS,
+        
+        # Data augmentation
+        'sharpen': sharpen,
+        
+        # Dataset info
+        'train_dataset_size': len_train_ds,
+        'val_dataset_size': len_val_ds,
+        'test_dataset_size': len_test_ds,
+        'train_steps_per_epoch': train_steps_per_epoch,
+        'val_steps_per_epoch': val_steps_per_epoch,
+        
+        # Data directories
+        'entity_dirs': entity_dirs,
+        'inpaint_dirs': inpaint_dirs,
+        'DRR_single_dirs': DRR_single_dirs,
+        'DRR_pair_dirs': DRR_pair_dirs,
+        'invariance': invariance,
+        
+        # Paths
+        'save_folder': save_folder,
+        'plots_folder': plots_folder,
+        'LONGITUDINAL_LOAD_PATH': LONGITUDINAL_LOAD_PATH,
+        
+        # Scheduler settings
+        'scheduler_type': 'OneCycleLR',
+        'scheduler_pct_start': 0.15,
+        'scheduler_anneal_strategy': 'cos',
+        
+        # Mask probability scheduling
+        'INIT_MASK_PROB': INIT_MASK_PROB,
+        'MAX_MASK_PROB': MAX_MASK_PROB,
+        'END_MASK_PROB': END_MASK_PROB,
+    }
+    
+    # Save initial training parameters
+    save_training_params(training_params, f'{plots_folder}/training_params.json')
 
     fig, axs = plt.subplots(2, 2)
 
@@ -528,6 +755,30 @@ if __name__ == '__main__':
         train_losses.append(avg_train_loss)
         val_losses.append(avg_val_loss)
         # test_losses.append(avg_test_loss)
+        
+        # Update loss history
+        loss_history['train_total'].append(avg_train_loss)
+        loss_history['val_total'].append(avg_val_loss)
+        
+        # Save loss curves after each epoch
+        save_loss_curves(train_losses, val_losses, 
+                        f'{plots_folder}/loss_curves.png', 
+                        params_dict=training_params)
+        
+        # Save detailed loss curves if we have component losses
+        if any(loss_history[k] for k in ['train_l1', 'train_l2', 'train_ssim']):
+            save_detailed_loss_curves(loss_history, f'{plots_folder}/detailed_loss_curves.png')
+        
+        # Update training params with current progress
+        training_params['current_epoch'] = epoch
+        training_params['best_val_loss'] = best_val_loss
+        training_params['best_epoch'] = best_epoch if 'best_epoch' in dir() else epoch
+        training_params['train_losses'] = train_losses
+        training_params['val_losses'] = val_losses
+        training_params['training_end_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Save updated training parameters
+        save_training_params(training_params, f'{plots_folder}/training_params.json')
 
         # print(f'Saving model for epoch {epoch}')
         # checkpoint = {
