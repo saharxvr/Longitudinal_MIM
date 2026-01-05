@@ -1,74 +1,135 @@
+"""
+Configuration constants for Longitudinal CXR Analysis.
+
+This module centralizes all hyperparameters and configuration values for:
+- Model architecture (channels, sizes, normalization)
+- Training settings (batch size, learning rate, loss weights)
+- Data paths (datasets, pretrained models)
+- Label configurations (classification labels, mappings)
+
+Usage:
+    from constants import DEVICE, BATCH_SIZE, IMG_SIZE
+    
+Sections:
+    1. General - Core model dimensions and settings
+    2. Masked-Image-Modeling - MIM training parameters
+    3. Longitudinal MIM - Longitudinal model settings
+    4. Detection/Contrastive - Classification settings
+    5. Paths - Dataset and model paths
+    6. Label Mappings - Dataset-specific label configurations
+"""
+
 import numpy as np
 import torch
 
-# General
+# =============================================================================
+# GENERAL MODEL CONFIGURATION
+# =============================================================================
+
+# EfficientNet block indices to use from pretrained model
 EFF_NET_BLOCK_IDXS = (0, 4, 11, 18, 28, 38, 51, 52)
-IMG_SIZE = 512
-FEATURE_SIZE = 32
-FEATURE_CHANNELS = 640
-INTER_CHANNELS = 704
-# INTER_CHANNELS = 576
-HIDDEN_CHANNELS = 768
-# HIDDEN_CHANNELS = 512
+
+# Image and feature dimensions
+IMG_SIZE = 512              # Input image size (pixels)
+FEATURE_SIZE = 32           # Encoded feature map spatial size
+FEATURE_CHANNELS = 640      # Encoder output channels
+INTER_CHANNELS = 704        # Intermediate channel count
+HIDDEN_CHANNELS = 768       # Transformer hidden dimension
+
+# Patch configuration for ViT
 PATCHES_IN_SPATIAL_DIM = 16
-PATCHES_NUM = PATCHES_IN_SPATIAL_DIM ** 2
+PATCHES_NUM = PATCHES_IN_SPATIAL_DIM ** 2  # 256 patches
 PATCH_SIZE = (FEATURE_SIZE ** 2) // PATCHES_NUM
+
+# Normalization parameters
 BATCH_NORM_EPS = 1e-5
 BATCH_NORM_MOMENTUM = 0.08
-INIT_STD = 0.02
 GROUP_NORM_GROUPS = 32
-WEIGHT_DECAY = 1e-2
-MAX_LR = 6e-4
-USE_BN = False
+USE_BN = False              # Use GroupNorm instead of BatchNorm
+
+# Weight initialization
+INIT_STD = 0.02
 INIT_WEIGHTS = True
 
+# Optimizer settings
+WEIGHT_DECAY = 1e-2
+MAX_LR = 6e-4
+
+# =============================================================================
+# DEVICE CONFIGURATION
+# =============================================================================
+
+# Auto-select best available CUDA device
 cuda_dev_count = torch.cuda.device_count()
 if not torch.cuda.is_available():
     DEVICE = 'cpu'
 elif cuda_dev_count == 1:
     DEVICE = 'cuda'
 else:
+    # Select GPU with most available memory
     DEVICE = f'cuda:{np.argmax([torch.cuda.mem_get_info(k)[0] for k in range(cuda_dev_count)]).item()}'
     torch.cuda.set_device(DEVICE)
 
 print(f'Device = {DEVICE}')
 
-# Masked-Image-Modeling
-BATCH_SIZE = 4
-UPDATE_EVERY_BATCHES = 12
-MASK_PATCH_SIZE = 128
-MASK_MODE = 'single'
-INIT_MASK_PROB = 0.05
-MAX_MASK_PROB = 0.7
-END_MASK_PROB = 0.7
-MASKED_RECONSTRUCTION_EPOCHS = 30
-SIGMAS = []
+# =============================================================================
+# MASKED IMAGE MODELING CONFIGURATION
+# =============================================================================
+
+BATCH_SIZE = 4                      # Samples per batch
+UPDATE_EVERY_BATCHES = 12           # Gradient accumulation steps (effective BS = 48)
+MASK_PATCH_SIZE = 128               # Size of masked patches
+MASK_MODE = 'single'                # Masking strategy: 'single', 'random', etc.
+
+# Mask probability schedule
+INIT_MASK_PROB = 0.05               # Starting mask probability
+MAX_MASK_PROB = 0.7                 # Maximum mask probability during ramp-up
+END_MASK_PROB = 0.7                 # Final mask probability
+
+MASKED_RECONSTRUCTION_EPOCHS = 30   # Number of MIM pretraining epochs
+
+# Edge detection settings
+SIGMAS = []                         # Gaussian sigmas for Canny edge detection
 MASKED_IN_CHANNELS = len(SIGMAS) + 1 if type(SIGMAS) == list else 1
 USE_CANNY = type(SIGMAS) == list and len(SIGMAS) > 0
-USE_L1 = True
-USE_L2 = True
-USE_FOURIER = False
-USE_PERC_STYLE = False
-USE_GAN = False
-GAN_START_EPOCH = 13
-USE_SSIM = False
-USE_MASK_TOKEN = False
-USE_POS_EMBED = False
-LAMBDA_L1_ALL = 1.
-LAMBDA_L1_MASKED = 1.
-LAMBDA_L2 = 1.
-LAMBDA_FOURIER = 0.05
-LAMBDA_FOURIER_MASKED = 0.3
-LAMBDA_GAN = 0.5
-LAMBDA_P = 2.
-LAMBDA_S = 2.
-LAMBDA_SSIM = 1.5
 
-# Longitudinal MIM specific
-LONGITUDINAL_MIM_EPOCHS = 10
-USE_PATCH_DEC = False
+# =============================================================================
+# LOSS FUNCTION CONFIGURATION
+# =============================================================================
 
-# Detection/Contrastive Learning
+# Enable/disable loss components
+USE_L1 = True                       # L1 reconstruction loss
+USE_L2 = True                       # L2 (MSE) reconstruction loss
+USE_FOURIER = False                 # Fourier domain loss
+USE_PERC_STYLE = False              # Perceptual + style loss (VGG)
+USE_GAN = False                     # GAN adversarial loss
+USE_SSIM = False                    # SSIM loss
+USE_MASK_TOKEN = False              # Learnable mask token
+USE_POS_EMBED = False               # Positional embeddings
+
+GAN_START_EPOCH = 13                # Epoch to start GAN training
+
+# Loss weights (lambdas)
+LAMBDA_L1_ALL = 1.                  # L1 on all pixels
+LAMBDA_L1_MASKED = 1.               # L1 on masked regions only
+LAMBDA_L2 = 1.                      # L2 loss weight
+LAMBDA_FOURIER = 0.05               # Fourier loss weight
+LAMBDA_FOURIER_MASKED = 0.3         # Fourier loss on masked regions
+LAMBDA_GAN = 0.5                    # GAN loss weight
+LAMBDA_P = 2.                       # Perceptual loss weight
+LAMBDA_S = 2.                       # Style loss weight
+LAMBDA_SSIM = 1.5                   # SSIM loss weight
+
+# =============================================================================
+# LONGITUDINAL MIM CONFIGURATION
+# =============================================================================
+
+LONGITUDINAL_MIM_EPOCHS = 10        # Training epochs for longitudinal model
+USE_PATCH_DEC = False               # Use patch-based decoder
+
+# =============================================================================
+# DETECTION/CONTRASTIVE LEARNING CONFIGURATION
+# =============================================================================
 DETECTION_BATCH_SIZE = 8
 DETECTION_UPDATE_EVERY_BATCHES = 5
 CONTRASTIVE_BATCH_SIZE = 128

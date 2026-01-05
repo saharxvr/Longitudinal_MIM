@@ -27,6 +27,13 @@ python_files/
 │   ├── Fluid_Overload.py          # Fluid overload entity
 │   └── External_Devices.py        # External devices entity
 │
+├── docs/                          # 📚 Detailed documentation
+│   ├── README_training.md         # Training script documentation
+│   ├── README_DRR_generator.md    # DRR generation documentation
+│   ├── README_models.md           # Model architecture documentation
+│   ├── README_datasets.md         # Dataset usage documentation
+│   └── README_CT_entities.md      # CT entities module documentation
+│
 ├── losses/                        # Custom loss functions
 │   └── vgg_losses.py              # VGG perceptual loss
 │
@@ -35,6 +42,18 @@ python_files/
 ```
 
 ## Documentation
+
+### Quick Reference
+
+| Component | README | Description |
+|-----------|--------|-------------|
+| **Training** | [docs/README_training.md](docs/README_training.md) | Training script usage, parameters, outputs |
+| **DRR Generator** | [docs/README_DRR_generator.md](docs/README_DRR_generator.md) | Synthetic data generation pipeline |
+| **Models** | [docs/README_models.md](docs/README_models.md) | Neural network architectures |
+| **Datasets** | [docs/README_datasets.md](docs/README_datasets.md) | Dataset classes and data loading |
+| **CT Entities** | [docs/README_CT_entities.md](docs/README_CT_entities.md) | 3D pathological entity generation |
+
+### Inline Documentation
 
 All core files include comprehensive docstrings:
 
