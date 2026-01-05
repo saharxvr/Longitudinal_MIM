@@ -1,3 +1,30 @@
+"""
+Longitudinal MIM Training Script.
+
+This is the main training script for the Longitudinal CXR change detection model.
+
+Usage:
+    python longitudinal_MIM_training.py
+
+Configuration:
+    All hyperparameters are imported from constants.py:
+    - BATCH_SIZE, UPDATE_EVERY_BATCHES: Batch and gradient accumulation
+    - MAX_LR, WEIGHT_DECAY: Optimizer settings
+    - USE_L1, USE_L2, USE_SSIM, USE_PERC_STYLE: Loss function flags
+    - LONGITUDINAL_MIM_EPOCHS: Number of training epochs
+
+Data Sources:
+    Configure in main() section:
+    - entity_dirs: CXR + segmentation directories
+    - inpaint_dirs: Inpainted pairs
+    - DRR_single_dirs: Single DRR variations
+    - DRR_pair_dirs: Synthetic DRR pairs (main source)
+
+Output:
+    - Checkpoints saved to save_folder
+    - Training plots saved to plots_folder
+"""
+
 import os
 import math
 import random
@@ -10,13 +37,11 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from models import *
 from datasets import LongitudinalMIMDataset
-# from preprocessing import BatchPreprocessingImagewise
 from constants import *
 import matplotlib.pyplot as plt
 from matplotlib import colors
 from losses.vgg_losses import VGGPerceptualLoss
 from piqa import SSIM, MS_SSIM
-# from preprocessing import generate_single_patch_masked_images
 from utils import MaskProbScheduler, generate_alpha_map
 from time import time
 from torchvision.transforms.v2.functional import adjust_sharpness
@@ -24,23 +49,27 @@ import kornia
 
 
 def run_epoch(epoch_num, mode: str):
+    """
+    Run one training or validation epoch.
+    
+    Args:
+        epoch_num: Current epoch number
+        mode: 'train', 'val', or 'test'
+    
+    Returns:
+        Average loss for the epoch
+    """
     assert mode in {'train', 'val', 'test'}
     if mode == 'train':
-        # preprocess = train_preprocess
         dataloader = train_dataloader
         steps_per_epoch = train_steps_per_epoch
         model.train()
     elif mode == 'val':
-        # preprocess = val_preprocess
         dataloader = val_dataloader
         steps_per_epoch = val_steps_per_epoch
         model.eval()
     else:
-        raise 'wa??'
-        # preprocess = val_preprocess
-        dataloader = test_dataloader
-        steps_per_epoch = test_steps_per_epoch
-        model.eval()
+        raise ValueError(f'Invalid mode: {mode}')
 
     print_every_steps = steps_per_epoch // 40 + 2
 

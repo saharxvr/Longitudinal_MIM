@@ -1,3 +1,30 @@
+"""
+Dataset classes for Longitudinal CXR Analysis.
+
+This module provides PyTorch Dataset implementations for various training tasks:
+
+Main Classes (used in training):
+--------------------------------
+- LongitudinalMIMDataset: Main dataset for longitudinal change detection training
+  Loads baseline/followup pairs with ground truth difference maps from:
+  - Synthetic DRR pairs (CT_entities/DRR_generator.py output)
+  - Inpainted pairs
+  - Entity overlay pairs
+
+Supporting Classes (for other tasks):
+-------------------------------------
+- PatchReconstructionDataset: Self-supervised masked reconstruction
+- ContrastiveLearningDataset: Contrastive learning with labels
+- NoFindingDataset: Normal CXR images only
+- NormalAbnormalDataset: Binary classification dataset
+- GeneralContrastiveLearningDataset: Multi-source contrastive learning
+
+Data Format:
+------------
+All datasets expect NIfTI (.nii.gz) format images.
+Images are loaded and normalized to [0, 1] range.
+"""
+
 import math
 import os.path
 import random
@@ -20,11 +47,28 @@ import kornia
 from functools import reduce
 from operator import or_, and_
 from augmentations import *
-from extra.CXR_from_CT import image_histogram_equalization
+from CT_entities.CXR_from_CT import image_histogram_equalization
 from nibabel.orientations import axcodes2ornt, ornt_transform, aff2axcodes, apply_orientation
 from nibabel import as_closest_canonical
 
+
+# =============================================================================
+# MASKED RECONSTRUCTION DATASET
+# =============================================================================
+
 class PatchReconstructionDataset(Dataset):
+    """
+    Dataset for self-supervised patch reconstruction (MAE-style).
+    
+    Loads single CXR images for masked autoencoder pretraining.
+    
+    Args:
+        data_folders: List of directories containing .nii.gz files
+        rot_chance: Probability of random 90° rotation
+        hor_flip_chance: Probability of horizontal flip
+        ver_flip_change: Probability of vertical flip
+    """
+    
     def __init__(self, data_folders, rot_chance=0.075, hor_flip_chance=0.03, ver_flip_change=0.03):
         super().__init__()
 
@@ -754,7 +798,36 @@ class GeneralContrastiveLearningDataset(Dataset):
         return items
 
 
+# =============================================================================
+# LONGITUDINAL MIM DATASET (MAIN TRAINING DATASET)
+# =============================================================================
+
 class LongitudinalMIMDataset(Dataset):
+    """
+    Main dataset for Longitudinal Masked Image Modeling training.
+    
+    Loads baseline/followup CXR pairs with ground truth difference maps.
+    Supports multiple data sources:
+    - Entity directories: CXR + segmentation mask pairs
+    - Inpaint directories: Inpainted abnormality pairs
+    - DRR single directories: Single CT DRR variations
+    - DRR pair directories: Synthetic BL/FU pairs from CT (main source)
+    
+    Args:
+        entity_dirs: List of directories with CXR + segmentation pairs
+        inpaint_dirs: List of directories with inpainted pairs
+        DRR_single_dirs: List of directories with DRR variations
+        DRR_pair_dirs: List of directories with synthetic DRR pairs
+            Expected structure: DRR_dir/case/pair/{prior.nii.gz, current.nii.gz, diff_map.nii.gz}
+        abnor_both_p: Probability of adding abnormality to both BL and FU
+        invariance: Type of invariance ('abnormality', 'devices', or None)
+        overlay_diff_p: Probability of overlaying difference
+    
+    Returns:
+        Tuple of (baseline, followup, ground_truth_diff, followup_mask)
+        All tensors are [1, 512, 512] in range [0, 1]
+    """
+    
     def __init__(self, entity_dirs, inpaint_dirs, DRR_single_dirs, DRR_pair_dirs, abnor_both_p=0.5, invariance=None, overlay_diff_p=0.9):
         self.paths = []
         self.abnor_both_p = abnor_both_p

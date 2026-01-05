@@ -1,3 +1,43 @@
+"""
+Neural network architectures for Longitudinal CXR Analysis.
+
+This module contains the model architectures for change detection:
+
+Main Models (used in training):
+-------------------------------
+- LongitudinalMIMModel: Primary model for longitudinal change detection
+  Architecture: Shared EfficientNet encoder → Bottleneck → Decoder → Change map
+  
+- LongitudinalMIMModelBig: Extended version with dual bottleneck paths
+  Used in current training configuration.
+
+Supporting Components:
+----------------------
+Encoders:
+- EfficientNetMiniEncoder: Pretrained EfficientNet-B7 feature extractor
+
+Bottleneck:
+- BottleneckBlock: CNN + Transformer dual-branch feature processing
+- BottleneckEncoder: Full bottleneck with encoding/decoding
+- TransformerBranch: ViT-based attention processing
+
+Decoders:
+- Decoder6: 6-stage upsampling decoder (32→512) with Tanh output
+- Decoder5: 5-stage alternative decoder
+
+Building Blocks:
+- ChannelExpansionLayer/Block: Channel dimension expansion
+- SamplingConvBlock: Downsampling/upsampling conv blocks
+- DecoderBlock: Single decoder stage with skip connections
+
+Model Output:
+-------------
+All longitudinal models output a change map in range [-1, +1]:
+- Positive values: New findings in followup
+- Negative values: Resolved findings
+- Zero: No change
+"""
+
 import torch
 import torch.nn as nn
 import torchvision.models
@@ -5,16 +45,27 @@ from transformers import EfficientNetModel, EfficientNetConfig, ViTForMaskedImag
 from transformers.models.vit.modeling_vit import ViTEncoder
 from transformers.models.efficientnet.modeling_efficientnet import EfficientNetEncoder
 from constants import *
-# from preprocessing import generate_masked_images
 from math import sqrt
 from itertools import chain
 
 
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
 def count_parameters(model):
+    """Count trainable parameters in a model."""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def freeze_and_unfreeze(to_freeze: list[nn.Module], to_unfreeze: list[nn.Module]):
+    """
+    Freeze and unfreeze model parameters for transfer learning.
+    
+    Args:
+        to_freeze: List of modules to freeze (requires_grad=False)
+        to_unfreeze: List of modules to unfreeze (requires_grad=True)
+    """
     for module in to_freeze:
         for param in module.parameters():
             param.requires_grad = False
@@ -25,6 +76,12 @@ def freeze_and_unfreeze(to_freeze: list[nn.Module], to_unfreeze: list[nn.Module]
 
 
 def weights_check(model):
+    """
+    Check model weights for max values and NaN.
+    
+    Returns:
+        Tuple of (max_weight, has_nan, nan_weights_list)
+    """
     max_weights = []
     has_nan = False
     nan_weights = []
@@ -39,13 +96,20 @@ def weights_check(model):
 
 
 def check_if_all_weights_change(model1, model2):
+    """Check if any weights differ between two models."""
     for p1, p2 in zip(model1.parameters(), model2.parameters()):
         if p1.data.ne(p2.data).sum() == 0:
             return False
     return True
 
 
+# =============================================================================
+# BUILDING BLOCKS
+# =============================================================================
+
 class ChannelExpansionLayer(nn.Module):
+    """Convolutional layer that expands channel dimensions."""
+    
     def __init__(self, in_channels, out_multiplier, init_weights=INIT_WEIGHTS, kernel=3):
         super().__init__()
         out_channels = int(in_channels * out_multiplier)
@@ -910,7 +974,44 @@ class TechnicalBottleneck(nn.Module):
         return expanded, shrunk.detach()
 
 
+# =============================================================================
+# EXTENDED LONGITUDINAL MODEL (CURRENT TRAINING CONFIG)
+# =============================================================================
+
 class LongitudinalMIMModelBig(nn.Module):
+    """
+    Extended longitudinal model with dual bottleneck paths.
+    
+    This is the model currently used in training (see longitudinal_MIM_training.py).
+    Extends LongitudinalMIMModel with:
+    - Additional bottleneck processing paths
+    - Optional technical bottleneck for compression
+    - Dropout layers for regularization
+    
+    Architecture:
+        1. Shared EfficientNet-B7 encoder
+        2. Dual conv bottleneck paths (encoded_bn, encoded_bn2)
+        3. Dual diff processing paths (diff_processing, diff_processing2)
+        4. Combined feature processing before decoder
+        5. Decoder6 with Tanh output
+    
+    Args:
+        use_mask_token: Whether to use learnable mask token
+        dec: Decoder version (5 or 6)
+        patch_dec: Whether to use patch decoder
+        patch_size: Patch size for masking
+        use_pos_embed: Whether to use positional embeddings
+        init_weights: Whether to initialize weights
+        use_technical_bottleneck: Whether to add compression bottleneck
+    
+    Input:
+        bl: Baseline CXR [B, 1, 512, 512]
+        fu: Followup CXR [B, 1, 512, 512]
+    
+    Output:
+        Change map [B, 1, 512, 512] with Tanh activation (range [-1, +1])
+    """
+    
     def __init__(self, use_mask_token=USE_MASK_TOKEN, dec=6, patch_dec=False, patch_size=MASK_PATCH_SIZE, use_pos_embed=USE_POS_EMBED, init_weights=INIT_WEIGHTS,
                  use_technical_bottleneck=False):
         super().__init__()
@@ -1229,10 +1330,39 @@ class LongitudinalMIMModelTest(nn.Module):
         return feat
 
 
-###############################
-# MODEL THAT WORKED FOR id9
+# =============================================================================
+# MAIN LONGITUDINAL MODEL (WORKING VERSION)
+# =============================================================================
 
 class LongitudinalMIMModel(nn.Module):
+    """
+    Primary model for longitudinal CXR change detection.
+    
+    Architecture:
+        1. Shared EfficientNet-B7 encoder for both baseline and followup
+        2. Conv bottleneck blocks for feature processing
+        3. Feature difference computation (FU - BL)
+        4. Decoder to reconstruct change map at original resolution
+    
+    This is the model that worked for experiment id9.
+    
+    Args:
+        use_mask_token: Whether to use learnable mask token (for MIM pretraining)
+        dec: Decoder version to use (5 or 6, default 6)
+        patch_dec: Whether to use patch-based decoder
+        patch_size: Size of patches for masking
+        use_pos_embed: Whether to add learnable positional embeddings
+        init_weights: Whether to initialize weights with custom scheme
+    
+    Input:
+        bl: Baseline CXR [B, 1, 512, 512]
+        fu: Followup CXR [B, 1, 512, 512]
+    
+    Output:
+        Change map [B, 1, 512, 512] with Tanh activation (range [-1, +1])
+        Positive = new findings, Negative = resolved findings
+    """
+    
     def __init__(self, use_mask_token=USE_MASK_TOKEN, dec=6, patch_dec=False, patch_size=MASK_PATCH_SIZE, use_pos_embed=USE_POS_EMBED, init_weights=INIT_WEIGHTS):
         super().__init__()
 

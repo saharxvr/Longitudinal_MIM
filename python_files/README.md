@@ -7,14 +7,15 @@ Deep learning pipeline for detecting changes between longitudinal chest X-ray pa
 ```
 python_files/
 ├── longitudinal_MIM_training.py   # 🎯 Main training script
-├── models.py                      # Neural network architectures
-├── datasets.py                    # Dataset loaders
-├── constants.py                   # Configuration & hyperparameters
-├── utils.py                       # Utility functions
-├── augmentations.py               # Data augmentation transforms
+├── models.py                      # Neural network architectures (documented)
+├── datasets.py                    # Dataset loaders (documented)
+├── constants.py                   # Configuration & hyperparameters (documented)
+├── utils.py                       # Utility functions (documented)
+├── augmentations.py               # Data augmentation transforms (documented)
 │
 ├── CT_entities/                   # 🎯 Synthetic DRR generation
-│   ├── DRR_generator.py           # Main DRR pair generator
+│   ├── README.md                  # Module documentation
+│   ├── DRR_generator.py           # Main DRR pair generator (documented)
 │   ├── DRR_utils.py               # DRR helper functions
 │   ├── CT_Rotations.py            # 3D rotation utilities
 │   ├── Entity3D.py                # Base class for 3D entities
@@ -30,12 +31,22 @@ python_files/
 │   └── vgg_losses.py              # VGG perceptual loss
 │
 └── archive/                       # Archived/unused code
-    ├── refactored_modules/        # Previously refactored code
-    ├── test_scripts/              # Test scripts (DRRs_test_*.py)
-    ├── data_preparation/          # Data prep utilities
-    ├── evaluation/                # Evaluation scripts
-    └── experimental/              # Experimental code
+    └── README.md                  # Archive documentation
 ```
+
+## Documentation
+
+All core files include comprehensive docstrings:
+
+| File | Documentation |
+|------|---------------|
+| `constants.py` | Organized sections with parameter descriptions |
+| `utils.py` | Full docstrings for all functions/classes |
+| `augmentations.py` | Class and module-level documentation |
+| `datasets.py` | Dataset class documentation with usage examples |
+| `models.py` | Architecture documentation for all models |
+| `longitudinal_MIM_training.py` | Usage and configuration documentation |
+| `CT_entities/` | Separate README.md with usage guide |
 
 ## Quick Start
 

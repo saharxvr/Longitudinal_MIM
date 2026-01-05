@@ -1,3 +1,40 @@
+"""
+Synthetic DRR Pair Generator.
+
+Generates pairs of synthetic Digitally Reconstructed Radiographs (DRRs) from CT scans
+with inserted 3D pathological entities for training longitudinal change detection models.
+
+Usage:
+    python DRR_generator.py -n 1000 -o /output/path -CO 0.3 -PL 0.2 -PN 0.1
+
+Arguments:
+    -n, --number_pairs: Number of synthetic pairs to generate (required)
+    -i, --input: Input CT directories (default: predefined paths)
+    -o, --output: Output directory for generated pairs
+    -CO, --Consolidation: Probability of consolidation (0-1)
+    -PL, --PleuralEffusion: Probability of pleural effusion (0-1)
+    -PN, --Pneumothorax: Probability of pneumothorax (0-1)
+    -CA, --Cardiomegaly: Probability of cardiomegaly (0-1)
+    -FO, --FluidOverload: Probability of fluid overload (0-1)
+    -EX, --ExternalDevices: Probability of external devices (0-1)
+
+Output Structure:
+    output_dir/
+    └── case_name/
+        └── pair_N/
+            ├── prior.nii.gz        # Baseline DRR
+            ├── current.nii.gz      # Followup DRR with changes
+            └── diff_map.nii.gz     # Ground truth difference map
+
+Supported Entities:
+    - Consolidation: Lung consolidation regions
+    - PleuralEffusion: Fluid in pleural space
+    - Pneumothorax: Collapsed lung regions
+    - Cardiomegaly: Enlarged heart silhouette
+    - FluidOverload: General fluid accumulation
+    - ExternalDevices: Tubes, lines, etc.
+"""
+
 import math
 import random
 
@@ -19,8 +56,61 @@ import gc
 import json
 import argparse
 import shutil
+import psutil
 
 from skimage.morphology import ball
+
+# ==============================================================================
+# Memory Management Utilities
+# ==============================================================================
+
+def get_memory_usage_gb():
+    """Get current process memory usage in GB."""
+    process = psutil.Process()
+    return process.memory_info().rss / (1024 ** 3)
+
+
+def log_memory(label=""):
+    """Log current memory usage."""
+    mem_gb = get_memory_usage_gb()
+    print(f"[Memory] {label}: {mem_gb:.2f} GB")
+    return mem_gb
+
+
+def cleanup_memory():
+    """Force garbage collection and clear CUDA cache."""
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def check_memory_and_cleanup(threshold_gb=25.0, label=""):
+    """
+    Check memory usage and perform aggressive cleanup if above threshold.
+    
+    Args:
+        threshold_gb: Memory threshold in GB to trigger aggressive cleanup.
+        label: Label for logging.
+        
+    Returns:
+        bool: True if memory was above threshold and cleanup was performed.
+    """
+    mem_gb = get_memory_usage_gb()
+    if mem_gb > threshold_gb:
+        print(f"[Memory Warning] {label}: {mem_gb:.2f} GB > {threshold_gb} GB threshold")
+        print("[Memory] Performing aggressive cleanup...")
+        
+        # Force garbage collection multiple times
+        for _ in range(3):
+            gc.collect()
+        
+        # Clear CUDA cache
+        torch.cuda.empty_cache()
+        
+        # Log memory after cleanup
+        new_mem_gb = get_memory_usage_gb()
+        print(f"[Memory] After cleanup: {new_mem_gb:.2f} GB (freed {mem_gb - new_mem_gb:.2f} GB)")
+        return True
+    return False
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -161,6 +251,14 @@ def parse_args():
     Useful as a simple method for splitting the work over multiple processes.
     """,
         metavar='FLOAT_LIST'
+    )
+
+    parser.add_argument(
+        '-m', '--memory_threshold',
+        type=float,
+        default=25.0,
+        help="Memory threshold in GB. If RAM usage exceeds this value, aggressive cleanup will be triggered. Default: 25.0",
+        metavar='FLOAT'
     )
 
     # Parse and return the arguments
@@ -340,6 +438,10 @@ def generate_alpha_map(x: torch.Tensor):
 
 
 def plot_diff_on_current(c_diff_map, c_current, out_p):
+    """Plot difference map overlay on current image and save to file.
+    
+    This function properly manages matplotlib memory by closing all figures.
+    """
     c_diff_map = torch.tensor(c_diff_map)
     c_current = torch.tensor(c_current)
 
@@ -354,10 +456,14 @@ def plot_diff_on_current(c_diff_map, c_current, out_p):
 
     plt.savefig(out_p)
 
-    # ax[0].clear()
+    # Properly close figure to free memory
     plt.cla()
     plt.clf()
-    plt.close()
+    plt.close(fig)
+    plt.close('all')  # Ensure all figures are closed
+    
+    # Free the tensors
+    del c_diff_map, c_current, alphas
 
 
 def log_params(c_params, out_p):
@@ -1682,10 +1788,25 @@ def main():
     ps = ct_paths[first: last]
     pairs_created = 0
     len_ps = len(ps)
+    
+    # Memory threshold for aggressive cleanup (in GB) - from command line argument
+    MEMORY_THRESHOLD_GB = args.memory_threshold
+    print(f'Memory threshold for cleanup: {MEMORY_THRESHOLD_GB} GB')
+    
+    log_memory("Before starting main loop")
+    
     for k, ct_p in enumerate(ps):
         case_name = ct_p.split('/')[-1][:-7]
+        print(f'\n{"="*60}')
         print(f'Working on case {k}/{len_ps}: {case_name}')
         print(f'First = {first}, Last = {last}')
+        log_memory(f"Start of case {k}")
+        
+        # Initialize variables to None for safe cleanup in case of error
+        scan = orig_scan = segs_dict = None
+        cropped_scan = cropped_segs_dict = cropping_slices = None
+        orig_cropped_scan = orig_cropped_lungs = None
+        prior_cropped_segs_dict = current_cropped_segs_dict = None
 
         if case_name in {'train_11701_a_2', 'train_1128_a_2', 'train_11716_a_1', 'train_11431_a_2', 'train_10466_a_2', '1.3.6.1.4.1.14519.5.2.1.6279.6001.146429221666426688999739595820', '1.3.6.1.4.1.14519.5.2.1.6279.6001.221945191226273284587353530424'}:
             continue
@@ -1699,229 +1820,274 @@ def main():
         if os.path.exists(f'{out_path}/pair{pairs_per_ct - 1}/params.json'):
             print('Case completed. Skipping')
             continue
+        
+        try:
+            # scan_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/CT-RATE_scans/{case_name}.nii.gz'
+            scan_p = ct_p
+            seg_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_segs/{case_name}_seg.nii.gz'
+            middle_lobe_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_lobes_segs/{case_name}_lung_middle_lobe_right.nii.gz'
+            upper_right_lobe_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_lobes_segs/{case_name}_lung_upper_lobe_right.nii.gz'
+            lower_right_lobe_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_lobes_segs/{case_name}_lung_lower_lobe_right.nii.gz'
+            upper_left_lobe_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_lobes_segs/{case_name}_lung_upper_lobe_left.nii.gz'
+            lower_left_lobe_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_lobes_segs/{case_name}_lung_lower_lobe_left.nii.gz'
+            heart_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_heart_segs/{case_name}_heart_seg.nii.gz'
+            # heart_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/heart_test/{case_name}_heart_seg.nii.gz'
+            bronchi_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_bronchi_segs/{case_name}_bronchia_seg.nii.gz'
+            lung_vessels_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_vessels_segs/{case_name}_vessels_seg.nii.gz'
 
-        # scan_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/CT-RATE_scans/{case_name}.nii.gz'
-        scan_p = ct_p
-        seg_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_segs/{case_name}_seg.nii.gz'
-        middle_lobe_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_lobes_segs/{case_name}_lung_middle_lobe_right.nii.gz'
-        upper_right_lobe_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_lobes_segs/{case_name}_lung_upper_lobe_right.nii.gz'
-        lower_right_lobe_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_lobes_segs/{case_name}_lung_lower_lobe_right.nii.gz'
-        upper_left_lobe_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_lobes_segs/{case_name}_lung_upper_lobe_left.nii.gz'
-        lower_left_lobe_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_lobes_segs/{case_name}_lung_lower_lobe_left.nii.gz'
-        heart_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_heart_segs/{case_name}_heart_seg.nii.gz'
-        # heart_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/heart_test/{case_name}_heart_seg.nii.gz'
-        bronchi_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_bronchi_segs/{case_name}_bronchia_seg.nii.gz'
-        lung_vessels_p = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_vessels_segs/{case_name}_vessels_seg.nii.gz'
+            segs_p_dict = {'lungs': seg_p, 'heart': heart_p, 'bronchi': bronchi_p, 'lung_vessels': lung_vessels_p, 'middle_right_lobe': middle_lobe_p, 'upper_right_lobe': upper_right_lobe_p, 'lower_right_lobe': lower_right_lobe_p, 'upper_left_lobe': upper_left_lobe_p, 'lower_left_lobe': lower_left_lobe_p}
+            smoothing_radius_dict = {'lungs': 7, 'heart': 7, 'bronchi': 3, 'lung_vessels': 3, 'middle_right_lobe': 7, 'upper_right_lobe': 7, 'lower_right_lobe': 7, 'upper_left_lobe': 7, 'lower_left_lobe': 7}
 
-        segs_p_dict = {'lungs': seg_p, 'heart': heart_p, 'bronchi': bronchi_p, 'lung_vessels': lung_vessels_p, 'middle_right_lobe': middle_lobe_p, 'upper_right_lobe': upper_right_lobe_p, 'lower_right_lobe': lower_right_lobe_p, 'upper_left_lobe': upper_left_lobe_p, 'lower_left_lobe': lower_left_lobe_p}
-        smoothing_radius_dict = {'lungs': 7, 'heart': 7, 'bronchi': 3, 'lung_vessels': 3, 'middle_right_lobe': 7, 'upper_right_lobe': 7, 'lower_right_lobe': 7, 'upper_left_lobe': 7, 'lower_left_lobe': 7}
+            scan, segs_dict = load_scan_and_seg(scan_p, segs_p_dict)
+            orig_scan = scan.clone()
 
-        scan, segs_dict = load_scan_and_seg(scan_p, segs_p_dict)
-        orig_scan = scan.clone()
+            segs_dict['lungs'] = torch.clamp_max(segs_dict['middle_right_lobe'] + segs_dict['upper_right_lobe'] + segs_dict['lower_right_lobe'] + segs_dict['upper_left_lobe'] + segs_dict['lower_left_lobe'], 1.)
 
-        segs_dict['lungs'] = torch.clamp_max(segs_dict['middle_right_lobe'] + segs_dict['upper_right_lobe'] + segs_dict['lower_right_lobe'] + segs_dict['upper_left_lobe'] + segs_dict['lower_left_lobe'], 1.)
-
-        if segs_dict['lungs'].sum() < 20:
-            print(f'Found empty seg for case {case_name}. Continuing')
-            continue
-
-        lung_seg_coords = segs_dict['lungs'].nonzero().T
-        lungs_h = torch.max(lung_seg_coords[0]) - torch.min(lung_seg_coords[0])
-        h_low_ext = (lungs_h // 5).item()
-
-        # out_path = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/fluid_overload_test/angles_{rot_ranges[0]}_{rot_ranges[1]}_{rot_ranges[2]}/{case_name}'
-
-        # cropped_scan, cropped_seg, cropped_heart, slices = crop_according_to_seg(scan, seg, heart_seg=heart, tight=True, return_slices=True)
-        cropped_scan, cropped_segs_dict, cropping_slices = crop_according_to_seg(scan, segs_dict['lungs'], all_segs_dict=segs_dict, tight_y=False, ext=15, h_low_ext=h_low_ext)
-
-        bad_seg_flag = False
-
-        for organ_name, c_seg in cropped_segs_dict.items():
-            c_seg = smooth_segmentation(c_seg.to(DEVICE), radius=smoothing_radius_dict[organ_name]).cpu()
-            # c_seg = torch.tensor(c_seg, dtype=torch.float32).to(DEVICE)
-            cropped_segs_dict[organ_name] = c_seg
-            if torch.sum(c_seg) < 20:
-                print(f'Found empty {organ_name} for case {case_name}. Continuing')
-                bad_seg_flag = True
-                break
-
-        if bad_seg_flag:
-            continue
-
-        cropped_segs_dict['lung_right'] = torch.maximum(cropped_segs_dict['middle_right_lobe'], torch.maximum(cropped_segs_dict['upper_right_lobe'], cropped_segs_dict['lower_right_lobe']))
-        cropped_segs_dict['lung_left'] = torch.maximum(cropped_segs_dict['upper_left_lobe'], cropped_segs_dict['lower_left_lobe'])
-
-        orig_cropped_scan = cropped_scan.clone().cpu()
-        orig_cropped_lungs = cropped_segs_dict['lungs'].clone()
-
-        prior_cropped_segs_dict = {k: v.clone() for k, v in cropped_segs_dict.items()}
-        current_cropped_segs_dict = {k: v.clone() for k, v in cropped_segs_dict.items()}
-
-        for i in range(pairs_per_ct):
-            print(f'Working on pair {i}')
-
-            c_out_dir = f'{out_path}/pair{i}'
-            os.makedirs(c_out_dir, exist_ok=True)
-
-            if os.path.exists(f'{c_out_dir}/params.json'):
-                print("Pair exists. Skipping.")
-                pairs_created += 1
+            if segs_dict['lungs'].sum() < 20:
+                print(f'Found empty seg for case {case_name}. Continuing')
                 continue
 
-            prior_cropped_segs_dict['lung_right'] = cropped_segs_dict['lung_right'].clone()
-            prior_cropped_segs_dict['lung_left'] = cropped_segs_dict['lung_left'].clone()
-            prior_cropped_segs_dict['lungs'] = cropped_segs_dict['lungs'].clone()
+            lung_seg_coords = segs_dict['lungs'].nonzero().T
+            lungs_h = torch.max(lung_seg_coords[0]) - torch.min(lung_seg_coords[0])
+            h_low_ext = (lungs_h // 5).item()
 
-            current_cropped_segs_dict['lung_right'] = cropped_segs_dict['lung_right'].clone()
-            current_cropped_segs_dict['lung_left'] = cropped_segs_dict['lung_left'].clone()
-            current_cropped_segs_dict['lungs'] = cropped_segs_dict['lungs'].clone()
+            # out_path = f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/fluid_overload_test/angles_{rot_ranges[0]}_{rot_ranges[1]}_{rot_ranges[2]}/{case_name}'
 
-            scans = [cropped_scan.clone().to(DEVICE), cropped_scan.clone().to(DEVICE)]
-            segs = [prior_cropped_segs_dict, current_cropped_segs_dict]
+            # cropped_scan, cropped_seg, cropped_heart, slices = crop_according_to_seg(scan, seg, heart_seg=heart, tight=True, return_slices=True)
+            cropped_scan, cropped_segs_dict, cropping_slices = crop_according_to_seg(scan, segs_dict['lungs'], all_segs_dict=segs_dict, tight_y=False, ext=15, h_low_ext=h_low_ext)
 
-            ret_dict = add_entities_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition)
+            bad_seg_flag = False
 
-            torch.cuda.empty_cache()
-            gc.collect()
+            for organ_name, c_seg in cropped_segs_dict.items():
+                c_seg = smooth_segmentation(c_seg.to(DEVICE), radius=smoothing_radius_dict[organ_name]).cpu()
+                # c_seg = torch.tensor(c_seg, dtype=torch.float32).to(DEVICE)
+                cropped_segs_dict[organ_name] = c_seg
+                if torch.sum(c_seg) < 20:
+                    print(f'Found empty {organ_name} for case {case_name}. Continuing')
+                    bad_seg_flag = True
+                    break
 
-            prior, current = ret_dict['scans']
-            prior_cropped_segs_dict, current_cropped_segs_dict = ret_dict['segs']
-            registrated_prior = ret_dict['registrated_prior']
-            added_entity_names = ret_dict['added_entity_names']
-            params = {'added_entities': added_entity_names}
-            # params = ret_dict['params']
+            if bad_seg_flag:
+                continue
 
-            prior = add_back_cropped(prior, orig_scan, cropping_slices)
-            current = add_back_cropped(current, orig_scan, cropping_slices)
-            registrated_prior = add_back_cropped(registrated_prior, orig_scan, cropping_slices)
+            cropped_segs_dict['lung_right'] = torch.maximum(cropped_segs_dict['middle_right_lobe'], torch.maximum(cropped_segs_dict['upper_right_lobe'], cropped_segs_dict['lower_right_lobe']))
+            cropped_segs_dict['lung_left'] = torch.maximum(cropped_segs_dict['upper_left_lobe'], cropped_segs_dict['lower_left_lobe'])
 
-            seg_for_rotation = segs_dict['lungs'].clone()
+            orig_cropped_scan = cropped_scan.clone().cpu()
+            orig_cropped_lungs = cropped_segs_dict['lungs'].clone()
 
-            if 'PleuralEffusion' in added_entity_names:
-                pleural_effusion_seg = ret_dict['pleural_effusion_seg']
-                pleural_effusion_seg = add_back_cropped(pleural_effusion_seg, torch.zeros_like(orig_scan), cropping_slices)
-                seg_for_rotation[pleural_effusion_seg == 1] = 2
-                seg_for_rotation[pleural_effusion_seg == -1] = 3
-                del pleural_effusion_seg
+            prior_cropped_segs_dict = {k: v.clone() for k, v in cropped_segs_dict.items()}
+            current_cropped_segs_dict = {k: v.clone() for k, v in cropped_segs_dict.items()}
 
-            if 'Pneumothorax' in added_entity_names:
-                pneumothorax_seg = ret_dict['pneumothorax_seg']
-                pneumothorax_sulcus_seg = ret_dict['pneumothorax_sulcus_seg']
-                pneumothorax_seg = add_back_cropped(pneumothorax_seg, torch.zeros_like(orig_scan), cropping_slices)
-                pneumothorax_sulcus_seg = add_back_cropped(pneumothorax_sulcus_seg, torch.zeros_like(orig_scan), cropping_slices)
-                seg_for_rotation[pneumothorax_seg == 1] = 4
-                seg_for_rotation[pneumothorax_seg == -1] = 5
-                seg_for_rotation[pneumothorax_sulcus_seg == 1] = 6
-                seg_for_rotation[pneumothorax_sulcus_seg == -1] = 7
-                del pneumothorax_seg
-                del pneumothorax_sulcus_seg
+            for i in range(pairs_per_ct):
+                print(f'Working on pair {i}')
 
-            if 'Cardiomegaly' in added_entity_names:
-                cardiomegaly_seg = ret_dict['cardiomegaly_seg']
-                cardiomegaly_progress = ret_dict['cardiomegaly_progress']
-                cardiomegaly_seg = add_back_cropped(cardiomegaly_seg, torch.zeros_like(orig_scan), cropping_slices)
-                seg_for_rotation[cardiomegaly_seg == 1] = 8
-                seg_for_rotation[cardiomegaly_seg == -1] = 9
-                del cardiomegaly_seg
+                c_out_dir = f'{out_path}/pair{i}'
+                os.makedirs(c_out_dir, exist_ok=True)
 
-            ct_cat = torch.stack([registrated_prior, current], dim=0)
+                if os.path.exists(f'{c_out_dir}/params.json'):
+                    print("Pair exists. Skipping.")
+                    pairs_created += 1
+                    continue
 
-            del current
-            del registrated_prior
-            torch.cuda.empty_cache()
-            gc.collect()
+                prior_cropped_segs_dict['lung_right'] = cropped_segs_dict['lung_right'].clone()
+                prior_cropped_segs_dict['lung_left'] = cropped_segs_dict['lung_left'].clone()
+                prior_cropped_segs_dict['lungs'] = cropped_segs_dict['lungs'].clone()
 
-            rotated_ct_cat, seg_for_rotation = random_rotate_ct_and_crop_according_to_seg(ct_cat, seg_for_rotation, return_ct_seg=True, rot_ranges=rot_ranges, max_angles_sum=max_sum, min_angles_sum=min_sum, exponent=rot_exp)
+                current_cropped_segs_dict['lung_right'] = cropped_segs_dict['lung_right'].clone()
+                current_cropped_segs_dict['lung_left'] = cropped_segs_dict['lung_left'].clone()
+                current_cropped_segs_dict['lungs'] = cropped_segs_dict['lungs'].clone()
 
-            current_ct = rotated_ct_cat[1]
-            registrated_prior_ct = rotated_ct_cat[0]
+                scans = [cropped_scan.clone().to(DEVICE), cropped_scan.clone().to(DEVICE)]
+                segs = [prior_cropped_segs_dict, current_cropped_segs_dict]
 
-            current = project_ct(current_ct)
-            registrated_prior = project_ct(registrated_prior_ct)
+                ret_dict = add_entities_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition)
 
-            del ct_cat
-            del current_ct
-            del registrated_prior_ct
-            del rotated_ct_cat
+                torch.cuda.empty_cache()
+                gc.collect()
 
-            torch.cuda.empty_cache()
-            gc.collect()
+                prior, current = ret_dict['scans']
+                prior_cropped_segs_dict, current_cropped_segs_dict = ret_dict['segs']
+                registrated_prior = ret_dict['registrated_prior']
+                added_entity_names = ret_dict['added_entity_names']
+                params = {'added_entities': added_entity_names}
+                # params = ret_dict['params']
 
-            seg_for_rotation = torch.round(seg_for_rotation).squeeze()
-            rotated_seg = seg_for_rotation != 0
-            max_rotated_seg_sum = torch.max(torch.sum(rotated_seg, dim=2))
+                prior = add_back_cropped(prior, orig_scan, cropping_slices)
+                current = add_back_cropped(current, orig_scan, cropping_slices)
+                registrated_prior = add_back_cropped(registrated_prior, orig_scan, cropping_slices)
 
-            projected_seg = project_ct(rotated_seg, is_seg=True)
+                seg_for_rotation = segs_dict['lungs'].clone()
 
-            extra_pulmonary_diff_maps = []
+                if 'PleuralEffusion' in added_entity_names:
+                    pleural_effusion_seg = ret_dict['pleural_effusion_seg']
+                    pleural_effusion_seg = add_back_cropped(pleural_effusion_seg, torch.zeros_like(orig_scan), cropping_slices)
+                    seg_for_rotation[pleural_effusion_seg == 1] = 2
+                    seg_for_rotation[pleural_effusion_seg == -1] = 3
+                    del pleural_effusion_seg
 
-            if 'PleuralEffusion' in added_entity_names:
-                pleural_effusion_diff = create_seg_diff_map_from_rotated(seg_for_rotation, 2, 3, 0.35, max_rotated_seg_sum, 9)
-                extra_pulmonary_diff_maps.append(pleural_effusion_diff)
+                if 'Pneumothorax' in added_entity_names:
+                    pneumothorax_seg = ret_dict['pneumothorax_seg']
+                    pneumothorax_sulcus_seg = ret_dict['pneumothorax_sulcus_seg']
+                    pneumothorax_seg = add_back_cropped(pneumothorax_seg, torch.zeros_like(orig_scan), cropping_slices)
+                    pneumothorax_sulcus_seg = add_back_cropped(pneumothorax_sulcus_seg, torch.zeros_like(orig_scan), cropping_slices)
+                    seg_for_rotation[pneumothorax_seg == 1] = 4
+                    seg_for_rotation[pneumothorax_seg == -1] = 5
+                    seg_for_rotation[pneumothorax_sulcus_seg == 1] = 6
+                    seg_for_rotation[pneumothorax_sulcus_seg == -1] = 7
+                    del pneumothorax_seg
+                    del pneumothorax_sulcus_seg
 
-            if 'Pneumothorax' in added_entity_names:
-                pneumothorax_diff = create_seg_diff_map_from_rotated(seg_for_rotation, 4, 5, 0.25, max_rotated_seg_sum, 9)
-                pneumothorax_sulcus_diff = create_seg_diff_map_from_rotated(seg_for_rotation, 6, 7, 0.25, max_rotated_seg_sum, 9)
-                extra_pulmonary_diff_maps.append(pneumothorax_diff)
-                extra_pulmonary_diff_maps.append(pneumothorax_sulcus_diff)
+                if 'Cardiomegaly' in added_entity_names:
+                    cardiomegaly_seg = ret_dict['cardiomegaly_seg']
+                    cardiomegaly_progress = ret_dict['cardiomegaly_progress']
+                    cardiomegaly_seg = add_back_cropped(cardiomegaly_seg, torch.zeros_like(orig_scan), cropping_slices)
+                    seg_for_rotation[cardiomegaly_seg == 1] = 8
+                    seg_for_rotation[cardiomegaly_seg == -1] = 9
+                    del cardiomegaly_seg
 
-            if 'Cardiomegaly' in added_entity_names:
-                if cardiomegaly_progress in {1, -1}:
-                    cardiomegaly_diff = create_seg_diff_map_from_rotated(seg_for_rotation, 8, 9, 0.35, max_rotated_seg_sum, 9)
+                ct_cat = torch.stack([registrated_prior, current], dim=0)
 
-                    if cardiomegaly_progress == 1:
-                        cardiomegaly_diff = np.clip(cardiomegaly_diff, a_min=0, a_max=None)
+                del current
+                del registrated_prior
+                torch.cuda.empty_cache()
+                gc.collect()
+
+                rotated_ct_cat, seg_for_rotation = random_rotate_ct_and_crop_according_to_seg(ct_cat, seg_for_rotation, return_ct_seg=True, rot_ranges=rot_ranges, max_angles_sum=max_sum, min_angles_sum=min_sum, exponent=rot_exp)
+
+                current_ct = rotated_ct_cat[1]
+                registrated_prior_ct = rotated_ct_cat[0]
+
+                current = project_ct(current_ct)
+                registrated_prior = project_ct(registrated_prior_ct)
+
+                del ct_cat
+                del current_ct
+                del registrated_prior_ct
+                del rotated_ct_cat
+
+                torch.cuda.empty_cache()
+                gc.collect()
+
+                seg_for_rotation = torch.round(seg_for_rotation).squeeze()
+                rotated_seg = seg_for_rotation != 0
+                max_rotated_seg_sum = torch.max(torch.sum(rotated_seg, dim=2))
+
+                projected_seg = project_ct(rotated_seg, is_seg=True)
+
+                extra_pulmonary_diff_maps = []
+
+                if 'PleuralEffusion' in added_entity_names:
+                    pleural_effusion_diff = create_seg_diff_map_from_rotated(seg_for_rotation, 2, 3, 0.35, max_rotated_seg_sum, 9)
+                    extra_pulmonary_diff_maps.append(pleural_effusion_diff)
+
+                if 'Pneumothorax' in added_entity_names:
+                    pneumothorax_diff = create_seg_diff_map_from_rotated(seg_for_rotation, 4, 5, 0.25, max_rotated_seg_sum, 9)
+                    pneumothorax_sulcus_diff = create_seg_diff_map_from_rotated(seg_for_rotation, 6, 7, 0.25, max_rotated_seg_sum, 9)
+                    extra_pulmonary_diff_maps.append(pneumothorax_diff)
+                    extra_pulmonary_diff_maps.append(pneumothorax_sulcus_diff)
+
+                if 'Cardiomegaly' in added_entity_names:
+                    if cardiomegaly_progress in {1, -1}:
+                        cardiomegaly_diff = create_seg_diff_map_from_rotated(seg_for_rotation, 8, 9, 0.35, max_rotated_seg_sum, 9)
+
+                        if cardiomegaly_progress == 1:
+                            cardiomegaly_diff = np.clip(cardiomegaly_diff, a_min=0, a_max=None)
+                        else:
+                            cardiomegaly_diff = np.clip(cardiomegaly_diff, a_min=None, a_max=0)
                     else:
-                        cardiomegaly_diff = np.clip(cardiomegaly_diff, a_min=None, a_max=0)
-                else:
-                    cardiomegaly_diff = np.zeros_like(current)
-                extra_pulmonary_diff_maps.append(cardiomegaly_diff)
+                        cardiomegaly_diff = np.zeros_like(current)
+                    extra_pulmonary_diff_maps.append(cardiomegaly_diff)
 
-            del seg_for_rotation
-            del rotated_seg
+                del seg_for_rotation
+                del rotated_seg
+                torch.cuda.empty_cache()
+                gc.collect()
+
+                prior_ct, prior_rotated_seg = random_rotate_ct_and_crop_according_to_seg(prior, segs_dict['lungs'], return_ct_seg=True, rot_ranges=rot_ranges, max_angles_sum=max_sum, min_angles_sum=min_sum, exponent=rot_exp)
+                prior_ct = prior_ct.squeeze()
+
+                prior = project_ct(prior_ct)
+
+                del prior_ct
+                del prior_rotated_seg
+                prior_ct = None
+                prior_rotated_seg = None
+                torch.cuda.empty_cache()
+                gc.collect()
+
+                diff_map = calculate_diff_map(current, registrated_prior, projected_seg)
+
+                for extra_pulmonary_diff_map in extra_pulmonary_diff_maps:
+                    diff_map += extra_pulmonary_diff_map
+
+                # TODO: REMOVE
+                # prior = normalize_xray(prior)
+                # current = normalize_xray(current)
+
+                save_arr_as_nifti(prior.T, f'{c_out_dir}/prior.nii.gz')
+                save_arr_as_nifti(current.T, f'{c_out_dir}/current.nii.gz')
+                save_arr_as_nifti(diff_map.T, f'{c_out_dir}/diff_map.nii.gz')
+
+                plt.imsave(f'{c_out_dir}/prior.png', prior, cmap='gray')
+                plt.imsave(f'{c_out_dir}/current.png', current, cmap='gray')
+
+                plot_diff_on_current(diff_map, current, f'{c_out_dir}/current_with_differences.png')
+
+                log_params(params, f'{c_out_dir}/params.json')
+
+                pairs_created += 1
+
+                # Cleanup after each pair
+                del prior, current, diff_map, projected_seg
+                del ret_dict, extra_pulmonary_diff_maps
+                cleanup_memory()
+                
+                # Check memory and perform aggressive cleanup if needed
+                check_memory_and_cleanup(MEMORY_THRESHOLD_GB, f"After pair {i}")
+
+                if pairs_created == total_pairs_num:
+                    print("Done generating synthetic pairs. Exiting.")
+                    exit()
+                
+        except MemoryError as e:
+            print(f"[ERROR] MemoryError on case {case_name}: {e}")
+            print("[ERROR] Attempting to recover by skipping this case...")
+            # Aggressive cleanup on memory error
+            for _ in range(5):
+                gc.collect()
             torch.cuda.empty_cache()
-            gc.collect()
-
-            prior_ct, prior_rotated_seg = random_rotate_ct_and_crop_according_to_seg(prior, segs_dict['lungs'], return_ct_seg=True, rot_ranges=rot_ranges, max_angles_sum=max_sum, min_angles_sum=min_sum, exponent=rot_exp)
-            prior_ct = prior_ct.squeeze()
-
-            prior = project_ct(prior_ct)
-
-            del prior_ct
-            del prior_rotated_seg
-            prior_ct = None
-            prior_rotated_seg = None
-            torch.cuda.empty_cache()
-            gc.collect()
-
-            diff_map = calculate_diff_map(current, registrated_prior, projected_seg)
-
-            for extra_pulmonary_diff_map in extra_pulmonary_diff_maps:
-                diff_map += extra_pulmonary_diff_map
-
-            # TODO: REMOVE
-            # prior = normalize_xray(prior)
-            # current = normalize_xray(current)
-
-            save_arr_as_nifti(prior.T, f'{c_out_dir}/prior.nii.gz')
-            save_arr_as_nifti(current.T, f'{c_out_dir}/current.nii.gz')
-            save_arr_as_nifti(diff_map.T, f'{c_out_dir}/diff_map.nii.gz')
-
-            plt.imsave(f'{c_out_dir}/prior.png', prior, cmap='gray')
-            plt.imsave(f'{c_out_dir}/current.png', current, cmap='gray')
-
-            plot_diff_on_current(diff_map, current, f'{c_out_dir}/current_with_differences.png')
-
-            log_params(params, f'{c_out_dir}/params.json')
-
-            pairs_created += 1
-
-            torch.cuda.empty_cache()
-            gc.collect()
-
-            if pairs_created == total_pairs_num:
-                print("Done generating synthetic pairs. Exiting.")
-                exit()
+            
+        except Exception as e:
+            print(f"[ERROR] Exception on case {case_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            print("[ERROR] Skipping to next case...")
+        
+        finally:
+            # ==================================================================
+            # CRITICAL: Clean up ALL case-level variables after processing
+            # This runs whether the case succeeded or failed
+            # ==================================================================
+            print(f"[Cleanup] Cleaning up case {case_name}...")
+            
+            # Delete large tensors safely
+            for var_name in ['scan', 'orig_scan', 'segs_dict', 'cropped_scan', 
+                              'cropped_segs_dict', 'cropping_slices', 'orig_cropped_scan', 
+                              'orig_cropped_lungs', 'prior_cropped_segs_dict', 
+                              'current_cropped_segs_dict']:
+                try:
+                    if var_name in locals():
+                        del locals()[var_name]
+                except:
+                    pass
+            
+            # Force garbage collection
+            cleanup_memory()
+            
+            # Check memory and log
+            check_memory_and_cleanup(MEMORY_THRESHOLD_GB, f"After case {case_name}")
+            log_memory(f"End of case {k}")
 
 
 if __name__ == '__main__':
