@@ -1,203 +1,100 @@
 # Longitudinal CXR Analysis
 
-Deep learning pipeline for detecting and visualizing changes between longitudinal chest X-ray (CXR) pairs.
-
-## Project Overview
-
-This project implements a self-supervised learning approach for longitudinal CXR analysis, designed to:
-1. Detect clinically significant changes between baseline (BL) and followup (FU) CXRs
-2. Generate difference maps highlighting new findings, resolved findings, and progression
-3. Support synthetic data generation using CT-derived DRRs (Digitally Reconstructed Radiographs)
+Deep learning pipeline for detecting changes between longitudinal chest X-ray pairs using synthetic DRR training data.
 
 ## Project Structure
 
 ```
 python_files/
-├── config/                 # Centralized configuration
-│   ├── device.py          # GPU selection
-│   ├── paths.py           # Dataset paths
-│   ├── model_config.py    # Architecture parameters
-│   ├── training_config.py # Training hyperparameters
-│   └── data_config.py     # Label definitions
+├── longitudinal_MIM_training.py   # 🎯 Main training script
+├── models.py                      # Neural network architectures
+├── datasets.py                    # Dataset loaders
+├── constants.py                   # Configuration & hyperparameters
+├── utils.py                       # Utility functions
+├── augmentations.py               # Data augmentation transforms
 │
-├── utils/                  # Shared utilities
-│   ├── metrics.py         # Evaluation metrics
-│   ├── visualization.py   # Plotting functions
-│   ├── io_utils.py        # File I/O
-│   ├── schedulers.py      # LR schedulers
-│   ├── image_processing.py # Image transforms
-│   └── losses.py          # Custom losses
+├── CT_entities/                   # 🎯 Synthetic DRR generation
+│   ├── DRR_generator.py           # Main DRR pair generator
+│   ├── DRR_utils.py               # DRR helper functions
+│   ├── CT_Rotations.py            # 3D rotation utilities
+│   ├── Entity3D.py                # Base class for 3D entities
+│   ├── CXR_from_CT.py             # CT to CXR projection
+│   ├── Consolidation.py           # Lung consolidation entity
+│   ├── Pleural_Effusion.py        # Pleural effusion entity
+│   ├── Pneumothorax.py            # Pneumothorax entity
+│   ├── Cardiomegaly.py            # Cardiomegaly entity
+│   ├── Fluid_Overload.py          # Fluid overload entity
+│   └── External_Devices.py        # External devices entity
 │
-├── core/                   # Core components
-│   ├── data/              # Dataset implementations
-│   │   ├── base.py        # BaseTransformDataset
-│   │   ├── contrastive.py # Contrastive datasets
-│   │   ├── classification.py
-│   │   ├── longitudinal.py # BL-FU pair datasets
-│   │   └── patch_reconstruction.py
-│   │
-│   └── models/            # Neural networks
-│       ├── encoders.py    # EfficientNet encoder
-│       ├── bottleneck.py  # Transformer + CNN bottleneck
-│       ├── decoders.py    # Reconstruction decoders
-│       ├── detection.py   # Classification heads
-│       └── longitudinal.py # Full longitudinal models
+├── losses/                        # Custom loss functions
+│   └── vgg_losses.py              # VGG perceptual loss
 │
-├── data_prep/             # Data preprocessing
-│   ├── io_operations.py   # Format conversion
-│   ├── dataset_csv.py     # CSV generation
-│   ├── pair_creation.py   # Longitudinal pair creation
-│   └── image_processing.py
-│
-├── CT_entities/           # Synthetic abnormality generation
-│   ├── DRR_generator.py   # DRR rendering from CT
-│   ├── Consolidation.py   # Lung consolidation
-│   ├── Pleural_Effusion.py
-│   ├── Pneumothorax.py
-│   └── ...
-│
-├── Evaluation/            # Evaluation scripts
-│   ├── Prediction.py
-│   └── Observer_Variability.py
-│
-└── extra/                 # Experimental scripts
-```
-
-## Installation
-
-```bash
-# Clone repository
-git clone <repository-url>
-cd python_files
-
-# Create environment
-conda create -n cxr_analysis python=3.10
-conda activate cxr_analysis
-
-# Install dependencies
-pip install torch torchvision
-pip install transformers nibabel pydicom
-pip install matplotlib pandas tqdm scikit-learn
+└── archive/                       # Archived/unused code
+    ├── refactored_modules/        # Previously refactored code
+    ├── test_scripts/              # Test scripts (DRRs_test_*.py)
+    ├── data_preparation/          # Data prep utilities
+    ├── evaluation/                # Evaluation scripts
+    └── experimental/              # Experimental code
 ```
 
 ## Quick Start
 
 ### Training
 
-```python
-from core.models import LongitudinalMIMModel
-from core.data import LongitudinalDataset
-from config import DEVICE, BATCH_SIZE, MAX_LR
-
-# Create model
-model = LongitudinalMIMModel(dec=6).to(DEVICE)
-
-# Create dataset
-dataset = LongitudinalDataset(pairs_csv="train_pairs.csv")
-loader = DataLoader(dataset, batch_size=BATCH_SIZE)
-
-# Training loop
-optimizer = torch.optim.AdamW(model.parameters(), lr=MAX_LR)
-for epoch in range(100):
-    for batch in loader:
-        bl = batch['baseline'].to(DEVICE)
-        fu = batch['followup'].to(DEVICE)
-        gt = batch['diff_map'].to(DEVICE)
-        
-        pred = model(bl, fu)
-        loss = F.l1_loss(pred, gt)
-        
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+```bash
+python longitudinal_MIM_training.py
 ```
 
-### Inference
+Key configuration in `constants.py`:
+- `BATCH_SIZE`, `MAX_LR` - Training hyperparameters
+- `USE_L1`, `USE_SSIM`, `USE_PERC_STYLE` - Loss function flags
+- `TRAIN_CSV`, `VAL_CSV` - Dataset paths
 
-```python
-import torch
-import nibabel as nib
-from core.models import LongitudinalMIMModel
-from utils import load_checkpoint
+### Generating Synthetic DRR Pairs
 
-# Load model
-model = LongitudinalMIMModel(dec=6)
-model = load_checkpoint("checkpoint.pt", model)
-model.eval()
-
-# Load images
-bl = torch.tensor(nib.load("baseline.nii.gz").get_fdata())[None, None]
-fu = torch.tensor(nib.load("followup.nii.gz").get_fdata())[None, None]
-
-# Predict
-with torch.no_grad():
-    change_map = model(bl / 255., fu / 255.)
-    
-# change_map values in [-1, 1]:
-#   Positive: New findings in followup
-#   Negative: Resolved findings
-#   Zero: No change
+```bash
+cd CT_entities
+python DRR_generator.py -n 1000 -o /output/path \
+    -CO 0.3 -PL 0.2 -PN 0.1 -CA 0.15 -FO 0.1
 ```
+
+Arguments:
+- `-n`: Number of pairs to generate
+- `-o`: Output directory
+- `-CO`: Consolidation probability
+- `-PL`: Pleural effusion probability  
+- `-PN`: Pneumothorax probability
+- `-CA`: Cardiomegaly probability
+- `-FO`: Fluid overload probability
 
 ## Model Architecture
 
 ```
-Baseline Image ─┐
-                ├─→ SharedEncoder ─→ Bottleneck ─→ FeatureDiff ─→ Decoder ─→ ChangeMap
-Followup Image ─┘   (EfficientNet)   (ViT+Conv)    (FU - BL)     (Decoder6)
+Baseline CXR ─┐
+              ├─→ Shared EfficientNet Encoder ─→ Bottleneck ─→ Decoder ─→ Change Map
+Followup CXR ─┘                                  (ViT+Conv)              ([-1, +1])
 ```
 
-**Key Components:**
-- **EfficientNetMiniEncoder**: Pretrained EfficientNet-B7 backbone (first 4 blocks)
-- **BottleneckBlock**: Dual-branch (Transformer + CNN) for global and local features
-- **Decoder6**: 6-stage upsampling decoder with Tanh output
+- **Encoder**: EfficientNet-B7 (first 4 blocks)
+- **Bottleneck**: Dual-branch (Transformer + CNN)  
+- **Decoder**: 6-stage upsampling with Tanh output
+- **Output**: Signed change map (positive = new findings, negative = resolved)
 
-## Datasets
+## Key Files
 
-Supported datasets:
-- **MIMIC-CXR**: Primary longitudinal dataset
-- **CXR-14 (NIH ChestX-ray14)**: Classification pretraining
-- **PadChest**: Additional classification data
-- **VinDr-CXR**: Validation dataset
-- **Synthetic DRRs**: CT-derived training data
+| File | Purpose |
+|------|---------|
+| `longitudinal_MIM_training.py` | Training loop with L1, SSIM, perceptual losses |
+| `models.py` | `LongitudinalMIMModel` and variants |
+| `datasets.py` | `LongitudinalMIMDataset` for BL/FU pairs |
+| `CT_entities/DRR_generator.py` | Synthetic pair generation with 3D entities |
 
-## Configuration
+## Archive
 
-All settings are in `config/`:
+The `archive/` folder contains code that is not part of the main workflow:
 
-```python
-# config/training_config.py
-BATCH_SIZE = 8
-MAX_LR = 3e-4
-USE_MASKED_LOSS = True
-PERCEPTUAL_LOSS_WEIGHT = 0.1
-```
-
-## Evaluation
-
-```python
-from utils import dice_coefficient, calculate_detection_metrics
-
-# Segmentation metrics
-dice = dice_coefficient(prediction, ground_truth)
-
-# Detection metrics
-metrics = calculate_detection_metrics(pred, gt, threshold=0.5)
-print(f"Precision: {metrics['precision']:.3f}")
-print(f"Recall: {metrics['recall']:.3f}")
-```
-
-## Citation
-
-If you use this code, please cite:
-```
-@article{longitudinal_cxr_2024,
-  title={Longitudinal Chest X-Ray Analysis for Change Detection},
-  author={...},
-  year={2024}
-}
-```
-
-## License
-
-This project is for research purposes only.
+- **refactored_modules/**: Previous attempt at modular reorganization
+- **test_scripts/**: DRR testing scripts for different conditions
+- **data_preparation/**: CSV creation, image conversion utilities
+- **evaluation/**: Inference and observer variability analysis
+- **experimental/**: DDPM, masked reconstruction, and other experiments

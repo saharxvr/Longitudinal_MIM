@@ -14,7 +14,7 @@ from datasets import LongitudinalMIMDataset
 from constants import *
 import matplotlib.pyplot as plt
 from matplotlib import colors
-from extra.vgg_losses import VGGPerceptualLoss
+from losses.vgg_losses import VGGPerceptualLoss
 from piqa import SSIM, MS_SSIM
 # from preprocessing import generate_single_patch_masked_images
 from utils import MaskProbScheduler, generate_alpha_map
