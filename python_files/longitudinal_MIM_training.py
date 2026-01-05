@@ -31,6 +31,8 @@ import os
 import math
 import random
 import json
+import gc
+import psutil
 from datetime import datetime
 from signal import signal, SIGINT
 
@@ -48,6 +50,51 @@ from losses.vgg_losses import VGGPerceptualLoss
 from piqa import SSIM, MS_SSIM
 from utils import MaskProbScheduler, generate_alpha_map
 from time import time
+
+
+# =============================================================================
+# MEMORY MANAGEMENT UTILITIES
+# =============================================================================
+
+def get_memory_usage_gb():
+    """Get current process memory usage in GB."""
+    process = psutil.Process()
+    return process.memory_info().rss / (1024 ** 3)
+
+
+def log_memory(label=""):
+    """Log current memory usage with optional label."""
+    mem_gb = get_memory_usage_gb()
+    gpu_mem = torch.cuda.memory_allocated() / (1024 ** 3) if torch.cuda.is_available() else 0
+    print(f"[Memory] {label}: RAM={mem_gb:.2f}GB, GPU={gpu_mem:.2f}GB")
+    return mem_gb
+
+
+def cleanup_memory():
+    """Force garbage collection and clear CUDA cache."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def check_memory_and_cleanup(threshold_gb=20.0, label=""):
+    """
+    Check memory usage and perform cleanup if above threshold.
+    
+    Args:
+        threshold_gb: RAM threshold in GB to trigger cleanup.
+        label: Label for logging.
+    Returns:
+        bool: True if cleanup was performed.
+    """
+    mem_gb = get_memory_usage_gb()
+    if mem_gb > threshold_gb:
+        print(f"[Memory Warning] {label}: {mem_gb:.2f}GB > {threshold_gb}GB threshold")
+        cleanup_memory()
+        new_mem = get_memory_usage_gb()
+        print(f"[Memory] After cleanup: {new_mem:.2f}GB (freed {mem_gb - new_mem:.2f}GB)")
+        return True
+    return False
 from torchvision.transforms.v2.functional import adjust_sharpness
 import kornia
 
@@ -216,7 +263,10 @@ def run_epoch(epoch_num, mode: str):
     if mode == 'train':
         optimizer.zero_grad()
     for i, batch in tqdm(enumerate(dataloader)):
-        # torch.cuda.empty_cache()
+        # Periodic memory cleanup every 50 batches
+        if i > 0 and i % 50 == 0:
+            cleanup_memory()
+            check_memory_and_cleanup(threshold_gb=18.0, label=f"Batch {i}")
 
         bls, fus, gts, fu_mask = batch
 
@@ -408,6 +458,15 @@ def run_epoch(epoch_num, mode: str):
                 cbar2.remove()
                 axs[1, 0].clear()
                 axs[1, 1].clear()
+                
+                # Clear matplotlib memory
+                plt.clf()
+                gc.collect()
+        
+        # Delete batch tensors to free memory
+        del bls, fus, gts, fu_mask, outs, outputs, loss
+        if i % 20 == 0:
+            cleanup_memory()
 
     with torch.no_grad():
         avg_loss = avg_loss / steps_per_epoch
@@ -417,6 +476,10 @@ def run_epoch(epoch_num, mode: str):
 
         for l in t_losses_dict:
             t_losses_dict[l] = 0.
+
+    # Memory cleanup after each epoch
+    cleanup_memory()
+    check_memory_and_cleanup(threshold_gb=20.0, label=f"End of {mode} epoch {epoch_num}")
 
     return avg_loss
 
@@ -525,20 +588,28 @@ if __name__ == '__main__':
     print(f'DRR_single_dirs = \n{DRR_single_dirs}')
     print(f'DRR_pair_dirs = \n{DRR_pair_dirs}')
 
+    # Log initial memory usage
+    log_memory("Before dataset loading")
+
     train_dataset = LongitudinalMIMDataset(entity_dirs=entity_dirs, inpaint_dirs=inpaint_dirs, DRR_single_dirs=DRR_single_dirs, DRR_pair_dirs=DRR_pair_dirs, invariance=invariance)
-    train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=BATCH_SIZE)
+    # Use num_workers=0 to reduce memory footprint, or set to 2 max
+    train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=BATCH_SIZE, num_workers=0, pin_memory=False)
     len_train_ds = len(train_dataset)
+
+    log_memory("After train dataset")
 
     # val_dataset = LongitudinalMIMDataset(['/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/VinDrCXR/test'], inpaint_dirs=[], DRR_single_dirs=[], DRR_pair_dirs=[], invariance=invariance)
     val_dataset = LongitudinalMIMDataset([], inpaint_dirs=[], DRR_single_dirs=[], DRR_pair_dirs=['/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/LUNA_manufacturers/synthetic_pairs_test/GE MEDICAL SYSTEMS/angles_20_20_20'], invariance=invariance)
     # val_dataset = LongitudinalMIMDataset([], inpaint_dirs=[], DRR_single_dirs=[], DRR_pair_dirs=['/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/LUNA_manufacturers/synthetic_pairs_test/GE MEDICAL SYSTEMS/angles_20_20_20', '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/LUNA_manufacturers/synthetic_pairs_test/Philips/angles_20_20_20', '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/LUNA_manufacturers/synthetic_pairs_test/SIEMENS/angles_20_20_20'], invariance=invariance)
-    val_dataloader = DataLoader(val_dataset, shuffle=False, batch_size=BATCH_SIZE)
+    val_dataloader = DataLoader(val_dataset, shuffle=False, batch_size=BATCH_SIZE, num_workers=0, pin_memory=False)
     len_val_ds = len(val_dataset)
 
     # test_dataset = LongitudinalMIMDataset(['/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/VinDrCXR/test'], inpaint_dirs=[], DRR_single_dirs=[], DRR_pair_dirs=[], invariance=invariance)
     test_dataset = LongitudinalMIMDataset(['/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/VinDrCXR/test'], inpaint_dirs=[], DRR_single_dirs=[], DRR_pair_dirs=[], invariance=invariance)
-    test_dataloader = DataLoader(test_dataset, shuffle=False, batch_size=BATCH_SIZE)
+    test_dataloader = DataLoader(test_dataset, shuffle=False, batch_size=BATCH_SIZE, num_workers=0, pin_memory=False)
     len_test_ds = len(test_dataset)
+
+    log_memory("After all datasets loaded")
 
     # model = LongitudinalMIMModel(use_mask_token=USE_MASK_TOKEN, dec=6, patch_dec=USE_PATCH_DEC, use_pos_embed=USE_POS_EMBED).to(DEVICE)
     model = LongitudinalMIMModelBig(use_mask_token=USE_MASK_TOKEN, dec=6, patch_dec=USE_PATCH_DEC, use_pos_embed=USE_POS_EMBED,

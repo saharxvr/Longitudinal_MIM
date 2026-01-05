@@ -100,17 +100,43 @@ def check_memory_and_cleanup(threshold_gb=25.0, label=""):
         print("[Memory] Performing aggressive cleanup...")
         
         # Force garbage collection multiple times
-        for _ in range(3):
+        for _ in range(5):
             gc.collect()
         
         # Clear CUDA cache
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
         
         # Log memory after cleanup
         new_mem_gb = get_memory_usage_gb()
         print(f"[Memory] After cleanup: {new_mem_gb:.2f} GB (freed {mem_gb - new_mem_gb:.2f} GB)")
+        
+        # If still above threshold, try more aggressive measures
+        if new_mem_gb > threshold_gb * 0.9:
+            print("[Memory] Still high, performing deep cleanup...")
+            import ctypes
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except:
+                pass
+            gc.collect()
+        
         return True
     return False
+
+
+def force_cleanup_tensors(*tensors):
+    """Force cleanup of specific tensors."""
+    for t in tensors:
+        if t is not None:
+            try:
+                del t
+            except:
+                pass
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -256,8 +282,8 @@ def parse_args():
     parser.add_argument(
         '-m', '--memory_threshold',
         type=float,
-        default=25.0,
-        help="Memory threshold in GB. If RAM usage exceeds this value, aggressive cleanup will be triggered. Default: 25.0",
+        default=15.0,
+        help="Memory threshold in GB. If RAM usage exceeds this value, aggressive cleanup will be triggered. Default: 15.0",
         metavar='FLOAT'
     )
 
@@ -279,31 +305,36 @@ def remove_small_ccs(im, min_count=16):
 
 
 def load_scan_and_seg(file_path: str, segs_paths_dict: dict):
-    """Load a .nii.gz medical image and return a NumPy array."""
+    """Load a .nii.gz medical image and return a NumPy array.
+    
+    Uses np.asarray(dataobj) instead of get_fdata() for memory efficiency.
+    This avoids creating an extra copy of the data in memory.
+    """
     scan_nif = nib.load(file_path)
 
     global affine
     affine = scan_nif.affine
 
-    scan_data = scan_nif.get_fdata()
-    scan_data = torch.tensor(np.transpose(scan_data, (2, 0, 1))).to(torch.float32)
-    # if 'ABD' not in file_path:
-    #     scan_data = torch.flip(scan_data, dims=[0])
-
+    # Use dataobj for memory-efficient loading (avoids extra copy)
+    scan_data = np.asarray(scan_nif.dataobj, dtype=np.float32)
+    scan_data = torch.from_numpy(np.transpose(scan_data, (2, 0, 1)).copy())
+    # Explicitly free the nifti object
+    scan_nif.uncache()
+    del scan_nif
+    
     scan_data = torch.flip(scan_data, dims=[0])
-
-    #
-    # (1, 2, 0)
 
     segs_dict = {}
     for organ_name, seg_path in segs_paths_dict.items():
         seg_nif = nib.load(seg_path)
-        seg_data = seg_nif.get_fdata()
-        seg_data = torch.tensor(np.transpose(seg_data, (2, 0, 1))).to(torch.float32)
-        # if 'ABD' not in file_path:
-        #     seg_data = torch.flip(seg_data, dims=[0])
+        # Use dataobj for memory-efficient loading
+        seg_data = np.asarray(seg_nif.dataobj, dtype=np.float32)
+        seg_data = torch.from_numpy(np.transpose(seg_data, (2, 0, 1)).copy())
+        # Explicitly free the nifti object
+        seg_nif.uncache()
+        del seg_nif
+        
         seg_data = torch.flip(seg_data, dims=[0])
-
         segs_dict[organ_name] = seg_data
 
     return scan_data, segs_dict
@@ -1585,13 +1616,19 @@ def save_arr_as_nifti_temp(arr, output_path):
 
 
 def load_scan_temp(file_path: str):
+    """Load a .nii.gz scan file with memory-efficient loading."""
     scan_nif = nib.load(file_path)
 
     global affine
     affine = scan_nif.affine
 
-    scan_data = scan_nif.get_fdata()
-    scan_data = torch.tensor(np.transpose(scan_data, (2, 0, 1))).to(torch.float32)
+    # Use dataobj for memory-efficient loading (avoids extra copy)
+    scan_data = np.asarray(scan_nif.dataobj, dtype=np.float32)
+    scan_data = torch.from_numpy(np.transpose(scan_data, (2, 0, 1)).copy())
+    # Explicitly free the nifti object
+    scan_nif.uncache()
+    del scan_nif
+    
     scan_data = torch.flip(scan_data, dims=(0,))
 
     return scan_data
@@ -1840,6 +1877,9 @@ def main():
 
             scan, segs_dict = load_scan_and_seg(scan_p, segs_p_dict)
             orig_scan = scan.clone()
+            
+            # Check memory after loading (CT loading is memory-intensive)
+            check_memory_and_cleanup(MEMORY_THRESHOLD_GB, f"After loading CT {case_name}")
 
             segs_dict['lungs'] = torch.clamp_max(segs_dict['middle_right_lobe'] + segs_dict['upper_right_lobe'] + segs_dict['lower_right_lobe'] + segs_dict['upper_left_lobe'] + segs_dict['lower_left_lobe'], 1.)
 
@@ -2071,19 +2111,29 @@ def main():
             # ==================================================================
             print(f"[Cleanup] Cleaning up case {case_name}...")
             
-            # Delete large tensors safely
-            for var_name in ['scan', 'orig_scan', 'segs_dict', 'cropped_scan', 
-                              'cropped_segs_dict', 'cropping_slices', 'orig_cropped_scan', 
-                              'orig_cropped_lungs', 'prior_cropped_segs_dict', 
-                              'current_cropped_segs_dict']:
-                try:
-                    if var_name in locals():
-                        del locals()[var_name]
-                except:
-                    pass
+            # Explicitly delete and set to None (locals() doesn't work in finally)
+            scan = None
+            orig_scan = None
+            segs_dict = None
+            cropped_scan = None
+            cropped_segs_dict = None
+            cropping_slices = None
+            orig_cropped_scan = None
+            orig_cropped_lungs = None
+            prior_cropped_segs_dict = None
+            current_cropped_segs_dict = None
             
-            # Force garbage collection
-            cleanup_memory()
+            # Force garbage collection multiple times
+            for _ in range(5):
+                gc.collect()
+            
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            
+            # Additional gc pass
+            gc.collect()
             
             # Check memory and log
             check_memory_and_cleanup(MEMORY_THRESHOLD_GB, f"After case {case_name}")
