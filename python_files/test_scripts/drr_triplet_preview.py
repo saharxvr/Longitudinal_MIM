@@ -88,3 +88,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+# python [drr_triplet_preview.py](http://_vscodecontentref_/0) --ct_dir "/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/CT-RATE_scans" --lungs_dir "/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_segs" --bronchi_dir "/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_bronchi_segs" --n 5 --out_dir "triplet_preview_out" --rotation_params 17.5 37.5 0 1.75 --p_entity 0.35
