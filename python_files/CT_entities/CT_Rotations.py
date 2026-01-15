@@ -1,6 +1,7 @@
 import random
 from kornia.geometry import rotate3d
 import torch
+from typing import Optional
 from DRR_utils import get_random_sign, enforce_ndim_4, crop_according_to_seg
 import os
 import sys
@@ -29,15 +30,42 @@ def get_random_rotation_angles(absolute_value_range_per_axis=(15, 15, 15), max_a
     return rotate_angle1, rotate_angle2, rotate_angle3
 
 
-def random_rotate_ct_and_crop_according_to_seg(ct_scan: torch.Tensor, ct_seg=None, return_ct_seg=False, rot_ranges=(15, 15, 15), max_angles_sum=30, min_angles_sum=7.5, exponent=1.):
-    rotate_angle1, rotate_angle2, rotate_angle3 = get_random_rotation_angles(rot_ranges, max_angles_sum, min_angles_sum, exponent)
+def rotate_ct_and_crop_according_to_seg(
+        ct_scan: torch.Tensor,
+    ct_seg: Optional[torch.Tensor] = None,
+        *,
+        rotate_angle1=0,
+        rotate_angle2=0,
+        rotate_angle3=0,
+        return_ct_seg: bool = False,
+):
+    """Rotate a CT volume (and optionally its segmentation) by provided angles.
 
+    This is the deterministic counterpart of `random_rotate_ct_and_crop_according_to_seg`.
+    Angles are in degrees and can be Python numbers or torch scalars.
+    """
     ct_scan = ct_scan.to(DEVICE)
-    ct_seg = ct_seg.to(DEVICE)
+    if ct_seg is not None:
+        ct_seg = ct_seg.to(DEVICE)
 
     ct_scan = enforce_ndim_4(ct_scan)
 
-    if rot_ranges != (0, 0, 0):
+    # Convert angles to tensors on the correct device
+    if not torch.is_tensor(rotate_angle1):
+        rotate_angle1 = torch.tensor(float(rotate_angle1), device=DEVICE)
+    else:
+        rotate_angle1 = rotate_angle1.to(DEVICE)
+    if not torch.is_tensor(rotate_angle2):
+        rotate_angle2 = torch.tensor(float(rotate_angle2), device=DEVICE)
+    else:
+        rotate_angle2 = rotate_angle2.to(DEVICE)
+    if not torch.is_tensor(rotate_angle3):
+        rotate_angle3 = torch.tensor(float(rotate_angle3), device=DEVICE)
+    else:
+        rotate_angle3 = rotate_angle3.to(DEVICE)
+
+    # Rotate
+    if float(rotate_angle1) != 0.0 or float(rotate_angle2) != 0.0 or float(rotate_angle3) != 0.0:
         ct_scan = ct_scan.unsqueeze(0)
         min_val = ct_scan.min()
         ct_scan = rotate3d(ct_scan - min_val, rotate_angle1, rotate_angle2, rotate_angle3, padding_mode='reflection')
@@ -48,9 +76,9 @@ def random_rotate_ct_and_crop_according_to_seg(ct_scan: torch.Tensor, ct_seg=Non
             ct_seg = enforce_ndim_4(ct_seg).unsqueeze(0)
             ct_seg = rotate3d(ct_seg, rotate_angle1, rotate_angle2, rotate_angle3, padding_mode='zeros')
             ct_seg = torch.round(ct_seg).squeeze(0)
-            ct_scan, ct_seg, _ = crop_according_to_seg(ct_scan, ct_seg, {'seg': ct_seg}, tight_y=False, ext=7)
-            ct_seg = ct_seg['seg']
-    elif ct_seg is not None:
+
+    # Crop according to seg if provided
+    if ct_seg is not None:
         ct_seg = enforce_ndim_4(ct_seg)
         ct_scan, ct_seg, _ = crop_according_to_seg(ct_scan, ct_seg, {'seg': ct_seg}, tight_y=False, ext=7)
         ct_seg = ct_seg['seg']
@@ -59,3 +87,27 @@ def random_rotate_ct_and_crop_according_to_seg(ct_scan: torch.Tensor, ct_seg=Non
     if return_ct_seg:
         to_ret.append(ct_seg)
     return to_ret
+
+
+def random_rotate_ct_and_crop_according_to_seg(
+        ct_scan: torch.Tensor,
+        ct_seg=None,
+        return_ct_seg: bool = False,
+        rot_ranges=(15, 15, 15),
+        max_angles_sum=30,
+        min_angles_sum=7.5,
+        exponent=1.,
+        return_angles: bool = False,
+):
+    rotate_angle1, rotate_angle2, rotate_angle3 = get_random_rotation_angles(rot_ranges, max_angles_sum, min_angles_sum, exponent)
+    out = rotate_ct_and_crop_according_to_seg(
+        ct_scan,
+        ct_seg,
+        rotate_angle1=rotate_angle1,
+        rotate_angle2=rotate_angle2,
+        rotate_angle3=rotate_angle3,
+        return_ct_seg=return_ct_seg,
+    )
+    if return_angles:
+        out.append((rotate_angle1, rotate_angle2, rotate_angle3))
+    return out
