@@ -17,6 +17,7 @@ from __future__ import annotations
 import gc
 import os
 import random
+import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Dict
 
@@ -24,6 +25,12 @@ import nibabel as nib
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+# Ensure repo root is on sys.path when running as a script
+_CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT_DIR = os.path.dirname(_CUR_DIR)
+if _PARENT_DIR not in sys.path:
+    sys.path.insert(0, _PARENT_DIR)
 
 from constants import DEVICE
 from CT_entities.DRR_utils import crop_according_to_seg

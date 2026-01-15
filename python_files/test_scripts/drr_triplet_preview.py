@@ -10,9 +10,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from glob import glob
 
 import matplotlib.pyplot as plt
+
+# Allow running from anywhere (so `CT_entities` imports resolve)
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from CT_entities.drr_triplet_pipeline import (
     DRRTripletFromCTDataset,
