@@ -19,10 +19,6 @@ This script intentionally reuses the existing project primitives:
 Typical use
 -----------
 python CT_entities/drr_devices_pair_pipeline.py \
-  --ct_dirs /path/to/CTs \
-  --lungs_seg_pattern /path/to/segs/{case}_seg.nii.gz \
-  --devices_dir /path/to/MedicalDevices \
-  --output /path/to/out \
 	--device_variants_per_ct 4 \
 	--num_angles_per_variant 5 \
   --rotation_params 17.5 37.5 0.0 1.75 \
@@ -194,9 +190,6 @@ def _add_external_devices_to_single_ct(
 	if rng is None:
 		rng = random
 
-	if not os.path.isdir(cfg.devices_dir):
-		raise FileNotFoundError(f"devices_dir not found: {cfg.devices_dir}")
-
 	added: Dict[str, Any] = {
 		'added_wires': False,
 		'added_stickers': False,
@@ -210,6 +203,13 @@ def _add_external_devices_to_single_ct(
 	add_wires = rng.random() < cfg.p_wires
 	add_stickers = rng.random() < cfg.p_stickers
 	add_devices = rng.random() < cfg.p_devices
+
+	if add_devices and (not os.path.isdir(cfg.devices_dir)):
+		raise FileNotFoundError(
+			"devices_dir not found but p_devices>0. "
+			f"Got: {cfg.devices_dir}. "
+			"Either pass a valid --devices_dir or set --p_devices 0."
+		)
 
 	if cfg.force_any and (not add_wires and not add_stickers and not add_devices):
 		# Pick one category at random
@@ -267,28 +267,45 @@ def parse_args() -> argparse.Namespace:
 		formatter_class=argparse.RawTextHelpFormatter,
 	)
 
+	# Keep defaults aligned with CT_entities/DRR_generator.py so you can run without
+	# providing paths on the lab servers.
+	default_ct_dirs = [
+		'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/CT-RATE_scans',
+		'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/LUNA_scans',
+		'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans',
+	]
+
 	p.add_argument(
 		'--ct_dirs',
+		'-i',
+		'--input',
 		nargs='+',
-		required=True,
+		default=default_ct_dirs,
 		help='Space-separated list of directories containing CT NIfTI files.',
 	)
+	# In DRR_generator the lungs seg is usually stored under CT_scans/scans_segs
+	# with the pattern: {case}_seg.nii.gz
 	p.add_argument(
 		'--lungs_seg_pattern',
-		required=True,
-		help='Format string with {case} placeholder pointing to lungs seg NIfTI.\nExample: /path/segs/{case}_seg.nii.gz',
+		default='/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/scans_segs/{case}_seg.nii.gz',
+		help='Format string with {case} placeholder pointing to lungs seg NIfTI.',
 	)
-	p.add_argument('--output', '-o', required=True, help='Output base directory.')
+	p.add_argument(
+		'--output',
+		'-o',
+		default='/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans/final/devices_pairs',
+		help='Output base directory.',
+	)
 	p.add_argument(
 		'--device_variants_per_ct',
 		type=int,
-		default=1,
+		default=4,
 		help='How many different device injections to generate per CT (each variant gets its own device placement).',
 	)
 	p.add_argument(
 		'--num_angles_per_variant',
 		type=int,
-		required=True,
+		default=5,
 		help='How many angles/pairs to generate per (CT, device-variant).',
 	)
 
@@ -300,7 +317,15 @@ def parse_args() -> argparse.Namespace:
 		help='Four floats: [max_abs_per_axis_deg, max_sum_deg, min_sum_deg, exponent]',
 	)
 
-	p.add_argument('--devices_dir', required=True, help='Directory containing device NIfTI volumes (MedicalDevices).')
+	p.add_argument(
+		'--devices_dir',
+		default='/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/MedicalDevices',
+		help=(
+			'Directory containing 3D device NIfTI volumes (MedicalDevices).\n'
+			'Matches the default used in External_Devices.py.\n'
+			'Only required if --p_devices > 0.'
+		),
+	)
 	p.add_argument('--p_wires', type=float, default=0.4)
 	p.add_argument('--p_stickers', type=float, default=0.4)
 	p.add_argument('--p_devices', type=float, default=0.3)
