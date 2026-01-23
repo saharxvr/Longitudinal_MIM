@@ -40,6 +40,8 @@ import math
 import os
 import random
 import sys
+import time
+import traceback
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -347,6 +349,17 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument('--save_png', action='store_true', help='Also save PNG previews (normalized to [0,1]).')
 	p.add_argument('--overwrite', action='store_true', help='Overwrite existing pair directories.')
 	p.add_argument('--memory_cleanup_every', type=int, default=5, help='Run gc/cuda cache cleanup every K pairs.')
+	p.add_argument(
+		'--max_errors',
+		type=int,
+		default=200,
+		help='Maximum number of caught errors before aborting (prevents infinite error loops).',
+	)
+	p.add_argument(
+		'--errors_log',
+		default='errors.jsonl',
+		help='Filename (under --output) to append JSONL error records to.',
+	)
 
 	return p.parse_args()
 
@@ -355,6 +368,14 @@ def _sanitize_angle_tag(a: float) -> str:
 	# file-system friendly tag: keep sign, replace '.' with 'p'
 	s = f"{a:.2f}"
 	return s.replace('.', 'p')
+
+
+def _append_error_record(out_dir: str, filename: str, record: Dict[str, Any]) -> None:
+	"""Append an error record as a JSON line under the output directory."""
+	os.makedirs(out_dir, exist_ok=True)
+	path = os.path.join(out_dir, filename)
+	with open(path, 'a', encoding='utf-8') as f:
+		f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
 
 def main() -> None:
@@ -408,6 +429,10 @@ def main() -> None:
 		raise ValueError('--num_angles_per_variant must be >= 1')
 
 	pairs_done = 0
+	errors = 0
+	errors_out_dir = str(args.output)
+	errors_log_name = str(args.errors_log)
+	max_errors = int(args.max_errors)
 	for ct_idx, ct_path in enumerate(ct_paths):
 		case = _case_name_from_path(ct_path)
 		lungs_seg_path = str(args.lungs_seg_pattern).format(case=case)
@@ -420,19 +445,63 @@ def main() -> None:
 			print('[WARN] Missing lungs seg. Skipping case.')
 			continue
 
-		ct_cpu, lungs_cpu = load_ct_and_lungs_seg(ct_path, lungs_seg_path)
-		if float(lungs_cpu.sum().item()) < 20:
-			print('[WARN] Empty lungs seg. Skipping case.')
+		try:
+			ct_cpu, lungs_cpu = load_ct_and_lungs_seg(ct_path, lungs_seg_path)
+			if float(lungs_cpu.sum().item()) < 20:
+				print('[WARN] Empty lungs seg. Skipping case.')
+				continue
+
+			ct = ct_cpu.to(DEVICE)
+			lungs = lungs_cpu.to(DEVICE)
+		except Exception as e:
+			errors += 1
+			print(f"[ERR] Failed loading case={case}: {type(e).__name__}: {e}")
+			_append_error_record(
+				errors_out_dir,
+				errors_log_name,
+				{
+					'timestamp': time.time(),
+					'phase': 'load_case',
+					'case': case,
+					'ct_path': ct_path,
+					'lungs_seg_path': lungs_seg_path,
+					'error_type': type(e).__name__,
+					'error': str(e),
+					'traceback': traceback.format_exc(),
+				},
+			)
+			if errors >= max_errors:
+				raise RuntimeError(f"Too many errors ({errors}); aborting.")
 			continue
 
-		ct = ct_cpu.to(DEVICE)
-		lungs = lungs_cpu.to(DEVICE)
-
 		for variant_idx in range(variants_per_ct):
-			# Create a devices-augmented CT per (case, variant)
-			variant_seed = seed + 1000003 * (ct_idx + 1) + 9176 * (variant_idx + 1)
-			rng = random.Random(variant_seed)
-			dev_ct, devices_meta = _add_external_devices_to_single_ct(ct.clone(), lungs, devices_cfg, rng=rng)
+			try:
+				# Create a devices-augmented CT per (case, variant)
+				variant_seed = seed + 1000003 * (ct_idx + 1) + 9176 * (variant_idx + 1)
+				rng = random.Random(variant_seed)
+				dev_ct, devices_meta = _add_external_devices_to_single_ct(ct.clone(), lungs, devices_cfg, rng=rng)
+			except Exception as e:
+				errors += 1
+				print(f"[ERR] Failed devices injection case={case} variant={variant_idx}: {type(e).__name__}: {e}")
+				_append_error_record(
+					errors_out_dir,
+					errors_log_name,
+					{
+						'timestamp': time.time(),
+						'phase': 'inject_devices',
+						'case': case,
+						'variant_idx': variant_idx,
+						'ct_path': ct_path,
+						'lungs_seg_path': lungs_seg_path,
+						'variant_seed': variant_seed,
+						'error_type': type(e).__name__,
+						'error': str(e),
+						'traceback': traceback.format_exc(),
+					},
+				)
+				if errors >= max_errors:
+					raise RuntimeError(f"Too many errors ({errors}); aborting.")
+				continue
 
 			# Pre-sample angles per variant
 			angles: List[Tuple[float, float, float]] = []
@@ -455,71 +524,98 @@ def main() -> None:
 
 				os.makedirs(pair_dir, exist_ok=True)
 
-				# Rotate+crop both volumes together to ensure identical crop/framing.
-				ct_cat = torch.stack([ct, dev_ct], dim=0)
-				rotated_ct_cat, _ = rotate_ct_and_crop_according_to_seg(
-					ct_cat,
-					lungs,
-					rotate_angle1=a1,
-					rotate_angle2=a2,
-					rotate_angle3=a3,
-					return_ct_seg=True,
-				)
+				try:
+					# Rotate+crop both volumes together to ensure identical crop/framing.
+					ct_cat = torch.stack([ct, dev_ct], dim=0)
+					rotated_ct_cat, _ = rotate_ct_and_crop_according_to_seg(
+						ct_cat,
+						lungs,
+						rotate_angle1=a1,
+						rotate_angle2=a2,
+						rotate_angle3=a3,
+						return_ct_seg=True,
+					)
 
-				clean_rot = rotated_ct_cat[0]
-				dev_rot = rotated_ct_cat[1]
+					clean_rot = rotated_ct_cat[0]
+					dev_rot = rotated_ct_cat[1]
 
-				clean_drr = project_ct(clean_rot)
-				dev_drr = project_ct(dev_rot)
-				diff_map = dev_drr - clean_drr
+					clean_drr = project_ct(clean_rot)
+					dev_drr = project_ct(dev_rot)
+					diff_map = dev_drr - clean_drr
 
-				save_arr_as_nifti(clean_drr.T, os.path.join(pair_dir, 'prior.nii.gz'))
-				save_arr_as_nifti(dev_drr.T, os.path.join(pair_dir, 'current.nii.gz'))
-				save_arr_as_nifti(diff_map.T, os.path.join(pair_dir, 'diff_map.nii.gz'))
+					save_arr_as_nifti(clean_drr.T, os.path.join(pair_dir, 'prior.nii.gz'))
+					save_arr_as_nifti(dev_drr.T, os.path.join(pair_dir, 'current.nii.gz'))
+					save_arr_as_nifti(diff_map.T, os.path.join(pair_dir, 'diff_map.nii.gz'))
 
-				params: Dict[str, Any] = {
-					'case': case,
-					'ct_path': ct_path,
-					'lungs_seg_path': lungs_seg_path,
-					'device_variant_idx': variant_idx,
-					'rotation_angles_deg': (a1, a2, a3),
-					'rotation_params': {
-						'rot_ranges': rot_ranges,
-						'max_sum': max_sum,
-						'min_sum': min_sum,
-						'exponent': rot_exp,
-					},
-					'devices_config': {
-						'devices_dir': devices_cfg.devices_dir,
-						'p_wires': devices_cfg.p_wires,
-						'p_stickers': devices_cfg.p_stickers,
-						'p_devices': devices_cfg.p_devices,
-						'max_cables': devices_cfg.max_cables,
-						'max_stickers': devices_cfg.max_stickers,
-						'max_devices': devices_cfg.max_devices,
-						'force_any': devices_cfg.force_any,
-					},
-					'devices_added': devices_meta,
-					'seed': seed,
-					'variant_rng_seed': variant_seed,
-				}
-				log_params(params, params_path)
+					params: Dict[str, Any] = {
+						'case': case,
+						'ct_path': ct_path,
+						'lungs_seg_path': lungs_seg_path,
+						'device_variant_idx': variant_idx,
+						'rotation_angles_deg': (a1, a2, a3),
+						'rotation_params': {
+							'rot_ranges': rot_ranges,
+							'max_sum': max_sum,
+							'min_sum': min_sum,
+							'exponent': rot_exp,
+						},
+						'devices_config': {
+							'devices_dir': devices_cfg.devices_dir,
+							'p_wires': devices_cfg.p_wires,
+							'p_stickers': devices_cfg.p_stickers,
+							'p_devices': devices_cfg.p_devices,
+							'max_cables': devices_cfg.max_cables,
+							'max_stickers': devices_cfg.max_stickers,
+							'max_devices': devices_cfg.max_devices,
+							'force_any': devices_cfg.force_any,
+						},
+						'devices_added': devices_meta,
+						'seed': seed,
+						'variant_rng_seed': variant_seed,
+					}
+					log_params(params, params_path)
 
-				if args.save_png:
-					# Local import (matplotlib is slow to import).
-					import matplotlib.pyplot as plt
+					if args.save_png:
+						# Local import (matplotlib is slow to import).
+						import matplotlib.pyplot as plt
 
-					plt.imsave(os.path.join(pair_dir, 'prior.png'), normalize_01(clean_drr), cmap='gray')
-					plt.imsave(os.path.join(pair_dir, 'current.png'), normalize_01(dev_drr), cmap='gray')
-					plt.imsave(os.path.join(pair_dir, 'diff_map.png'), normalize_01(np.abs(diff_map)), cmap='magma')
+						plt.imsave(os.path.join(pair_dir, 'prior.png'), normalize_01(clean_drr), cmap='gray')
+						plt.imsave(os.path.join(pair_dir, 'current.png'), normalize_01(dev_drr), cmap='gray')
+						plt.imsave(os.path.join(pair_dir, 'diff_map.png'), normalize_01(np.abs(diff_map)), cmap='magma')
 
-				pairs_done += 1
-				if args.memory_cleanup_every > 0 and (pairs_done % int(args.memory_cleanup_every) == 0):
-					gc.collect()
-					if torch.cuda.is_available():
-						torch.cuda.empty_cache()
+					pairs_done += 1
+					if args.memory_cleanup_every > 0 and (pairs_done % int(args.memory_cleanup_every) == 0):
+						gc.collect()
+						if torch.cuda.is_available():
+							torch.cuda.empty_cache()
 
-				print(f"[OK] {pair_dir}")
+					print(f"[OK] {pair_dir}")
+				except Exception as e:
+					errors += 1
+					print(
+						f"[ERR] Failed pair case={case} variant={variant_idx} i={i} "
+						f"angles=({a1:.2f},{a2:.2f},{a3:.2f}): {type(e).__name__}: {e}"
+					)
+					_append_error_record(
+						errors_out_dir,
+						errors_log_name,
+						{
+							'timestamp': time.time(),
+							'phase': 'generate_pair',
+							'case': case,
+							'variant_idx': variant_idx,
+							'pair_idx': i,
+							'pair_dir': pair_dir,
+							'rotation_angles_deg': (a1, a2, a3),
+							'variant_seed': variant_seed,
+							'error_type': type(e).__name__,
+							'error': str(e),
+							'traceback': traceback.format_exc(),
+						},
+					)
+					if errors >= max_errors:
+						raise RuntimeError(f"Too many errors ({errors}); aborting.")
+					continue
 
 			# Free per-variant tensors
 			del dev_ct

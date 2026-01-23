@@ -44,26 +44,65 @@ class ExternalDevices(Entity3D):
         max_dim = max(max_h, max_w)
 
         stickers_map = torch.nn.functional.pad(stickers_map, (max_dim, max_dim, max_dim, max_dim, max_dim, max_dim))
+        padded_shape = stickers_map.shape
 
         cs = []
 
+        # seg_hull_coords are in the unpadded coordinate system.
+        # When writing into the padded stickers_map we must offset by +max_dim.
+        seg_hull_coords_cpu = seg_hull_coords.detach().cpu()
+
         for _ in range(n):
-            c = seg_hull_coords[random.randint(0, seg_hull_coords.shape[0] - 1)]
+            c = None
+            sticker = None
+            yaw = None
+            pitch = None
+            roll = None
+            c_pad = None
+            x0 = x1 = y0 = y1 = z0 = z1 = None
+            # Retry sampling until the sticker fits inside the padded volume.
+            for _try in range(40):
+                c_candidate = seg_hull_coords_cpu[random.randint(0, seg_hull_coords_cpu.shape[0] - 1)]
+
+                size_coef = random.random() * 0.008333 + 0.025
+                d = random.randint(6, 10)
+
+                h = int(entity_height * size_coef)
+                w = int(entity_width * size_coef)
+                sticker = torch.tensor(ellipse(w, h), dtype=stickers_map.dtype)
+                sticker = sticker[..., None]
+                sticker = sticker.repeat((1, 1, d))
+
+                yaw = torch.tensor(random.random() * 30 - 15)
+                pitch = torch.tensor(random.random() * 30 - 15)
+                roll = torch.tensor(random.random() * 30 - 15)
+                sticker = rotate3d(sticker[None, None, ...], yaw, pitch, roll).squeeze()
+
+                c_pad = c_candidate + max_dim
+                x0 = int(c_pad[0].item()) - (sticker.shape[0] // 2)
+                x1 = x0 + sticker.shape[0]
+                y0 = int(c_pad[1].item()) - (sticker.shape[1] // 2)
+                y1 = y0 + sticker.shape[1]
+                z0 = int(c_pad[2].item())
+                z1 = z0 + sticker.shape[2]
+
+                if x0 < 0 or y0 < 0 or z0 < 0:
+                    continue
+                if x1 > padded_shape[0] or y1 > padded_shape[1] or z1 > padded_shape[2]:
+                    continue
+
+                c = c_candidate
+                # Keep the validated parameters
+                c_pad = c_candidate + max_dim
+                break
+
+            if c is None:
+                # Failed to place a valid sticker; skip this one.
+                continue
+
             cs.append(c)
 
-            size_coef = random.random() * 0.008333 + 0.025
-            d = random.randint(6, 10)
-
-            h = int(entity_height * size_coef)
-            w = int(entity_width * size_coef)
-            sticker = torch.tensor(ellipse(w, h), dtype=stickers_map.dtype)
-            sticker = sticker[..., None]
-            sticker = sticker.repeat((1, 1, d))
-
-            yaw = torch.tensor(random.random() * 30 - 15)
-            pitch = torch.tensor(random.random() * 30 - 15)
-            roll = torch.tensor(random.random() * 30 - 15)
-            sticker = rotate3d(sticker[None, None, ...], yaw, pitch, roll).squeeze()
+            # x0..z1 are already validated in the sampling loop
 
             if random.random() < 0.5:
                 inner_mult = random.random() * 0.15 + 0.1
@@ -77,9 +116,18 @@ class ExternalDevices(Entity3D):
                 inner_sticker = dial_inner_sticker - inner_sticker
                 inner_sticker = inner_sticker[..., None].repeat((1, 1, inner_d))
                 inner_sticker = rotate3d(inner_sticker[None, None, ...], yaw, pitch, roll).squeeze()
-                stickers_map[c[0] - (inner_sticker.shape[0] // 2): c[0] + (inner_sticker.shape[0] // 2) + 1, c[1] - (inner_sticker.shape[1] // 2): c[1] + (inner_sticker.shape[1] // 2) + 1, c[2]: c[2] + inner_sticker.shape[2]] = inner_sticker
 
-            stickers_map[c[0] - (sticker.shape[0] // 2): c[0] + (sticker.shape[0] // 2) + 1, c[1] - (sticker.shape[1] // 2): c[1] + (sticker.shape[1] // 2) + 1, c[2]: c[2] + sticker.shape[2]] = sticker
+                ix0 = int(c_pad[0].item()) - (inner_sticker.shape[0] // 2)
+                ix1 = ix0 + inner_sticker.shape[0]
+                iy0 = int(c_pad[1].item()) - (inner_sticker.shape[1] // 2)
+                iy1 = iy0 + inner_sticker.shape[1]
+                iz0 = int(c_pad[2].item())
+                iz1 = iz0 + inner_sticker.shape[2]
+                if ix0 >= 0 and iy0 >= 0 and iz0 >= 0 and ix1 <= padded_shape[0] and iy1 <= padded_shape[1] and iz1 <= padded_shape[2]:
+                    stickers_map[ix0:ix1, iy0:iy1, iz0:iz1] = inner_sticker
+
+            if x0 >= 0 and y0 >= 0 and z0 >= 0 and x1 <= padded_shape[0] and y1 <= padded_shape[1] and z1 <= padded_shape[2]:
+                stickers_map[x0:x1, y0:y1, z0:z1] = sticker
 
         stickers_map = stickers_map[max_dim: -max_dim, max_dim: -max_dim, max_dim: -max_dim]
 
