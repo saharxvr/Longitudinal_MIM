@@ -43,6 +43,7 @@ import json
 import math
 import os
 import random
+import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -50,6 +51,12 @@ import nibabel as nib
 import numpy as np
 import torch
 import torchvision.transforms.v2 as v2
+
+# Ensure project root is importable when running as a script from any CWD.
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_this_dir)
+if _project_root not in sys.path:
+	sys.path.insert(0, _project_root)
 
 from constants import DEVICE
 from CT_Rotations import get_random_rotation_angles, rotate_ct_and_crop_according_to_seg
