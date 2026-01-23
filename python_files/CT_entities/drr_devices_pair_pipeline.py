@@ -23,7 +23,8 @@ python CT_entities/drr_devices_pair_pipeline.py \
   --lungs_seg_pattern /path/to/segs/{case}_seg.nii.gz \
   --devices_dir /path/to/MedicalDevices \
   --output /path/to/out \
-  --num_angles_per_ct 10 \
+	--device_variants_per_ct 4 \
+	--num_angles_per_variant 5 \
   --rotation_params 17.5 37.5 0.0 1.75 \
   --seed 123
 
@@ -271,7 +272,18 @@ def parse_args() -> argparse.Namespace:
 		help='Format string with {case} placeholder pointing to lungs seg NIfTI.\nExample: /path/segs/{case}_seg.nii.gz',
 	)
 	p.add_argument('--output', '-o', required=True, help='Output base directory.')
-	p.add_argument('--num_angles_per_ct', type=int, required=True, help='How many angles/pairs to generate per CT.')
+	p.add_argument(
+		'--device_variants_per_ct',
+		type=int,
+		default=1,
+		help='How many different device injections to generate per CT (each variant gets its own device placement).',
+	)
+	p.add_argument(
+		'--num_angles_per_variant',
+		type=int,
+		required=True,
+		help='How many angles/pairs to generate per (CT, device-variant).',
+	)
 
 	p.add_argument(
 		'--rotation_params',
@@ -355,6 +367,14 @@ def main() -> None:
 	last = int(b * len(ct_paths) + 1)
 	ct_paths = ct_paths[first:last]
 
+	variants_per_ct = int(args.device_variants_per_ct)
+	if variants_per_ct < 1:
+		raise ValueError('--device_variants_per_ct must be >= 1')
+
+	angles_per_variant = int(args.num_angles_per_variant)
+	if angles_per_variant < 1:
+		raise ValueError('--num_angles_per_variant must be >= 1')
+
 	pairs_done = 0
 	for ct_idx, ct_path in enumerate(ct_paths):
 		case = _case_name_from_path(ct_path)
@@ -376,98 +396,107 @@ def main() -> None:
 		ct = ct_cpu.to(DEVICE)
 		lungs = lungs_cpu.to(DEVICE)
 
-		# Create a single devices-augmented CT per case (then rotate at many angles)
-		# This matches your goal: same CT, same angles, and devices/no-devices pairs.
-		rng = random.Random(seed + 1000003 * (ct_idx + 1))
-		dev_ct, devices_meta = _add_external_devices_to_single_ct(ct.clone(), lungs, devices_cfg, rng=rng)
+		for variant_idx in range(variants_per_ct):
+			# Create a devices-augmented CT per (case, variant)
+			variant_seed = seed + 1000003 * (ct_idx + 1) + 9176 * (variant_idx + 1)
+			rng = random.Random(variant_seed)
+			dev_ct, devices_meta = _add_external_devices_to_single_ct(ct.clone(), lungs, devices_cfg, rng=rng)
 
-		# Pre-sample N angles per CT
-		angles: List[Tuple[float, float, float]] = []
-		for _ in range(int(args.num_angles_per_ct)):
-			a1, a2, a3 = get_random_rotation_angles(rot_ranges, max_sum, min_sum, rot_exp)
-			angles.append((float(a1), float(a2), float(a3)))
+			# Pre-sample angles per variant
+			angles: List[Tuple[float, float, float]] = []
+			for _ in range(angles_per_variant):
+				a1, a2, a3 = get_random_rotation_angles(rot_ranges, max_sum, min_sum, rot_exp)
+				angles.append((float(a1), float(a2), float(a3)))
 
-		for i, (a1, a2, a3) in enumerate(angles):
-			pair_dir = os.path.join(
-				args.output,
-				case,
-				f"pair{i:05d}_ax{_sanitize_angle_tag(a1)}_ay{_sanitize_angle_tag(a2)}_az{_sanitize_angle_tag(a3)}",
-			)
+			for i, (a1, a2, a3) in enumerate(angles):
+				pair_dir = os.path.join(
+					args.output,
+					case,
+					f"variant{variant_idx:03d}",
+					f"pair{i:05d}_ax{_sanitize_angle_tag(a1)}_ay{_sanitize_angle_tag(a2)}_az{_sanitize_angle_tag(a3)}",
+				)
 
-			params_path = os.path.join(pair_dir, 'params.json')
-			if os.path.exists(params_path) and (not args.overwrite):
-				print(f"[Skip] Exists: {pair_dir}")
-				continue
+				params_path = os.path.join(pair_dir, 'params.json')
+				if os.path.exists(params_path) and (not args.overwrite):
+					print(f"[Skip] Exists: {pair_dir}")
+					continue
 
-			os.makedirs(pair_dir, exist_ok=True)
+				os.makedirs(pair_dir, exist_ok=True)
 
-			# Rotate+crop both volumes together to ensure identical crop/framing.
-			ct_cat = torch.stack([ct, dev_ct], dim=0)
-			rotated_ct_cat, _ = rotate_ct_and_crop_according_to_seg(
-				ct_cat,
-				lungs,
-				rotate_angle1=a1,
-				rotate_angle2=a2,
-				rotate_angle3=a3,
-				return_ct_seg=True,
-			)
+				# Rotate+crop both volumes together to ensure identical crop/framing.
+				ct_cat = torch.stack([ct, dev_ct], dim=0)
+				rotated_ct_cat, _ = rotate_ct_and_crop_according_to_seg(
+					ct_cat,
+					lungs,
+					rotate_angle1=a1,
+					rotate_angle2=a2,
+					rotate_angle3=a3,
+					return_ct_seg=True,
+				)
 
-			clean_rot = rotated_ct_cat[0]
-			dev_rot = rotated_ct_cat[1]
+				clean_rot = rotated_ct_cat[0]
+				dev_rot = rotated_ct_cat[1]
 
-			clean_drr = project_ct(clean_rot)
-			dev_drr = project_ct(dev_rot)
-			diff_map = dev_drr - clean_drr
+				clean_drr = project_ct(clean_rot)
+				dev_drr = project_ct(dev_rot)
+				diff_map = dev_drr - clean_drr
 
-			save_arr_as_nifti(clean_drr.T, os.path.join(pair_dir, 'prior.nii.gz'))
-			save_arr_as_nifti(dev_drr.T, os.path.join(pair_dir, 'current.nii.gz'))
-			save_arr_as_nifti(diff_map.T, os.path.join(pair_dir, 'diff_map.nii.gz'))
+				save_arr_as_nifti(clean_drr.T, os.path.join(pair_dir, 'prior.nii.gz'))
+				save_arr_as_nifti(dev_drr.T, os.path.join(pair_dir, 'current.nii.gz'))
+				save_arr_as_nifti(diff_map.T, os.path.join(pair_dir, 'diff_map.nii.gz'))
 
-			params: Dict[str, Any] = {
-				'case': case,
-				'ct_path': ct_path,
-				'lungs_seg_path': lungs_seg_path,
-				'rotation_angles_deg': (a1, a2, a3),
-				'rotation_params': {
-					'rot_ranges': rot_ranges,
-					'max_sum': max_sum,
-					'min_sum': min_sum,
-					'exponent': rot_exp,
-				},
-				'devices_config': {
-					'devices_dir': devices_cfg.devices_dir,
-					'p_wires': devices_cfg.p_wires,
-					'p_stickers': devices_cfg.p_stickers,
-					'p_devices': devices_cfg.p_devices,
-					'max_cables': devices_cfg.max_cables,
-					'max_stickers': devices_cfg.max_stickers,
-					'max_devices': devices_cfg.max_devices,
-					'force_any': devices_cfg.force_any,
-				},
-				'devices_added': devices_meta,
-				'seed': seed,
-				'case_rng_seed': seed + 1000003 * (ct_idx + 1),
-			}
-			log_params(params, params_path)
+				params: Dict[str, Any] = {
+					'case': case,
+					'ct_path': ct_path,
+					'lungs_seg_path': lungs_seg_path,
+					'device_variant_idx': variant_idx,
+					'rotation_angles_deg': (a1, a2, a3),
+					'rotation_params': {
+						'rot_ranges': rot_ranges,
+						'max_sum': max_sum,
+						'min_sum': min_sum,
+						'exponent': rot_exp,
+					},
+					'devices_config': {
+						'devices_dir': devices_cfg.devices_dir,
+						'p_wires': devices_cfg.p_wires,
+						'p_stickers': devices_cfg.p_stickers,
+						'p_devices': devices_cfg.p_devices,
+						'max_cables': devices_cfg.max_cables,
+						'max_stickers': devices_cfg.max_stickers,
+						'max_devices': devices_cfg.max_devices,
+						'force_any': devices_cfg.force_any,
+					},
+					'devices_added': devices_meta,
+					'seed': seed,
+					'variant_rng_seed': variant_seed,
+				}
+				log_params(params, params_path)
 
-			if args.save_png:
-				# Local import (matplotlib is slow to import).
-				import matplotlib.pyplot as plt
+				if args.save_png:
+					# Local import (matplotlib is slow to import).
+					import matplotlib.pyplot as plt
 
-				plt.imsave(os.path.join(pair_dir, 'prior.png'), normalize_01(clean_drr), cmap='gray')
-				plt.imsave(os.path.join(pair_dir, 'current.png'), normalize_01(dev_drr), cmap='gray')
-				plt.imsave(os.path.join(pair_dir, 'diff_map.png'), normalize_01(np.abs(diff_map)), cmap='magma')
+					plt.imsave(os.path.join(pair_dir, 'prior.png'), normalize_01(clean_drr), cmap='gray')
+					plt.imsave(os.path.join(pair_dir, 'current.png'), normalize_01(dev_drr), cmap='gray')
+					plt.imsave(os.path.join(pair_dir, 'diff_map.png'), normalize_01(np.abs(diff_map)), cmap='magma')
 
-			pairs_done += 1
-			if args.memory_cleanup_every > 0 and (pairs_done % int(args.memory_cleanup_every) == 0):
-				gc.collect()
-				if torch.cuda.is_available():
-					torch.cuda.empty_cache()
+				pairs_done += 1
+				if args.memory_cleanup_every > 0 and (pairs_done % int(args.memory_cleanup_every) == 0):
+					gc.collect()
+					if torch.cuda.is_available():
+						torch.cuda.empty_cache()
 
-			print(f"[OK] {pair_dir}")
+				print(f"[OK] {pair_dir}")
+
+			# Free per-variant tensors
+			del dev_ct
+			gc.collect()
+			if torch.cuda.is_available():
+				torch.cuda.empty_cache()
 
 		# Free per-case tensors aggressively
-		del ct_cpu, lungs_cpu, ct, lungs, dev_ct
+		del ct_cpu, lungs_cpu, ct, lungs
 		gc.collect()
 		if torch.cuda.is_available():
 			torch.cuda.empty_cache()
