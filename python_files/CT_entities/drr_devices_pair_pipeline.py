@@ -365,6 +365,11 @@ def parse_args() -> argparse.Namespace:
 		default='errors.jsonl',
 		help='Filename (under --output) to append JSONL error records to.',
 	)
+	p.add_argument(
+		'--done_marker',
+		default='_DONE.json',
+		help='Filename created under each variant dir when the variant finished successfully. Used to skip work on resume.',
+	)
 
 	return p.parse_args()
 
@@ -480,6 +485,12 @@ def main() -> None:
 			continue
 
 		for variant_idx in range(variants_per_ct):
+			variant_dir = os.path.join(args.output, case, f"variant{variant_idx:03d}")
+			done_path = os.path.join(variant_dir, str(args.done_marker))
+			if os.path.exists(done_path) and (not args.overwrite):
+				print(f"[Skip] Variant done: {done_path}")
+				continue
+
 			try:
 				ct = ct_cpu.to(device, non_blocking=True)
 				lungs = lungs_cpu.to(device, non_blocking=True)
@@ -529,6 +540,8 @@ def main() -> None:
 				a1, a2, a3 = get_random_rotation_angles(rot_ranges, max_sum, min_sum, rot_exp)
 				angles.append((float(a1), float(a2), float(a3)))
 
+			variant_ok = 0
+
 			for i, (a1, a2, a3) in enumerate(angles):
 				pair_dir = os.path.join(
 					args.output,
@@ -540,6 +553,7 @@ def main() -> None:
 				params_path = os.path.join(pair_dir, 'params.json')
 				if os.path.exists(params_path) and (not args.overwrite):
 					print(f"[Skip] Exists: {pair_dir}")
+					variant_ok += 1
 					continue
 
 				os.makedirs(pair_dir, exist_ok=True)
@@ -615,6 +629,7 @@ def main() -> None:
 					print(f"[OK] {pair_dir}")
 					# Free GPU tensors for this pair ASAP
 					del ct_cat, rotated_ct_cat, clean_rot, dev_rot
+					variant_ok += 1
 				except RuntimeError as e:
 					# Attempt to recover from CUDA OOM by freeing cache and skipping.
 					msg = str(e).lower()
@@ -685,6 +700,23 @@ def main() -> None:
 						torch.cuda.empty_cache()
 						torch.cuda.ipc_collect()
 					continue
+
+			# Mark variant done if all pairs are present (created or skipped)
+			if (variant_ok == angles_per_variant) and (not args.overwrite):
+				os.makedirs(variant_dir, exist_ok=True)
+				with open(done_path, 'w', encoding='utf-8') as f:
+					json.dump(
+						{
+							'case': case,
+							'variant_idx': variant_idx,
+							'angles_per_variant': angles_per_variant,
+							'variant_seed': seed + 1000003 * (ct_idx + 1) + 9176 * (variant_idx + 1),
+							'timestamp': time.time(),
+						},
+						f,
+						indent=2,
+					)
+				print(f"[OK] Wrote done marker: {done_path}")
 
 			# Free per-variant tensors
 			del dev_ct, ct, lungs
