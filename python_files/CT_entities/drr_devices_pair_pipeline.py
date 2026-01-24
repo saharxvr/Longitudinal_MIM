@@ -339,6 +339,11 @@ def parse_args() -> argparse.Namespace:
 
 	p.add_argument('--seed', type=int, default=0, help='Global RNG seed for reproducibility.')
 	p.add_argument(
+		'--device',
+		default=str(DEVICE),
+		help='Torch device to run generation on (e.g. cpu, cuda, cuda:0). Use cpu to avoid CUDA OOM.',
+	)
+	p.add_argument(
 		'--slices_for_CTs_list',
 		nargs=2,
 		type=float,
@@ -380,6 +385,7 @@ def _append_error_record(out_dir: str, filename: str, record: Dict[str, Any]) ->
 
 def main() -> None:
 	args = parse_args()
+	device = torch.device(str(args.device))
 
 	seed = int(args.seed)
 	random.seed(seed)
@@ -450,9 +456,8 @@ def main() -> None:
 			if float(lungs_cpu.sum().item()) < 20:
 				print('[WARN] Empty lungs seg. Skipping case.')
 				continue
-
-			ct = ct_cpu.to(DEVICE)
-			lungs = lungs_cpu.to(DEVICE)
+			# Keep the big volumes on CPU; stream them to GPU per variant.
+			# This drastically lowers peak/steady CUDA memory.
 		except Exception as e:
 			errors += 1
 			print(f"[ERR] Failed loading case={case}: {type(e).__name__}: {e}")
@@ -476,6 +481,8 @@ def main() -> None:
 
 		for variant_idx in range(variants_per_ct):
 			try:
+				ct = ct_cpu.to(device, non_blocking=True)
+				lungs = lungs_cpu.to(device, non_blocking=True)
 				# Create a devices-augmented CT per (case, variant)
 				variant_seed = seed + 1000003 * (ct_idx + 1) + 9176 * (variant_idx + 1)
 				rng = random.Random(variant_seed)
@@ -501,6 +508,19 @@ def main() -> None:
 				)
 				if errors >= max_errors:
 					raise RuntimeError(f"Too many errors ({errors}); aborting.")
+				# Best-effort cleanup
+				try:
+					del ct
+				except Exception:
+					pass
+				try:
+					del lungs
+				except Exception:
+					pass
+				gc.collect()
+				if torch.cuda.is_available():
+					torch.cuda.empty_cache()
+					torch.cuda.ipc_collect()
 				continue
 
 			# Pre-sample angles per variant
@@ -526,21 +546,24 @@ def main() -> None:
 
 				try:
 					# Rotate+crop both volumes together to ensure identical crop/framing.
-					ct_cat = torch.stack([ct, dev_ct], dim=0)
-					rotated_ct_cat, _ = rotate_ct_and_crop_according_to_seg(
-						ct_cat,
-						lungs,
-						rotate_angle1=a1,
-						rotate_angle2=a2,
-						rotate_angle3=a3,
-						return_ct_seg=True,
-					)
+					with torch.inference_mode():
+						ct_cat = torch.stack([ct, dev_ct], dim=0)
+						rotated_ct_cat, _ = rotate_ct_and_crop_according_to_seg(
+							ct_cat,
+							lungs,
+							rotate_angle1=a1,
+							rotate_angle2=a2,
+							rotate_angle3=a3,
+							return_ct_seg=True,
+							device=device,
+						)
 
 					clean_rot = rotated_ct_cat[0]
 					dev_rot = rotated_ct_cat[1]
 
-					clean_drr = project_ct(clean_rot)
-					dev_drr = project_ct(dev_rot)
+					with torch.inference_mode():
+						clean_drr = project_ct(clean_rot)
+						dev_drr = project_ct(dev_rot)
 					diff_map = dev_drr - clean_drr
 
 					save_arr_as_nifti(clean_drr.T, os.path.join(pair_dir, 'prior.nii.gz'))
@@ -590,6 +613,48 @@ def main() -> None:
 							torch.cuda.empty_cache()
 
 					print(f"[OK] {pair_dir}")
+					# Free GPU tensors for this pair ASAP
+					del ct_cat, rotated_ct_cat, clean_rot, dev_rot
+				except RuntimeError as e:
+					# Attempt to recover from CUDA OOM by freeing cache and skipping.
+					msg = str(e).lower()
+					if 'out of memory' in msg and torch.cuda.is_available():
+						try:
+							gc.collect()
+							torch.cuda.empty_cache()
+							torch.cuda.ipc_collect()
+						except Exception:
+							pass
+					errors += 1
+					print(
+						f"[ERR] Failed pair case={case} variant={variant_idx} i={i} "
+						f"angles=({a1:.2f},{a2:.2f},{a3:.2f}): {type(e).__name__}: {e}"
+					)
+					_append_error_record(
+						errors_out_dir,
+						errors_log_name,
+						{
+							'timestamp': time.time(),
+							'phase': 'generate_pair',
+							'case': case,
+							'variant_idx': variant_idx,
+							'pair_idx': i,
+							'pair_dir': pair_dir,
+							'rotation_angles_deg': (a1, a2, a3),
+							'variant_seed': variant_seed,
+							'error_type': type(e).__name__,
+							'error': str(e),
+							'traceback': traceback.format_exc(),
+						},
+					)
+					if errors >= max_errors:
+						raise RuntimeError(f"Too many errors ({errors}); aborting.")
+					# Aggressive cleanup after failure
+					gc.collect()
+					if torch.cuda.is_available():
+						torch.cuda.empty_cache()
+						torch.cuda.ipc_collect()
+					continue
 				except Exception as e:
 					errors += 1
 					print(
@@ -615,19 +680,25 @@ def main() -> None:
 					)
 					if errors >= max_errors:
 						raise RuntimeError(f"Too many errors ({errors}); aborting.")
+					gc.collect()
+					if torch.cuda.is_available():
+						torch.cuda.empty_cache()
+						torch.cuda.ipc_collect()
 					continue
 
 			# Free per-variant tensors
-			del dev_ct
+			del dev_ct, ct, lungs
 			gc.collect()
 			if torch.cuda.is_available():
 				torch.cuda.empty_cache()
+				torch.cuda.ipc_collect()
 
 		# Free per-case tensors aggressively
-		del ct_cpu, lungs_cpu, ct, lungs
+		del ct_cpu, lungs_cpu
 		gc.collect()
 		if torch.cuda.is_available():
 			torch.cuda.empty_cache()
+			torch.cuda.ipc_collect()
 
 	print(f"\nDone. Generated {pairs_done} paired samples.")
 
