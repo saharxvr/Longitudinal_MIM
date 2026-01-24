@@ -39,6 +39,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 import time
 import traceback
@@ -370,8 +371,95 @@ def parse_args() -> argparse.Namespace:
 		default='_DONE.json',
 		help='Filename created under each variant dir when the variant finished successfully. Used to skip work on resume.',
 	)
+	p.add_argument(
+		'--bootstrap_done_markers',
+		action='store_true',
+		help=(
+			'One-time fast resume setup: scan existing output folders and write missing per-variant done markers\n'
+			'when all expected pairs (0..num_angles_per_variant-1) already exist. Does not generate any data.'
+		),
+	)
 
 	return p.parse_args()
+
+
+def _pair_idx_from_dirname(name: str) -> Optional[int]:
+	"""Extract pair index from a folder name like 'pair00012_ax...'."""
+	m = re.match(r'^pair(\d+)_', name)
+	if not m:
+		return None
+	try:
+		return int(m.group(1))
+	except Exception:
+		return None
+
+
+def _bootstrap_done_markers_for_output(
+	output_dir: str,
+	*,
+	case_names: Sequence[str],
+	variants_per_ct: int,
+	angles_per_variant: int,
+	done_marker_name: str,
+	overwrite: bool,
+) -> None:
+	"""Scan output tree and write missing done markers for fully completed variants.
+
+	This is meant to be a one-time setup to enable fast resume for runs created
+	before the done-marker optimization existed.
+	"""
+	expected = set(range(int(angles_per_variant)))
+	bootstrapped = 0
+	considered = 0
+	for case in case_names:
+		case_dir = os.path.join(output_dir, case)
+		if not os.path.isdir(case_dir):
+			continue
+		for variant_idx in range(int(variants_per_ct)):
+			variant_dir = os.path.join(case_dir, f"variant{variant_idx:03d}")
+			if not os.path.isdir(variant_dir):
+				continue
+			done_path = os.path.join(variant_dir, done_marker_name)
+			if os.path.exists(done_path) and (not overwrite):
+				continue
+
+			considered += 1
+			found_ok: set[int] = set()
+			try:
+				for entry in os.listdir(variant_dir):
+					pair_idx = _pair_idx_from_dirname(entry)
+					if pair_idx is None:
+						continue
+					if pair_idx not in expected:
+						continue
+					pair_dir = os.path.join(variant_dir, entry)
+					if not os.path.isdir(pair_dir):
+						continue
+					if os.path.exists(os.path.join(pair_dir, 'params.json')):
+						found_ok.add(pair_idx)
+			except Exception:
+				# If a directory is transient/broken, don't mark it.
+				continue
+
+			if found_ok == expected:
+				os.makedirs(variant_dir, exist_ok=True)
+				with open(done_path, 'w', encoding='utf-8') as f:
+					json.dump(
+						{
+							'case': case,
+							'variant_idx': variant_idx,
+							'angles_per_variant': int(angles_per_variant),
+							'timestamp': time.time(),
+							'bootstrapped': True,
+							'criterion': 'all params.json exist for pair indices 0..num_angles_per_variant-1',
+						},
+						f,
+						indent=2,
+					)
+				bootstrapped += 1
+				print(f"[OK] Bootstrapped done marker: {done_path}")
+
+	print(f"\nBootstrap finished. Wrote {bootstrapped} done markers (checked {considered} variants).")
 
 
 def _sanitize_angle_tag(a: float) -> str:
@@ -438,6 +526,20 @@ def main() -> None:
 	angles_per_variant = int(args.num_angles_per_variant)
 	if angles_per_variant < 1:
 		raise ValueError('--num_angles_per_variant must be >= 1')
+
+	# One-time setup: generate missing variant done markers from already-generated outputs.
+	# This enables fast resume without re-checking every pair directory on subsequent runs.
+	if bool(args.bootstrap_done_markers):
+		case_names = [_case_name_from_path(p) for p in ct_paths]
+		_bootstrap_done_markers_for_output(
+			str(args.output),
+			case_names=case_names,
+			variants_per_ct=variants_per_ct,
+			angles_per_variant=angles_per_variant,
+			done_marker_name=str(args.done_marker),
+			overwrite=bool(args.overwrite),
+		)
+		return
 
 	pairs_done = 0
 	errors = 0
