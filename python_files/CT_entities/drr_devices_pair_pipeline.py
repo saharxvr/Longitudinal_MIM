@@ -40,6 +40,7 @@ import math
 import os
 import random
 import re
+import signal
 import sys
 import time
 import traceback
@@ -476,9 +477,59 @@ def _append_error_record(out_dir: str, filename: str, record: Dict[str, Any]) ->
 		f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
 
+def _write_done_marker(done_path: str, payload: Dict[str, Any]) -> None:
+	os.makedirs(os.path.dirname(done_path), exist_ok=True)
+	with open(done_path, 'w', encoding='utf-8') as f:
+		json.dump(payload, f, indent=2)
+
+
+def _variant_complete_on_disk(variant_dir: str, angles_per_variant: int) -> bool:
+	"""Return True if all expected pair params exist under variant_dir.
+
+	Checks for params.json existence for pair indices 0..angles_per_variant-1.
+	This is used only on shutdown paths (Ctrl+C) to avoid falsely marking a
+	partial variant as done.
+	"""
+	for i in range(int(angles_per_variant)):
+		# Angle tag varies, so we need to search by prefix.
+		prefix = f"pair{i:05d}_"
+		found = False
+		try:
+			for entry in os.listdir(variant_dir):
+				if not entry.startswith(prefix):
+					continue
+				pair_dir = os.path.join(variant_dir, entry)
+				if os.path.isdir(pair_dir) and os.path.exists(os.path.join(pair_dir, 'params.json')):
+					found = True
+					break
+		except Exception:
+			return False
+		if not found:
+			return False
+	return True
+
+
 def main() -> None:
 	args = parse_args()
 	device = torch.device(str(args.device))
+
+	shutdown_requested = {'flag': False, 'signal': None}
+
+	def _on_signal(sig: int, _frame: Any) -> None:
+		shutdown_requested['flag'] = True
+		shutdown_requested['signal'] = sig
+		# Convert signals to KeyboardInterrupt so we can run a single graceful path.
+		raise KeyboardInterrupt
+
+	# Graceful Ctrl+C handling (and SIGTERM on Linux clusters).
+	try:
+		signal.signal(signal.SIGINT, _on_signal)
+	except Exception:
+		pass
+	try:
+		signal.signal(signal.SIGTERM, _on_signal)
+	except Exception:
+		pass
 
 	seed = int(args.seed)
 	random.seed(seed)
@@ -546,8 +597,16 @@ def main() -> None:
 	errors_out_dir = str(args.output)
 	errors_log_name = str(args.errors_log)
 	max_errors = int(args.max_errors)
+	current_case: Optional[str] = None
+	current_variant_idx: Optional[int] = None
+	current_pair_idx: Optional[int] = None
+	current_pair_dir: Optional[str] = None
+	current_variant_dir: Optional[str] = None
+	current_done_path: Optional[str] = None
+	variant_ok = 0
 	for ct_idx, ct_path in enumerate(ct_paths):
 		case = _case_name_from_path(ct_path)
+		current_case = case
 		lungs_seg_path = str(args.lungs_seg_pattern).format(case=case)
 
 		print(f"\n{'='*60}\nCT {ct_idx+1}/{len(ct_paths)} | case={case}")
@@ -565,6 +624,24 @@ def main() -> None:
 				continue
 			# Keep the big volumes on CPU; stream them to GPU per variant.
 			# This drastically lowers peak/steady CUDA memory.
+		except KeyboardInterrupt:
+			_append_error_record(
+				errors_out_dir,
+				errors_log_name,
+				{
+					'timestamp': time.time(),
+					'phase': 'interrupt',
+					'case': current_case,
+					'variant_idx': current_variant_idx,
+					'pair_idx': current_pair_idx,
+					'pair_dir': current_pair_dir,
+					'signal': shutdown_requested.get('signal'),
+					'error_type': 'KeyboardInterrupt',
+					'error': 'Interrupted by user',
+				},
+			)
+			print('[INFO] Interrupted. Exiting gracefully.')
+			return
 		except Exception as e:
 			errors += 1
 			print(f"[ERR] Failed loading case={case}: {type(e).__name__}: {e}")
@@ -587,8 +664,11 @@ def main() -> None:
 			continue
 
 		for variant_idx in range(variants_per_ct):
+			current_variant_idx = variant_idx
 			variant_dir = os.path.join(args.output, case, f"variant{variant_idx:03d}")
+			current_variant_dir = variant_dir
 			done_path = os.path.join(variant_dir, str(args.done_marker))
+			current_done_path = done_path
 			if os.path.exists(done_path) and (not args.overwrite):
 				print(f"[Skip] Variant done: {done_path}")
 				continue
@@ -600,6 +680,25 @@ def main() -> None:
 				variant_seed = seed + 1000003 * (ct_idx + 1) + 9176 * (variant_idx + 1)
 				rng = random.Random(variant_seed)
 				dev_ct, devices_meta = _add_external_devices_to_single_ct(ct.clone(), lungs, devices_cfg, rng=rng)
+			except KeyboardInterrupt:
+				# Graceful shutdown on Ctrl+C/SIGINT.
+				_append_error_record(
+					errors_out_dir,
+					errors_log_name,
+					{
+						'timestamp': time.time(),
+						'phase': 'interrupt',
+						'case': current_case,
+						'variant_idx': current_variant_idx,
+						'pair_idx': current_pair_idx,
+						'pair_dir': current_pair_dir,
+						'signal': shutdown_requested.get('signal'),
+						'error_type': 'KeyboardInterrupt',
+						'error': 'Interrupted by user',
+					},
+				)
+				print('[INFO] Interrupted. Exiting gracefully.')
+				return
 			except Exception as e:
 				errors += 1
 				print(f"[ERR] Failed devices injection case={case} variant={variant_idx}: {type(e).__name__}: {e}")
@@ -645,12 +744,14 @@ def main() -> None:
 			variant_ok = 0
 
 			for i, (a1, a2, a3) in enumerate(angles):
+				current_pair_idx = i
 				pair_dir = os.path.join(
 					args.output,
 					case,
 					f"variant{variant_idx:03d}",
 					f"pair{i:05d}_ax{_sanitize_angle_tag(a1)}_ay{_sanitize_angle_tag(a2)}_az{_sanitize_angle_tag(a3)}",
 				)
+				current_pair_dir = pair_dir
 
 				params_path = os.path.join(pair_dir, 'params.json')
 				if os.path.exists(params_path) and (not args.overwrite):
@@ -732,6 +833,48 @@ def main() -> None:
 					# Free GPU tensors for this pair ASAP
 					del ct_cat, rotated_ct_cat, clean_rot, dev_rot
 					variant_ok += 1
+				except KeyboardInterrupt:
+					_append_error_record(
+						errors_out_dir,
+						errors_log_name,
+						{
+							'timestamp': time.time(),
+							'phase': 'interrupt',
+							'case': current_case,
+							'variant_idx': current_variant_idx,
+							'pair_idx': current_pair_idx,
+							'pair_dir': current_pair_dir,
+							'signal': shutdown_requested.get('signal'),
+							'error_type': 'KeyboardInterrupt',
+							'error': 'Interrupted by user',
+						},
+					)
+					# If the current variant already finished (or was fully present), write done marker.
+					try:
+						if (
+							current_variant_dir
+							and current_done_path
+							and (not bool(args.overwrite))
+							and (
+								variant_ok == angles_per_variant
+								or _variant_complete_on_disk(current_variant_dir, angles_per_variant)
+							)
+						):
+							_write_done_marker(
+								current_done_path,
+								{
+									'case': current_case,
+									'variant_idx': current_variant_idx,
+									'angles_per_variant': int(angles_per_variant),
+									'timestamp': time.time(),
+									'interrupted_after_completion': True,
+								},
+							)
+							print(f"[OK] Wrote done marker: {current_done_path}")
+					except Exception:
+						pass
+					print('[INFO] Interrupted. Exiting gracefully.')
+					return
 				except RuntimeError as e:
 					# Attempt to recover from CUDA OOM by freeing cache and skipping.
 					msg = str(e).lower()
@@ -805,20 +948,40 @@ def main() -> None:
 
 			# Mark variant done if all pairs are present (created or skipped)
 			if (variant_ok == angles_per_variant) and (not args.overwrite):
-				os.makedirs(variant_dir, exist_ok=True)
-				with open(done_path, 'w', encoding='utf-8') as f:
-					json.dump(
+				payload = {
+					'case': case,
+					'variant_idx': variant_idx,
+					'angles_per_variant': angles_per_variant,
+					'variant_seed': seed + 1000003 * (ct_idx + 1) + 9176 * (variant_idx + 1),
+					'timestamp': time.time(),
+				}
+				try:
+					_write_done_marker(done_path, payload)
+					print(f"[OK] Wrote done marker: {done_path}")
+				except KeyboardInterrupt:
+					# If Ctrl+C hits exactly while writing the marker, finish the write anyway.
+					try:
+						_write_done_marker(done_path, payload)
+						print(f"[OK] Wrote done marker: {done_path}")
+					except Exception:
+						pass
+					_append_error_record(
+						errors_out_dir,
+						errors_log_name,
 						{
-							'case': case,
-							'variant_idx': variant_idx,
-							'angles_per_variant': angles_per_variant,
-							'variant_seed': seed + 1000003 * (ct_idx + 1) + 9176 * (variant_idx + 1),
 							'timestamp': time.time(),
+							'phase': 'interrupt',
+							'case': current_case,
+							'variant_idx': current_variant_idx,
+							'pair_idx': current_pair_idx,
+							'pair_dir': current_pair_dir,
+							'signal': shutdown_requested.get('signal'),
+							'error_type': 'KeyboardInterrupt',
+							'error': 'Interrupted by user',
 						},
-						f,
-						indent=2,
 					)
-				print(f"[OK] Wrote done marker: {done_path}")
+					print('[INFO] Interrupted. Exiting gracefully.')
+					return
 
 			# Free per-variant tensors
 			del dev_ct, ct, lungs
