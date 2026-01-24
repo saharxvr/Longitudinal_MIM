@@ -13,13 +13,28 @@ sys.path.append(parent_dir)
 from utils import DEVICE
 
 
-def get_random_rotation_angles(absolute_value_range_per_axis=(15, 15, 15), max_angles_sum=30, min_angles_sum=7.5, exponent=4.):
+def get_random_rotation_angles(
+    absolute_value_range_per_axis=(15, 15, 15),
+    max_angles_sum=30,
+    min_angles_sum=7.5,
+    exponent=4.,
+    *,
+    device=None,
+):
+    """Sample random rotation angles.
+
+    By default this matches the historic behavior (angles are torch tensors on DEVICE).
+    When `device` is provided (e.g. torch.device('cpu')), angles will be torch tensors
+    on that device.
+    """
+    if device is None:
+        device = DEVICE
     if absolute_value_range_per_axis != (0, 0, 0):
         angles_sum = -1
         while angles_sum > max_angles_sum or angles_sum < min_angles_sum:
-            rotate_angle1 = torch.tensor((random.random() ** exponent) * get_random_sign() * absolute_value_range_per_axis[0]).to(DEVICE)
-            rotate_angle2 = torch.tensor((random.random() ** exponent) * get_random_sign() * absolute_value_range_per_axis[1]).to(DEVICE)
-            rotate_angle3 = torch.tensor((random.random() ** exponent) * get_random_sign() * absolute_value_range_per_axis[2]).to(DEVICE)
+            rotate_angle1 = torch.tensor((random.random() ** exponent) * get_random_sign() * absolute_value_range_per_axis[0], device=device)
+            rotate_angle2 = torch.tensor((random.random() ** exponent) * get_random_sign() * absolute_value_range_per_axis[1], device=device)
+            rotate_angle3 = torch.tensor((random.random() ** exponent) * get_random_sign() * absolute_value_range_per_axis[2], device=device)
 
             angles_sum = (rotate_angle1.abs() + rotate_angle2.abs() + rotate_angle3.abs()).item()
     else:
@@ -38,31 +53,35 @@ def rotate_ct_and_crop_according_to_seg(
         rotate_angle2=0,
         rotate_angle3=0,
         return_ct_seg: bool = False,
+    device=None,
 ):
     """Rotate a CT volume (and optionally its segmentation) by provided angles.
 
     This is the deterministic counterpart of `random_rotate_ct_and_crop_according_to_seg`.
     Angles are in degrees and can be Python numbers or torch scalars.
     """
-    ct_scan = ct_scan.to(DEVICE)
+    if device is None:
+        device = DEVICE
+
+    ct_scan = ct_scan.to(device)
     if ct_seg is not None:
-        ct_seg = ct_seg.to(DEVICE)
+        ct_seg = ct_seg.to(device)
 
     ct_scan = enforce_ndim_4(ct_scan)
 
     # Convert angles to tensors on the correct device
     if not torch.is_tensor(rotate_angle1):
-        rotate_angle1 = torch.tensor(float(rotate_angle1), device=DEVICE)
+        rotate_angle1 = torch.tensor(float(rotate_angle1), device=device)
     else:
-        rotate_angle1 = rotate_angle1.to(DEVICE)
+        rotate_angle1 = rotate_angle1.to(device)
     if not torch.is_tensor(rotate_angle2):
-        rotate_angle2 = torch.tensor(float(rotate_angle2), device=DEVICE)
+        rotate_angle2 = torch.tensor(float(rotate_angle2), device=device)
     else:
-        rotate_angle2 = rotate_angle2.to(DEVICE)
+        rotate_angle2 = rotate_angle2.to(device)
     if not torch.is_tensor(rotate_angle3):
-        rotate_angle3 = torch.tensor(float(rotate_angle3), device=DEVICE)
+        rotate_angle3 = torch.tensor(float(rotate_angle3), device=device)
     else:
-        rotate_angle3 = rotate_angle3.to(DEVICE)
+        rotate_angle3 = rotate_angle3.to(device)
 
     # Rotate
     if float(rotate_angle1) != 0.0 or float(rotate_angle2) != 0.0 or float(rotate_angle3) != 0.0:
@@ -98,8 +117,16 @@ def random_rotate_ct_and_crop_according_to_seg(
         min_angles_sum=7.5,
         exponent=1.,
         return_angles: bool = False,
+        *,
+        device=None,
 ):
-    rotate_angle1, rotate_angle2, rotate_angle3 = get_random_rotation_angles(rot_ranges, max_angles_sum, min_angles_sum, exponent)
+    rotate_angle1, rotate_angle2, rotate_angle3 = get_random_rotation_angles(
+        rot_ranges,
+        max_angles_sum,
+        min_angles_sum,
+        exponent,
+        device=device,
+    )
     out = rotate_ct_and_crop_according_to_seg(
         ct_scan,
         ct_seg,
@@ -107,6 +134,7 @@ def random_rotate_ct_and_crop_according_to_seg(
         rotate_angle2=rotate_angle2,
         rotate_angle3=rotate_angle3,
         return_ct_seg=return_ct_seg,
+        device=device,
     )
     if return_angles:
         out.append((rotate_angle1, rotate_angle2, rotate_angle3))

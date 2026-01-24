@@ -168,7 +168,7 @@ class ExternalDevices(Entity3D):
                 l = line_nd(p1.cpu(), p2.cpu())
                 lines_seg[l] = 1.
 
-        lines_seg = torch.tensor(lines_seg).to(DEVICE)
+        lines_seg = torch.tensor(lines_seg, device=scan.device)
 
         deform_indic = random.random()
         if deform_indic < 0.35:
@@ -197,7 +197,7 @@ class ExternalDevices(Entity3D):
 
     @staticmethod
     def add_device(scan, lungs_seg, dev_p, registrated_prior=None):
-        dev = torch.tensor(np.transpose(nib.load(dev_p).get_fdata(), (2, 0, 1))).float().to(DEVICE)
+        dev = torch.tensor(np.transpose(nib.load(dev_p).get_fdata(), (2, 0, 1)), device=scan.device).float()
         max_shape = max(dev.shape[0], dev.shape[1], dev.shape[2])
         max_shape_x2 = 2 * max_shape
 
@@ -245,9 +245,9 @@ class ExternalDevices(Entity3D):
         # pitch -> around width axis
         # roll -> around height axis
 
-        yaw = torch.tensor(random.random() * 360 - 180).to(DEVICE)
-        pitch = torch.tensor(random.random() * 40 - 20).to(DEVICE)
-        roll = torch.tensor(random.random() * 40 - 20).to(DEVICE)
+        yaw = torch.tensor(random.random() * 360 - 180, device=scan.device)
+        pitch = torch.tensor(random.random() * 40 - 20, device=scan.device)
+        roll = torch.tensor(random.random() * 40 - 20, device=scan.device)
         dev = rotate3d(dev[None, None, ...], yaw, pitch, roll).squeeze()
 
         port_x_min, port_x_max = c[0] - dev.shape[0] // 2, c[0] + dev.shape[0] - dev.shape[0] // 2
