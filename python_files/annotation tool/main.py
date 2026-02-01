@@ -48,7 +48,7 @@ class BoundingBoxLabelingApp:
         self.current_label = "Appearance"
         self.label_colors = {"Appearance": "red", "Disappearance": "green", "Persistence": "yellow"}
         self.persistence_colors = {"Increase": "red", "Decrease": "green", "None": "yellow"}
-        self.tag_options = ["Option 1", "Option 2", "Option 3", "Option 4", "Other"]
+        self.tag_options = ["Consolidation", "Pneumothorax", "Pleural Effusion","Fluid Overload", "Other"]
         self.default_tag = self.tag_options[0]
         self.ellipses = []  # Store ellipse label data
 
