@@ -41,12 +41,13 @@ import torch
 import torchvision.transforms.v2 as v2
 import matplotlib.pyplot as plt
 from matplotlib import colors
+from kornia.geometry import rotate3d
 from scipy.ndimage import label
 from skimage.morphology import ball
 from torchvision.transforms.v2.functional import adjust_sharpness
 
 from CT_Rotations import random_rotate_ct_and_crop_according_to_seg
-from DRR_utils import add_back_cropped, crop_according_to_seg
+from DRR_utils import add_back_cropped, crop_according_to_seg, enforce_ndim_4
 
 from constants import DEVICE
 
@@ -65,6 +66,10 @@ from External_Devices import ExternalDevices
 resize = v2.Resize((512, 512))
 
 _CC_STRUCT = np.ones((3, 3), dtype=np.int8)  # for connected-component filtering
+
+# A conservative threshold for “something changed” in a CT volume (HU scale).
+# Used to build per-entity change masks without touching entity internals.
+_ENTITY_DELTA_THRESHOLD_HU = 1.0
 
 differential_grad = colors.LinearSegmentedColormap.from_list(
 	'my_gradient',
@@ -389,6 +394,71 @@ def create_seg_diff_map_from_rotated(
 	return diff_map_for_seg.numpy()
 
 
+def _rotate_and_crop_volume_like_seg(
+	vol: torch.Tensor,
+	seg_for_rotation: torch.Tensor,
+	angles_deg: Tuple[float, float, float],
+	*,
+	ext: int = 7,
+) -> torch.Tensor:
+	"""Rotate+crop an auxiliary volume using the *same* convention as CT_Rotations.
+
+	We rotate both `vol` and `seg_for_rotation` by the provided angles and then crop
+	according to the rotated segmentation.
+
+	Returns the cropped rotated `vol` as a 3D tensor (D,H,W).
+	"""
+	vol = vol.to(DEVICE).float()
+	seg_for_rotation = seg_for_rotation.to(DEVICE).float()
+
+	vol_4 = enforce_ndim_4(vol)
+	seg_4 = enforce_ndim_4(seg_for_rotation)
+
+	a1, a2, a3 = angles_deg
+	rotate_angle1 = torch.tensor(float(a1), device=DEVICE)
+	rotate_angle2 = torch.tensor(float(a2), device=DEVICE)
+	rotate_angle3 = torch.tensor(float(a3), device=DEVICE)
+
+	if float(rotate_angle1) != 0.0 or float(rotate_angle2) != 0.0 or float(rotate_angle3) != 0.0:
+		vol_4 = vol_4.unsqueeze(0)
+		seg_4 = seg_4.unsqueeze(0)
+		# For masks/aux volumes we want zero padding (avoid reflection artifacts).
+		vol_4 = rotate3d(vol_4, rotate_angle1, rotate_angle2, rotate_angle3, padding_mode='zeros')
+		seg_4 = rotate3d(seg_4, rotate_angle1, rotate_angle2, rotate_angle3, padding_mode='zeros')
+		seg_4 = torch.round(seg_4)
+		vol_4 = vol_4.squeeze(0)
+		seg_4 = seg_4.squeeze(0)
+
+	# Crop using the same helper used throughout the pipeline
+	cropped_vol, _, _ = crop_according_to_seg(vol_4, seg_4, {'_': vol_4}, tight_y=False, ext=ext)
+	return cropped_vol.squeeze()
+
+
+def create_entity_heatmap_from_mask(
+	entity_mask_3d: torch.Tensor,
+	seg_for_rotation: torch.Tensor,
+	angles_deg: Tuple[float, float, float],
+	*,
+	max_seg_depth: torch.Tensor,
+	avg_k: Optional[int] = 9,
+) -> np.ndarray:
+	"""Project a per-entity 3D mask into a 2D heatmap aligned to the DRR.
+
+	- Rotates+cropps `entity_mask_3d` like the CT pair.
+	- Sum-projects along depth and normalizes by `max_seg_depth`.
+	- Resizes to 512x512 to match DRR.
+	"""
+	rotated_mask = _rotate_and_crop_volume_like_seg(entity_mask_3d, seg_for_rotation, angles_deg)
+	rotated_mask = (rotated_mask > 0.5).float()
+
+	proj = torch.nan_to_num(torch.sum(rotated_mask, dim=2) / max_seg_depth, nan=0.0).cpu().squeeze()
+	proj = resize(proj[None, ...])
+	if avg_k is not None:
+		proj = torch.nn.functional.avg_pool2d(proj, kernel_size=avg_k, stride=1, padding=avg_k // 2).squeeze()
+
+	return proj.numpy()
+
+
 def generate_alpha_map(x: torch.Tensor) -> torch.Tensor:
 	x_abs = x.abs()
 	max_val = max(torch.max(x_abs).item(), 0.07)
@@ -453,15 +523,38 @@ def add_entities_to_pair(
 		'patient_mode': patient_mode,
 		'pleural_effusion_patient_mode': pleural_effusion_patient_mode,
 		'added_entity_names': [],
+		'entity_change_masks': {},  # entity name -> 3D float mask in cropped space
 		'log_params': True,
 	}
 
 	prob_mult = 1.0
 
+	def _capture_entity_change_mask(entity_name: str, before_scans: Tuple[torch.Tensor, torch.Tensor]) -> None:
+		"""Compute and store a per-entity 3D mask where the CT was modified."""
+		after_prior, after_current = ctx['scans']
+		before_prior, before_current = before_scans
+
+		delta_prior = (after_prior - before_prior).abs()
+		delta_current = (after_current - before_current).abs()
+
+		mask_prior = delta_prior > _ENTITY_DELTA_THRESHOLD_HU
+		mask_current = delta_current > _ENTITY_DELTA_THRESHOLD_HU
+		mask_union = (mask_prior | mask_current).float()
+
+		# Store on CPU to keep GPU memory stable.
+		mask_union = mask_union.detach().cpu()
+		prev = ctx['entity_change_masks'].get(entity_name)
+		if prev is None:
+			ctx['entity_change_masks'][entity_name] = mask_union
+		else:
+			ctx['entity_change_masks'][entity_name] = torch.maximum(prev, mask_union)
+
 	for entity, prob in intra_pulmonary_entities:
 		if random.random() < prob * prob_mult:
+			before_scans = (ctx['scans'][0].clone(), ctx['scans'][1].clone())
 			ctx.update(entity.add_to_CT_pair(**ctx))
 			ctx['added_entity_names'].append(entity.__name__)
+			_capture_entity_change_mask(entity.__name__, before_scans)
 			prob_mult *= entity_prob_decay
 			cleanup_memory()
 
@@ -469,15 +562,19 @@ def add_entities_to_pair(
 
 	for entity, prob in extra_pulmonary_entities:
 		if random.random() < prob * prob_mult:
+			before_scans = (ctx['scans'][0].clone(), ctx['scans'][1].clone())
 			ctx.update(entity.add_to_CT_pair(**ctx))
 			ctx['added_entity_names'].append(entity.__name__)
+			_capture_entity_change_mask(entity.__name__, before_scans)
 			prob_mult *= entity_prob_decay
 			cleanup_memory()
 
 	for entity, prob in devices_entity:
 		if random.random() < prob:
+			before_scans = (ctx['scans'][0].clone(), ctx['scans'][1].clone())
 			ctx.update(entity.add_to_CT_pair(**ctx))
 			ctx['added_entity_names'].append(entity.__name__)
+			_capture_entity_change_mask(entity.__name__, before_scans)
 			cleanup_memory()
 
 	return ctx
@@ -789,12 +886,21 @@ def main() -> None:
 				prior, current = ret['scans']
 				registrated_prior = ret['registrated_prior']
 				added_entity_names = ret['added_entity_names']
+				entity_change_masks = ret.get('entity_change_masks', {})
 
 				params: Dict[str, Any] = {'added_entities': added_entity_names}
+				if len(entity_change_masks) > 0:
+					params['entity_labels'] = {name: i + 1 for i, name in enumerate(sorted(entity_change_masks.keys()))}
 
 				prior = add_back_cropped(prior, orig_scan, cropping_slices)
 				current = add_back_cropped(current, orig_scan, cropping_slices)
 				registrated_prior = add_back_cropped(registrated_prior, orig_scan, cropping_slices)
+
+				# Expand entity masks back to full CT size so rotation/cropping matches DRR generation.
+				entity_masks_full: Dict[str, torch.Tensor] = {}
+				for entity_name, m in entity_change_masks.items():
+					m_full = add_back_cropped(m.to(DEVICE), torch.zeros_like(orig_scan), cropping_slices)
+					entity_masks_full[entity_name] = m_full
 
 				seg_for_rotation = segs_dict['lungs'].clone()
 
@@ -845,6 +951,43 @@ def main() -> None:
 				# Extra maps: derived from the *same* rotated multi-label seg used during projection
 				rotated_boundary = rotated_seg != 0
 				max_depth = torch.max(torch.sum(rotated_boundary, dim=2))
+
+				# Per-entity heatmaps (projected change masks) + combined heatmap.
+				# Saved separately from the signed diff map.
+				if len(entity_masks_full) > 0:
+					heatmaps_dir = os.path.join(c_out_dir, 'entity_heatmaps')
+					os.makedirs(heatmaps_dir, exist_ok=True)
+
+					entity_heatmaps: Dict[str, str] = {}
+					ignored_in_all = {'ExternalDevices'}
+					combined_sum = np.zeros_like(current_drr, dtype=np.float32)
+					for entity_name, m_full in entity_masks_full.items():
+						hm = create_entity_heatmap_from_mask(
+							m_full,
+							seg_for_rotation,
+							angles_pair,
+							max_seg_depth=max_depth,
+							avg_k=9,
+						)
+						if entity_name not in ignored_in_all:
+							combined_sum += hm.astype(np.float32)
+
+						out_nii = os.path.join(heatmaps_dir, f'{entity_name}.nii.gz')
+						save_arr_as_nifti(hm.T, out_nii)
+						plt.imsave(os.path.join(heatmaps_dir, f'{entity_name}.png'), hm, cmap='hot')
+						entity_heatmaps[entity_name] = f'entity_heatmaps/{entity_name}.nii.gz'
+
+					# Save raw sum (can exceed 1.0). For PNG preview, normalize to [0,1].
+					save_arr_as_nifti(combined_sum.T, os.path.join(heatmaps_dir, 'ALL.nii.gz'))
+					combined_png = combined_sum
+					mx = float(np.max(combined_png))
+					if mx > 0:
+						combined_png = combined_png / mx
+					plt.imsave(os.path.join(heatmaps_dir, 'ALL.png'), combined_png, cmap='hot')
+					params['entity_heatmaps'] = entity_heatmaps
+					params['entity_heatmaps_all'] = 'entity_heatmaps/ALL.nii.gz'
+					params['entity_heatmaps_all_aggregation'] = 'sum'
+					params['entity_heatmaps_all_ignored'] = sorted(list(ignored_in_all))
 
 				if 'PleuralEffusion' in added_entity_names:
 					diff_map += create_seg_diff_map_from_rotated(rotated_seg, 2, 3, 0.35, max_depth, 9)
