@@ -48,7 +48,7 @@ class BoundingBoxLabelingApp:
         self.current_label = "Appearance"
         self.label_colors = {"Appearance": "red", "Disappearance": "green", "Persistence": "yellow"}
         self.persistence_colors = {"Increase": "red", "Decrease": "green", "None": "yellow"}
-        self.tag_options = ["Option 1", "Option 2", "Option 3", "Option 4", "Other"]
+        self.tag_options = ["Consolidation", "Pneumothorax", "Pleural Effusion","Fluid Overload", "Other"]
         self.default_tag = self.tag_options[0]
         self.ellipses = []  # Store ellipse label data
 
@@ -67,6 +67,11 @@ class BoundingBoxLabelingApp:
         self.orig_stretch_x = None
         self.orig_stretch_y = None
         self.undoing = False
+
+        # Ellipse label text rendering
+        self.ellipse_text_color = "white"
+        self.ellipse_text_bg = "black"
+        self.ellipse_text_bg_stipple = "gray50"
 
     def setup_ui(self):
         usage_frame = tk.Frame(self.root)
@@ -256,7 +261,7 @@ class BoundingBoxLabelingApp:
         overlapping = self.canvas2.find_overlapping(event.x, event.y, event.x, event.y)
         for item in overlapping:
             for i, ellipse in enumerate(self.ellipses):
-                if ellipse['id'] == item:
+                if ellipse['id'] == item or ellipse.get('text_id') == item or ellipse.get('text_bg_id') == item:
                     self.stretched_ellipse = ellipse
                     self.orig_rx = self.stretched_ellipse['rx']
                     self.orig_ry = self.stretched_ellipse['ry']
@@ -270,9 +275,11 @@ class BoundingBoxLabelingApp:
             self.stretched_ellipse['ry'] = abs(event.y - self.orig_stretch_y + self.orig_ry)
 
             self.canvas2.delete(self.stretched_ellipse['id'])
+            self._delete_ellipse_text_items(self.stretched_ellipse)
             new_id = self.draw_rotated_ellipse(self.stretched_ellipse['cx'], self.stretched_ellipse['cy'], self.stretched_ellipse['rx'], self.stretched_ellipse['ry'], self.stretched_ellipse['angle'], self.stretched_ellipse,
                                                outline=self.label_colors[self.stretched_ellipse['label']], width=2.5, fill="")
             self.stretched_ellipse["id"] = new_id
+            self._draw_or_update_ellipse_text(self.stretched_ellipse)
 
     def finish_stretch(self, event):
         self.stretched_ellipse = None
@@ -283,9 +290,11 @@ class BoundingBoxLabelingApp:
             self.dragged_item['cy'] = event.y
 
             self.canvas2.delete(self.dragged_item['id'])
+            self._delete_ellipse_text_items(self.dragged_item)
             new_id = self.draw_rotated_ellipse(self.dragged_item['cx'], self.dragged_item['cy'], self.dragged_item['rx'], self.dragged_item['ry'], self.dragged_item['angle'], self.dragged_item, outline=self.label_colors[self.dragged_item['label']],
                                                width=2.5, fill="")
             self.dragged_item["id"] = new_id
+            self._draw_or_update_ellipse_text(self.dragged_item)
 
     def on_release(self, event):
         self.dragged_item = None
@@ -308,18 +317,103 @@ class BoundingBoxLabelingApp:
 
         return self.canvas2.create_polygon(points, **kwargs)
 
+    def _ellipse_display_text(self, ellipse):
+        tag = str(ellipse.get("tag", "") or "")
+        tag_other = str(ellipse.get("tag_other", "") or "")
+        label = str(ellipse.get("label", "") or "")
+
+        # Prefer showing the clinical tag (Consolidation/Pneumothorax/...) instead of
+        # the temporal label (Appearance/Disappearance/Persistence) which is already
+        # encoded by the ellipse outline color.
+        if tag == "Other" and tag_other.strip():
+            text = tag_other.strip()
+        elif tag:
+            text = tag
+        else:
+            text = label
+
+        rx = float(ellipse.get("rx", 0) or 0)
+        ry = float(ellipse.get("ry", 0) or 0)
+        min_r = min(rx, ry)
+
+        if min_r < 18:
+            return text[:1]
+        if min_r < 28:
+            return text[:3]
+        return text
+
+    def _ellipse_text_font(self, ellipse):
+        rx = float(ellipse.get("rx", 0) or 0)
+        ry = float(ellipse.get("ry", 0) or 0)
+        min_r = max(0.0, min(rx, ry))
+        size = int(max(8, min(16, min_r / 2.2)))
+        return ("Helvetica", size, "bold")
+
+    def _delete_ellipse_text_items(self, ellipse):
+        for key in ("text_id", "text_bg_id"):
+            item_id = ellipse.get(key)
+            if item_id:
+                try:
+                    self.canvas2.delete(item_id)
+                except Exception:
+                    pass
+                ellipse[key] = None
+
+    def _draw_or_update_ellipse_text(self, ellipse):
+        # Remove old text, then redraw at the current center.
+        self._delete_ellipse_text_items(ellipse)
+
+        cx = float(ellipse.get("cx", 0) or 0)
+        cy = float(ellipse.get("cy", 0) or 0)
+
+        # Avoid overlapping persistence indicator circles.
+        text_y = cy - 18 if ellipse.get("label") == "Persistence" else cy
+
+        text = self._ellipse_display_text(ellipse)
+        if not text:
+            return
+
+        text_id = self.canvas2.create_text(
+            cx,
+            text_y,
+            text=text,
+            fill=self.ellipse_text_color,
+            font=self._ellipse_text_font(ellipse),
+        )
+
+        bbox = self.canvas2.bbox(text_id)
+        if bbox:
+            pad_x, pad_y = 6, 3
+            bg_id = self.canvas2.create_rectangle(
+                bbox[0] - pad_x,
+                bbox[1] - pad_y,
+                bbox[2] + pad_x,
+                bbox[3] + pad_y,
+                fill=self.ellipse_text_bg,
+                outline="",
+                stipple=self.ellipse_text_bg_stipple,
+            )
+            self.canvas2.tag_lower(bg_id, text_id)
+            ellipse["text_bg_id"] = bg_id
+
+        ellipse["text_id"] = text_id
+        if ellipse.get("text_bg_id"):
+            self.canvas2.tag_raise(ellipse["text_bg_id"])
+        self.canvas2.tag_raise(text_id)
+
     def on_canvas_click(self, event):
         overlapping = self.canvas2.find_overlapping(event.x, event.y, event.x, event.y)
         for item in overlapping:
             for i, ellipse in enumerate(self.ellipses):
-                if ellipse['id'] == item:
+                if ellipse['id'] == item or ellipse.get('text_id') == item or ellipse.get('text_bg_id') == item:
                     if self.undoing:
                         self.undoing = False
                         if ellipse.get('c1'):
                             self.canvas2.delete(ellipse['c1'])
                             self.canvas2.delete(ellipse['c2'])
                         self.ellipses.remove(ellipse)
-                        self.canvas2.delete(item)
+                        self.canvas2.delete(ellipse['id'])
+                        self._delete_ellipse_text_items(ellipse)
                     else:
                         self.dragged_item = ellipse
                     return
@@ -337,11 +431,15 @@ class BoundingBoxLabelingApp:
 
             if self.current_label == "Persistence":
                 item = self.draw_rotated_ellipse(cx, cy, rx, ry, angle, outline=color, width=2.5, fill="")
-                self.ellipses.append({"cx": cx, "cy": cy, "rx": rx, "ry": ry, "angle": angle, "label": self.current_label, "id": item, "size_change": "None", "intensity_change": "None", "comment": "", "tag": self.default_tag, "tag_other": ""})
+                ellipse = {"cx": cx, "cy": cy, "rx": rx, "ry": ry, "angle": angle, "label": self.current_label, "id": item, "size_change": "None", "intensity_change": "None", "comment": "", "tag": self.default_tag, "tag_other": ""}
+                self._draw_or_update_ellipse_text(ellipse)
+                self.ellipses.append(ellipse)
                 # self.ask_persistence_details(cx, cy, rx, ry, angle, item)
             else:
                 item = self.draw_rotated_ellipse(cx, cy, rx, ry, angle, outline=color, width=2.5, fill="")
-                self.ellipses.append({"cx": cx, "cy": cy, "rx": rx, "ry": ry, "angle": angle, "label": self.current_label, "id": item, "comment": "", "tag": self.default_tag, "tag_other": ""})
+                ellipse = {"cx": cx, "cy": cy, "rx": rx, "ry": ry, "angle": angle, "label": self.current_label, "id": item, "comment": "", "tag": self.default_tag, "tag_other": ""}
+                self._draw_or_update_ellipse_text(ellipse)
+                self.ellipses.append(ellipse)
                 # self.ask_comment()
 
             self.start_x, self.start_y = None, None
@@ -391,12 +489,13 @@ class BoundingBoxLabelingApp:
         ellipse['comment'] = comment
         ellipse['tag'] = tag
         ellipse['tag_other'] = tag_other.strip() if tag == "Other" else ""
+        self._draw_or_update_ellipse_text(ellipse)
 
     def add_details(self, event):
         overlapping = self.canvas2.find_overlapping(event.x, event.y, event.x, event.y)
         for item in overlapping:
             for i, ellipse in enumerate(self.ellipses):
-                if ellipse['id'] == item:
+                if ellipse['id'] == item or ellipse.get('text_id') == item or ellipse.get('text_bg_id') == item:
                     if ellipse['label'] == "Persistence":
                         self.ask_persistence_details(ellipse)
                     else:
@@ -466,6 +565,7 @@ class BoundingBoxLabelingApp:
         ellipse['tag'] = tag
         ellipse['tag_other'] = tag_other.strip() if tag == "Other" else ""
         self.draw_indicator_circles(ellipse, init=True)
+        self._draw_or_update_ellipse_text(ellipse)
 
     def draw_indicator_circles(self, ellipse, init=False):
         if ellipse.get('c1'):
@@ -489,7 +589,7 @@ class BoundingBoxLabelingApp:
         overlapping = self.canvas2.find_overlapping(event.x, event.y, event.x, event.y)
         for item in overlapping:
             for i, ellipse in enumerate(self.ellipses):
-                if ellipse['id'] == item:
+                if ellipse['id'] == item or ellipse.get('text_id') == item or ellipse.get('text_bg_id') == item:
                     self.selected_ellipse = ellipse
                     self.rotating = True
                     self.rotation_start_angle = math.degrees(math.atan2(event.y - ellipse["cy"], event.x - ellipse["cx"]))
@@ -503,9 +603,11 @@ class BoundingBoxLabelingApp:
             delta_angle = current_angle - self.rotation_start_angle
             new_angle = (self.original_angle + delta_angle) % 360
             self.canvas2.delete(self.selected_ellipse["id"])
+            self._delete_ellipse_text_items(self.selected_ellipse)
             new_id = self.draw_rotated_ellipse(cx, cy, self.selected_ellipse["rx"], self.selected_ellipse["ry"], new_angle, self.selected_ellipse, outline=self.label_colors[self.selected_ellipse["label"]], width=2.5, fill="")
             self.selected_ellipse["id"] = new_id
             self.selected_ellipse["angle"] = new_angle
+            self._draw_or_update_ellipse_text(self.selected_ellipse)
 
     def finish_rotation(self, event):
         self.rotating = False
@@ -531,7 +633,7 @@ class BoundingBoxLabelingApp:
         if filename:
             to_save = []
             for ell in self.ellipses:
-                payload = {k: v for k, v in ell.items() if k not in {"id", "c1", "c2"}}
+                payload = {k: v for k, v in ell.items() if k not in {"id", "c1", "c2", "text_id", "text_bg_id"}}
                 payload.setdefault("tag", self.default_tag)
                 payload.setdefault("tag_other", "")
                 if payload.get("tag") != "Other":
@@ -554,6 +656,7 @@ class BoundingBoxLabelingApp:
                         l["tag_other"] = ""
                     item = self.draw_rotated_ellipse(l['cx'], l['cy'], l['rx'], l['ry'], l['angle'], outline=self.label_colors[l['label']], width=2.5, fill="")
                     l['id'] = item
+                    self._draw_or_update_ellipse_text(l)
                     self.ellipses.append(l)
                     if l['label'] == 'Persistence':
                         self.draw_indicator_circles(l, init=True)
