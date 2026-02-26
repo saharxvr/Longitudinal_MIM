@@ -1,0 +1,21 @@
+import numpy as np
+import nibabel as nib
+from PIL import Image
+
+
+def jpg_to_nii(jpg_path, nii_path):
+    # Load JPG
+    img = Image.open(jpg_path).convert("L")  # grayscale
+    data = np.array(img)
+
+    # Create NIfTI
+    nii = nib.Nifti1Image(data, affine=np.eye(4))
+    nib.save(nii, nii_path)
+
+# let get all jpg in "dir_to_convert" dir and convert to nii
+import os
+dir_to_convert = "C:\\Users\\t-saharon\\thesis\\python_files\\annotation tool\\pairs8"
+jpg_files = [f for f in os.listdir(dir_to_convert) if f.endswith(".jpg")]
+for jpg_file in jpg_files:
+    nii_file = jpg_file.replace(".jpg", ".nii.gz")
+    jpg_to_nii(os.path.join(dir_to_convert, jpg_file), os.path.join(dir_to_convert, nii_file))
