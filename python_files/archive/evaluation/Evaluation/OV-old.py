@@ -561,31 +561,20 @@ def get_sensitivity_at_consensus_levels(model_map, human_maps):
 
 
 def main():
-    # TEMP MODIFICATIONS (for local run on pairs 61-100 without Nitzan):
-    # 1) Pair range changed from original first-30 pairs to pairs 61-100:
-    #    - Original: num_pairs = 30, bias = 0
-    #    - Current : num_pairs = 40, bias = 60
-    # 2) Nitzan removed from observer set and all dependent calculations:
-    #    - Original observers: Avi, Benny, Sigal, Smadar, Nitzan, Model
-    #    - Current observers : Avi, Benny, Sigal, Smadar, Model
-    #    - Original counts   : num_humans = 5, num_observers = 6
-    #    - Current counts    : num_humans = 4, num_observers = 5
-    #    - Nitzan-specific loading/sensitivity/HMDR/UDPP/PAI entries were removed.
-    # To revert: restore the original values above and reintroduce Nitzan blocks.
     model_outputs_base_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ICU_cases/test_predictions/all_entities_model'
     annotations_base_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/PhysicianAnnotations'
     pairs_base_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/Pairs_ICU'
     out_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability'
 
-    num_humans = 4
-    num_observers = 5
+    num_humans = 5
+    num_observers = 6
     detections_table_pos = []
     detections_table_neg = []
     detections_table_all = []
-    physician_to_idx_dict = {'Avi': 0, 'Benny': 1, 'Sigal': 2, 'Smadar': 3, 'Model': 4}
+    physician_to_idx_dict = {'Avi': 0, 'Benny': 1, 'Sigal': 2, 'Smadar': 3, 'Nitzan': 4, 'Model': 5}
 
-    num_pairs = 40
-    bias = 60
+    num_pairs = 30
+    bias = 0
 
     sensitivities_pos = [[0, 0] for _ in range(num_humans)]
     sensitivities_neg = [[0, 0] for _ in range(num_humans)]
@@ -602,6 +591,9 @@ def main():
     sensitivities_pos_smadar = [[0, 0] for _ in range(num_humans - 1)]
     sensitivities_neg_smadar = [[0, 0] for _ in range(num_humans - 1)]
     
+    sensitivities_pos_nitzan = [[0, 0] for _ in range(num_humans - 1)]
+    sensitivities_neg_nitzan = [[0, 0] for _ in range(num_humans - 1)]
+
     pairwise_agreement_mat_pos = np.eye(num_observers)
     pairwise_agreement_mat_neg = np.eye(num_observers)
 
@@ -654,6 +646,13 @@ def main():
     not_overlapping_smadar_preds_pos = []
     not_overlapping_smadar_preds_neg = []
     
+    total_nitzan_preds_pos = 0
+    total_nitzan_preds_neg = 0
+    total_overlapping_nitzan_preds_pos = 0
+    total_overlapping_nitzan_preds_neg = 0
+    not_overlapping_nitzan_preds_pos = []
+    not_overlapping_nitzan_preds_neg = []
+
     for i in range(bias, num_pairs + bias):
         print(f'Pair {i + 1}')
         pair_path = f'{pairs_base_path}/pair{i+1}'
@@ -662,6 +661,7 @@ def main():
         annotation_path_benny = f'{annotations_base_path}/Benny/{i+1}.json'
         annotation_path_sigal = f'{annotations_base_path}/Sigal/{i+1}.json'
         annotation_path_smadar = f'{annotations_base_path}/Smadar/{i+1}.json'
+        annotation_path_nitzan = f'{annotations_base_path}/Nitzan/{i+1}.json'
         annotation_path_model = f'{model_outputs_base_path}/pair{i+1}/output.nii.gz'
 
         current = load_xray(current_path)
@@ -669,6 +669,7 @@ def main():
         label_map_pos_benny, label_map_neg_benny = load_labels_map(annotation_path_benny, current.shape)
         label_map_pos_sigal, label_map_neg_sigal = load_labels_map(annotation_path_sigal, current.shape)
         label_map_pos_smadar, label_map_neg_smadar = load_labels_map(annotation_path_smadar, current.shape)
+        label_map_pos_nitzan, label_map_neg_nitzan = load_labels_map(annotation_path_nitzan, current.shape)
         label_map_pos_model, label_map_neg_model = load_model_labels_map(annotation_path_model)
 
         # if i == 3:
@@ -700,8 +701,8 @@ def main():
         
         # Model
         
-        c_sensitivities_pos = get_sensitivity_at_consensus_levels(label_map_pos_model, (label_map_pos_avi, label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar))
-        c_sensitivities_neg = get_sensitivity_at_consensus_levels(label_map_neg_model, (label_map_neg_avi, label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar))
+        c_sensitivities_pos = get_sensitivity_at_consensus_levels(label_map_pos_model, (label_map_pos_avi, label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        c_sensitivities_neg = get_sensitivity_at_consensus_levels(label_map_neg_model, (label_map_neg_avi, label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
 
         for k, (detections, changes) in enumerate(c_sensitivities_pos):
             sensitivities_pos[k][0] += detections
@@ -713,8 +714,8 @@ def main():
         
         # Humans
 
-        c_sensitivities_pos_avi = get_sensitivity_at_consensus_levels(label_map_pos_avi, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar))
-        c_sensitivities_neg_avi = get_sensitivity_at_consensus_levels(label_map_neg_avi, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar))
+        c_sensitivities_pos_avi = get_sensitivity_at_consensus_levels(label_map_pos_avi, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        c_sensitivities_neg_avi = get_sensitivity_at_consensus_levels(label_map_neg_avi, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
         
         for k, (detections, changes) in enumerate(c_sensitivities_pos_avi):
             sensitivities_pos_avi[k][0] += detections
@@ -724,8 +725,8 @@ def main():
             sensitivities_neg_avi[k][0] += detections
             sensitivities_neg_avi[k][1] += changes
         
-        c_sensitivities_pos_benny = get_sensitivity_at_consensus_levels(label_map_pos_benny, (label_map_pos_avi, label_map_pos_sigal, label_map_pos_smadar))
-        c_sensitivities_neg_benny = get_sensitivity_at_consensus_levels(label_map_neg_benny, (label_map_neg_avi, label_map_neg_sigal, label_map_neg_smadar))
+        c_sensitivities_pos_benny = get_sensitivity_at_consensus_levels(label_map_pos_benny, (label_map_pos_avi, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        c_sensitivities_neg_benny = get_sensitivity_at_consensus_levels(label_map_neg_benny, (label_map_neg_avi, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
         
         for k, (detections, changes) in enumerate(c_sensitivities_pos_benny):
             sensitivities_pos_benny[k][0] += detections
@@ -735,8 +736,8 @@ def main():
             sensitivities_neg_benny[k][0] += detections
             sensitivities_neg_benny[k][1] += changes
         
-        c_sensitivities_pos_sigal = get_sensitivity_at_consensus_levels(label_map_pos_sigal, (label_map_pos_benny, label_map_pos_avi, label_map_pos_smadar))
-        c_sensitivities_neg_sigal = get_sensitivity_at_consensus_levels(label_map_neg_sigal, (label_map_neg_benny, label_map_neg_avi, label_map_neg_smadar))
+        c_sensitivities_pos_sigal = get_sensitivity_at_consensus_levels(label_map_pos_sigal, (label_map_pos_benny, label_map_pos_avi, label_map_pos_smadar, label_map_pos_nitzan))
+        c_sensitivities_neg_sigal = get_sensitivity_at_consensus_levels(label_map_neg_sigal, (label_map_neg_benny, label_map_neg_avi, label_map_neg_smadar, label_map_neg_nitzan))
         
         for k, (detections, changes) in enumerate(c_sensitivities_pos_sigal):
             sensitivities_pos_sigal[k][0] += detections
@@ -746,8 +747,8 @@ def main():
             sensitivities_neg_sigal[k][0] += detections
             sensitivities_neg_sigal[k][1] += changes
         
-        c_sensitivities_pos_smadar = get_sensitivity_at_consensus_levels(label_map_pos_smadar, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_avi))
-        c_sensitivities_neg_smadar = get_sensitivity_at_consensus_levels(label_map_neg_smadar, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_avi))
+        c_sensitivities_pos_smadar = get_sensitivity_at_consensus_levels(label_map_pos_smadar, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_avi, label_map_pos_nitzan))
+        c_sensitivities_neg_smadar = get_sensitivity_at_consensus_levels(label_map_neg_smadar, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_avi, label_map_neg_nitzan))
         
         for k, (detections, changes) in enumerate(c_sensitivities_pos_smadar):
             sensitivities_pos_smadar[k][0] += detections
@@ -757,11 +758,22 @@ def main():
             sensitivities_neg_smadar[k][0] += detections
             sensitivities_neg_smadar[k][1] += changes
         
+        c_sensitivities_pos_nitzan = get_sensitivity_at_consensus_levels(label_map_pos_nitzan, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_avi))
+        c_sensitivities_neg_nitzan = get_sensitivity_at_consensus_levels(label_map_neg_nitzan, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_avi))
+        
+        for k, (detections, changes) in enumerate(c_sensitivities_pos_nitzan):
+            sensitivities_pos_nitzan[k][0] += detections
+            sensitivities_pos_nitzan[k][1] += changes
+
+        for k, (detections, changes) in enumerate(c_sensitivities_neg_nitzan):
+            sensitivities_neg_nitzan[k][0] += detections
+            sensitivities_neg_nitzan[k][1] += changes
+        
         # TODO: HMDR/UDPP measures
         
         # Model
-        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_model, (label_map_pos_avi, label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar))
-        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_model, (label_map_neg_avi, label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar))
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_model, (label_map_pos_avi, label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_model, (label_map_neg_avi, label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
         
         total_model_preds_pos += total_preds_pos
         total_model_preds_neg += total_preds_neg
@@ -771,8 +783,8 @@ def main():
         not_overlapping_model_preds_neg.append(not_overlapping_neg)
         
         # Avi
-        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_avi, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar))
-        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_avi, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar))
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_avi, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_avi, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
 
         total_avi_preds_pos += total_preds_pos
         total_avi_preds_neg += total_preds_neg
@@ -782,8 +794,8 @@ def main():
         not_overlapping_avi_preds_neg.append(not_overlapping_neg)
         
         # Benny
-        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_benny, (label_map_pos_avi, label_map_pos_sigal, label_map_pos_smadar))
-        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_benny, (label_map_neg_avi, label_map_neg_sigal, label_map_neg_smadar))
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_benny, (label_map_pos_avi, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_benny, (label_map_neg_avi, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
 
         total_benny_preds_pos += total_preds_pos
         total_benny_preds_neg += total_preds_neg
@@ -793,8 +805,8 @@ def main():
         not_overlapping_benny_preds_neg.append(not_overlapping_neg)
         
         # Sigal
-        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_sigal, (label_map_pos_benny, label_map_pos_avi, label_map_pos_smadar))
-        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_sigal, (label_map_neg_benny, label_map_neg_avi, label_map_neg_smadar))
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_sigal, (label_map_pos_benny, label_map_pos_avi, label_map_pos_smadar, label_map_pos_nitzan))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_sigal, (label_map_neg_benny, label_map_neg_avi, label_map_neg_smadar, label_map_neg_nitzan))
 
         total_sigal_preds_pos += total_preds_pos
         total_sigal_preds_neg += total_preds_neg
@@ -804,8 +816,8 @@ def main():
         not_overlapping_sigal_preds_neg.append(not_overlapping_neg)
         
         # Smadar
-        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_smadar, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_avi))
-        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_smadar, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_avi))
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_smadar, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_avi, label_map_pos_nitzan))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_smadar, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_avi, label_map_neg_nitzan))
 
         total_smadar_preds_pos += total_preds_pos
         total_smadar_preds_neg += total_preds_neg
@@ -814,9 +826,20 @@ def main():
         not_overlapping_smadar_preds_pos.append(not_overlapping_pos)
         not_overlapping_smadar_preds_neg.append(not_overlapping_neg)
         
+        # Nitzan
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_nitzan, (label_map_pos_avi, label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_nitzan, (label_map_neg_avi, label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar))
+
+        total_nitzan_preds_pos += total_preds_pos
+        total_nitzan_preds_neg += total_preds_neg
+        total_overlapping_nitzan_preds_pos += overlapping_pos
+        total_overlapping_nitzan_preds_neg += overlapping_neg
+        not_overlapping_nitzan_preds_pos.append(not_overlapping_pos)
+        not_overlapping_nitzan_preds_neg.append(not_overlapping_neg)
+
         # TODO: PAI
-        inf_list_pos = ((label_map_pos_avi, 'Avi'), (label_map_pos_benny, 'Benny'), (label_map_pos_sigal, 'Sigal'), (label_map_pos_smadar, 'Smadar'), (label_map_pos_model, 'Model'))
-        inf_list_neg = ((label_map_neg_avi, 'Avi'), (label_map_neg_benny, 'Benny'), (label_map_neg_sigal, 'Sigal'), (label_map_neg_smadar, 'Smadar'), (label_map_neg_model, 'Model'))
+        inf_list_pos = ((label_map_pos_avi, 'Avi'), (label_map_pos_benny, 'Benny'), (label_map_pos_sigal, 'Sigal'), (label_map_pos_smadar, 'Smadar'), (label_map_pos_nitzan, 'Nitzan'), (label_map_pos_model, 'Model'))
+        inf_list_neg = ((label_map_neg_avi, 'Avi'), (label_map_neg_benny, 'Benny'), (label_map_neg_sigal, 'Sigal'), (label_map_neg_smadar, 'Smadar'), (label_map_neg_nitzan, 'Nitzan'), (label_map_neg_model, 'Model'))
 
         for inf_list, agreement_mat, disagreement_mat, agreement_per_pair_mat, total_labels_lst, lists_for_per_pair_all in zip([inf_list_pos, inf_list_neg], [pairwise_agreement_mat_pos, pairwise_agreement_mat_neg], [pairwise_disagreement_mat_pos, pairwise_disagreement_mat_neg], [pairwise_agreement_per_pair_mat_pos, pairwise_agreement_per_pair_mat_neg], [total_labels_pos, total_labels_neg], [(agreements_num_list_pos, disagreements_num_list_pos), (agreements_num_list_neg, disagreements_num_list_neg)]):
             for label_map1_inf, label_map2_inf in combinations(inf_list, 2):
@@ -896,6 +919,9 @@ def main():
     plot_curves([s[0] / s[1] for s in sensitivities_pos_benny], [s[0] / s[1] for s in sensitivities_neg_benny], 'B', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_benny.png')
     plot_curves([s[0] / s[1] for s in sensitivities_pos_sigal], [s[0] / s[1] for s in sensitivities_neg_sigal], 'C', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_sigal.png')
     plot_curves([s[0] / s[1] for s in sensitivities_pos_smadar], [s[0] / s[1] for s in sensitivities_neg_smadar], 'D', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_smadar.png')
+    plot_curves([s[0] / s[1] for s in sensitivities_pos_nitzan], [s[0] / s[1] for s in sensitivities_neg_nitzan], 'E', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_nitzan.png')
+
+
     # plot_curves_multiple(
     #     {'Avi': [s[0] / s[1] for s in sensitivities_pos_avi], 'Benny': [s[0] / s[1] for s in sensitivities_pos_benny], 'Sigal': [s[0] / s[1] for s in sensitivities_pos_sigal], 'Smadar': [s[0] / s[1] for s in sensitivities_pos_smadar], 'Nitzan': [s[0] / s[1] for s in sensitivities_pos_nitzan]},
     #     {'Avi': [s[0] / s[1] for s in sensitivities_neg_avi], 'Benny': [s[0] / s[1] for s in sensitivities_neg_benny], 'Sigal': [s[0] / s[1] for s in sensitivities_neg_sigal], 'Smadar': [s[0] / s[1] for s in sensitivities_neg_smadar], 'Nitzan': [s[0] / s[1] for s in sensitivities_neg_nitzan]},
@@ -948,6 +974,14 @@ def main():
     udpp_smadar_pos_std = np.std(not_overlapping_smadar_preds_pos)
     udpp_smadar_neg_std = np.std(not_overlapping_smadar_preds_neg)
     
+    # Nitzan
+    hmdr_nitzan_pos = total_overlapping_nitzan_preds_pos / total_nitzan_preds_pos
+    hmdr_nitzan_neg = total_overlapping_nitzan_preds_neg / total_nitzan_preds_neg
+    udpp_nitzan_pos = sum(not_overlapping_nitzan_preds_pos) / num_pairs
+    udpp_nitzan_neg = sum(not_overlapping_nitzan_preds_neg) / num_pairs
+    udpp_nitzan_pos_std = np.std(not_overlapping_nitzan_preds_pos)
+    udpp_nitzan_neg_std = np.std(not_overlapping_nitzan_preds_neg)
+
     # print(f'Precision pos = {union_precision_model_pos}')
     # print(f'Precision neg = {union_precision_model_neg}')
     # print(f'FPPI pos = {fppi_model_pos}')
@@ -958,16 +992,19 @@ def main():
                                'Benny HMDR (Positive)': hmdr_benny_pos, 'Benny HMDR (Negative)': hmdr_benny_neg,
                                'Sigal HMDR (Positive)': hmdr_sigal_pos, 'Sigal HMDR (Negative)': hmdr_sigal_neg,
                                'Smadar HMDR (Positive)': hmdr_smadar_pos, 'Smadar HMDR (Negative)': hmdr_smadar_neg,
+                               'Nitzan HMDR (Positive)': hmdr_nitzan_pos, 'Nitzan HMDR (Negative)': hmdr_nitzan_neg,
                                'UDPP Model (Positive)': udpp_model_pos, 'UDPP Model (Negative)': udpp_model_neg,
                                'UDPP Avi (Positive)': udpp_avi_pos, 'UDPP Avi (Negative)': udpp_avi_neg,
                                'UDPP Benny (Positive)': udpp_benny_pos, 'UDPP Benny (Negative)': udpp_benny_neg,
                                'UDPP Sigal (Positive)': udpp_sigal_pos, 'UDPP Sigal (Negative)': udpp_sigal_neg,
                                'UDPP Smadar (Positive)': udpp_smadar_pos, 'UDPP Smadar (Negative)': udpp_smadar_neg,
+                               'UDPP Nitzan (Positive)': udpp_nitzan_pos, 'UDPP Nitzan (Negative)': udpp_nitzan_neg,
                                'UDPP STD Model (Positive)': udpp_model_pos_std, 'UDPP STD Model (Negative)': udpp_model_neg_std,
                                'UDPP STD Avi (Positive)': udpp_avi_pos_std, 'UDPP STD Avi (Negative)': udpp_avi_neg_std,
                                'UDPP STD Benny (Positive)': udpp_benny_pos_std, 'UDPP STD Benny (Negative)': udpp_benny_neg_std,
                                'UDPP STD Sigal (Positive)': udpp_sigal_pos_std, 'UDPP STD Sigal (Negative)': udpp_sigal_neg_std,
                                'UDPP STD Smadar (Positive)': udpp_smadar_pos_std, 'UDPP STD Smadar (Negative)': udpp_smadar_neg_std,
+                               'UDPP STD Nitzan (Positive)': udpp_nitzan_pos_std, 'UDPP STD Nitzan (Negative)': udpp_nitzan_neg_std,
                                }
     with open(f'{out_path}/precision_measures.json', 'w') as f:
         json.dump(precision_measures_dict, f, indent=4)
