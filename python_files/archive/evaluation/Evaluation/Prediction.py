@@ -6,8 +6,9 @@ import re
 import numpy as np
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
+python_files_dir = os.path.normpath(os.path.join(current_dir, '../../..'))
+if python_files_dir not in sys.path:
+    sys.path.append(python_files_dir)
 
 import torch
 import torchvision.transforms.v2 as v2
