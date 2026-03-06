@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import re
 
 import numpy as np
 
@@ -143,6 +144,29 @@ def preprocess_no_seg(img: torch.Tensor):
     return img
 
 
+def _pair_sort_key(path_or_name: str):
+    name = os.path.basename(path_or_name)
+    nums = re.findall(r'\d+', name)
+    if nums:
+        return int(nums[-1])
+    return float('inf')
+
+
+def collect_pair_dirs(pairs_roots):
+    pair_dirs = []
+    for root in pairs_roots:
+        if not os.path.isdir(root):
+            print(f'Skipping missing pairs root: {root}')
+            continue
+        for name in os.listdir(root):
+            p = os.path.join(root, name)
+            if os.path.isdir(p):
+                pair_dirs.append(p)
+
+    pair_dirs = sorted(pair_dirs, key=_pair_sort_key)
+    return pair_dirs
+
+
 def postprocess(out):
     out[torch.logical_or(out > 0.75, out < -0.75)] = 0.
 
@@ -183,7 +207,7 @@ def postprocess(out):
     return out
 
 
-def main(use_segs=True):
+def main(use_segs=False):
     with torch.no_grad():
         model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id45_Epoch3_Longitudinal_AllEntities_DEVICES_FT_Cons_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
         # model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id42_Epoch15_Longitudinal_AllEntities_DEVICES_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
@@ -197,14 +221,23 @@ def main(use_segs=True):
         model.load_state_dict(checkpoint_dict['model_dict'], strict=True)
         model.eval()
 
-        preds_dir = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ICU_cases/test_predictions/all_entities_model'
-        pairs_dir = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ICU_cases/test_pairs'
-        segs_dir = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ICU_cases/segs'
+        preds_dir = os.path.normpath(os.path.join(current_dir, '../../../annotation tool/predictions'))
+        pairs_roots = [
+            os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs5')),
+            os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs6')),
+            os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs7')),
+            os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs8')),
+        ]
+        segs_dir = os.path.normpath(os.path.join(current_dir, '../../../annotation tool/segs'))
 
-        for pair in sorted(os.listdir(pairs_dir)):
+        os.makedirs(preds_dir, exist_ok=True)
+
+        pair_dirs = collect_pair_dirs(pairs_roots)
+
+        for pair_d in pair_dirs:
+            pair = os.path.basename(pair_d)
             print(f'Working on {pair}')
 
-            pair_d = f'{pairs_dir}/{pair}'
             pred_d = f'{preds_dir}/{pair}'
             os.makedirs(pred_d, exist_ok=True)
 
