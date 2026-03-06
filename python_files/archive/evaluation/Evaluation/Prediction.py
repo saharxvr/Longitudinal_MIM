@@ -1,5 +1,6 @@
 import os
 import sys
+import argparse
 
 import numpy as np
 
@@ -134,6 +135,14 @@ def preprocess(img: torch.Tensor, boundary_seg: torch.Tensor, crop_pad_val=15, c
     return img
 
 
+def preprocess_no_seg(img: torch.Tensor):
+    img = resize(img[None, ...])
+    img = (img - torch.min(img)) / (torch.max(img) - torch.min(img))
+    img = adjust_sharpness(img, sharpness_factor=4.)
+    img = torch.clamp(img, 0., 1.)
+    return img
+
+
 def postprocess(out):
     out[torch.logical_or(out > 0.75, out < -0.75)] = 0.
 
@@ -174,7 +183,7 @@ def postprocess(out):
     return out
 
 
-def main():
+def main(use_segs=True):
     with torch.no_grad():
         model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id45_Epoch3_Longitudinal_AllEntities_DEVICES_FT_Cons_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
         # model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id42_Epoch15_Longitudinal_AllEntities_DEVICES_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
@@ -205,19 +214,28 @@ def main():
             prior_n = prior_n[:-7]
             current_n = current_n[:-7]
 
-            prior_seg_p = f'{segs_dir}/{prior_n}_seg.nii.gz'
-            current_seg_p = f'{segs_dir}/{current_n}_seg.nii.gz'
-
             prior_nif = nib.load(prior_p)
             aff = prior_nif.affine
             prior = torch.tensor(prior_nif.get_fdata().T, dtype=torch.float32)
             current = torch.tensor(nib.load(current_p).get_fdata().T, dtype=torch.float32)
 
-            prior_seg = torch.tensor(nib.load(prior_seg_p).get_fdata().T)
-            current_seg = torch.tensor(nib.load(current_seg_p).get_fdata().T)
+            if use_segs:
+                prior_seg_p = f'{segs_dir}/{prior_n}_seg.nii.gz'
+                current_seg_p = f'{segs_dir}/{current_n}_seg.nii.gz'
 
-            prior = preprocess(prior, prior_seg, crop_pad_val=15, crop_seg=False)
-            current = preprocess(current, current_seg, crop_pad_val=15, crop_seg=False)
+                if not os.path.exists(prior_seg_p):
+                    raise FileNotFoundError(f'Missing prior seg file: {prior_seg_p}')
+                if not os.path.exists(current_seg_p):
+                    raise FileNotFoundError(f'Missing current seg file: {current_seg_p}')
+
+                prior_seg = torch.tensor(nib.load(prior_seg_p).get_fdata().T)
+                current_seg = torch.tensor(nib.load(current_seg_p).get_fdata().T)
+
+                prior = preprocess(prior, prior_seg, crop_pad_val=15, crop_seg=False)
+                current = preprocess(current, current_seg, crop_pad_val=15, crop_seg=False)
+            else:
+                prior = preprocess_no_seg(prior)
+                current = preprocess_no_seg(current)
 
             plot_pair(prior, current, pred_d)
 
@@ -232,6 +250,15 @@ def main():
             plot_output_on_current(current, (output > 0).float() - (output < 0).float(), pred_d, suffix='_bin')
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    segs_group = parser.add_mutually_exclusive_group()
+    segs_group.add_argument('--use-segs', dest='use_segs', action='store_true')
+    segs_group.add_argument('--no-segs', dest='use_segs', action='store_false')
+    parser.set_defaults(use_segs=True)
+    return parser.parse_args()
+
+
 if __name__ == '__main__':
     resize = v2.Resize((512, 512))
     struct = torch.tensor([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
@@ -242,4 +269,5 @@ if __name__ == '__main__':
         (0.500, (1.000, 0.988, 0.988)),
         (0.600, (1.000, 0.604, 0.000)),
         (1.000, (0.682, 0.000, 0.000))))
-    main()
+    args = parse_args()
+    main(use_segs=args.use_segs)
