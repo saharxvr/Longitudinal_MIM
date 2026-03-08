@@ -3,6 +3,7 @@ import json
 import nibabel as nib
 from skimage.draw import ellipse
 import os
+import re
 import torch
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -548,6 +549,58 @@ def get_sensitivity_at_consensus_levels(model_map, human_maps):
     return sensitivities
 
 
+def _pair_num_from_name(name: str):
+    nums = re.findall(r'\d+', name)
+    if not nums:
+        return None
+    return int(nums[-1])
+
+
+def build_pair_dirs_index(pairs_roots):
+    pair_to_dir = {}
+    for root in pairs_roots:
+        if not os.path.isdir(root):
+            print(f'Skipping missing pairs root: {root}')
+            continue
+
+        for child in os.listdir(root):
+            child_path = os.path.join(root, child)
+            if not os.path.isdir(child_path):
+                continue
+
+            pair_num = _pair_num_from_name(child)
+            if pair_num is None:
+                continue
+
+            pair_to_dir[pair_num] = child_path
+
+    return pair_to_dir
+
+
+def build_annotation_index(annotations_base_path: str, annotator: str):
+    annotator_dir = os.path.join(annotations_base_path, annotator)
+    pair_to_json = {}
+
+    if not os.path.isdir(annotator_dir):
+        print(f'Warning: missing annotations directory for {annotator}: {annotator_dir}')
+        return pair_to_json
+
+    for walk_dir, _, files in os.walk(annotator_dir):
+        for file_name in files:
+            if not file_name.lower().endswith('.json'):
+                continue
+
+            pair_num = _pair_num_from_name(file_name)
+            if pair_num is None:
+                pair_num = _pair_num_from_name(os.path.basename(walk_dir))
+            if pair_num is None:
+                continue
+
+            pair_to_json[pair_num] = os.path.join(walk_dir, file_name)
+
+    return pair_to_json
+
+
 # def plot_detection_table_graphs(detection_table, category_name):
 #     print(f'Category name: {category_name}')
 #     detection_table = np.array(detection_table)
@@ -572,10 +625,28 @@ def main():
     #    - Current counts    : num_humans = 4, num_observers = 5
     #    - Nitzan-specific loading/sensitivity/HMDR/UDPP/PAI entries were removed.
     # To revert: restore the original values above and reintroduce Nitzan blocks.
-    model_outputs_base_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ICU_cases/test_predictions/all_entities_model'
-    annotations_base_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/PhysicianAnnotations'
-    pairs_base_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/Pairs_ICU'
-    out_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability'
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    python_files_dir = os.path.normpath(os.path.join(current_dir, '../../..'))
+    annotation_tool_dir = os.path.join(python_files_dir, 'annotation tool')
+
+    model_outputs_base_path = os.path.join(annotation_tool_dir, 'predictions')
+    annotations_base_path = os.path.join(annotation_tool_dir, 'Annotations')
+    pairs_roots = [
+        os.path.join(annotation_tool_dir, 'Pairs5'),
+        os.path.join(annotation_tool_dir, 'Pairs6'),
+        os.path.join(annotation_tool_dir, 'Pairs7'),
+        os.path.join(annotation_tool_dir, 'pairs8'),
+        os.path.join(annotation_tool_dir, 'Pairs8'),
+    ]
+    out_path = os.path.join(annotation_tool_dir, 'observer_variability')
+    os.makedirs(out_path, exist_ok=True)
+
+    pairs_index = build_pair_dirs_index(pairs_roots)
+    preds_index = build_pair_dirs_index([model_outputs_base_path])
+    avi_annotations = build_annotation_index(annotations_base_path, 'Avi')
+    benny_annotations = build_annotation_index(annotations_base_path, 'Benny')
+    sigal_annotations = build_annotation_index(annotations_base_path, 'Sigal')
+    smadar_annotations = build_annotation_index(annotations_base_path, 'Smadar')
 
     num_humans = 4
     num_observers = 5
@@ -608,8 +679,8 @@ def main():
     pairwise_disagreement_mat_pos = np.zeros((num_observers, num_observers))
     pairwise_disagreement_mat_neg = np.zeros((num_observers, num_observers))
 
-    pairwise_agreement_per_pair_mat_pos = np.eye(num_observers) * num_pairs
-    pairwise_agreement_per_pair_mat_neg = np.eye(num_observers) * num_pairs
+    pairwise_agreement_per_pair_mat_pos = np.zeros((num_observers, num_observers))
+    pairwise_agreement_per_pair_mat_neg = np.zeros((num_observers, num_observers))
 
     agreements_num_list_pos = [[[] for _ in range(num_observers)] for __ in range(num_observers)]
     agreements_num_list_neg = [[[] for _ in range(num_observers)] for __ in range(num_observers)]
@@ -654,15 +725,50 @@ def main():
     not_overlapping_smadar_preds_pos = []
     not_overlapping_smadar_preds_neg = []
     
+    effective_num_pairs = 0
+
     for i in range(bias, num_pairs + bias):
         print(f'Pair {i + 1}')
-        pair_path = f'{pairs_base_path}/pair{i+1}'
-        current_path = f'{pair_path}/{sorted([p for p in os.listdir(pair_path) if p.endswith(".nii.gz")])[1]}'
-        annotation_path_avi = f'{annotations_base_path}/Avi/{i+1}.json'
-        annotation_path_benny = f'{annotations_base_path}/Benny/{i+1}.json'
-        annotation_path_sigal = f'{annotations_base_path}/Sigal/{i+1}.json'
-        annotation_path_smadar = f'{annotations_base_path}/Smadar/{i+1}.json'
-        annotation_path_model = f'{model_outputs_base_path}/pair{i+1}/output.nii.gz'
+        pair_num = i + 1
+
+        if pair_num not in pairs_index:
+            print(f'Skipping pair {pair_num}: missing pair directory')
+            continue
+        pair_path = pairs_index[pair_num]
+
+        nii_files = sorted([p for p in os.listdir(pair_path) if p.endswith('.nii.gz')])
+        if len(nii_files) < 2:
+            print(f'Skipping pair {pair_num}: fewer than 2 .nii.gz files in {pair_path}')
+            continue
+        current_path = os.path.join(pair_path, nii_files[1])
+
+        if pair_num not in avi_annotations:
+            print(f'Skipping pair {pair_num}: missing Avi annotation')
+            continue
+        if pair_num not in benny_annotations:
+            print(f'Skipping pair {pair_num}: missing Benny annotation')
+            continue
+        if pair_num not in sigal_annotations:
+            print(f'Skipping pair {pair_num}: missing Sigal annotation')
+            continue
+        if pair_num not in smadar_annotations:
+            print(f'Skipping pair {pair_num}: missing Smadar annotation')
+            continue
+
+        annotation_path_avi = avi_annotations[pair_num]
+        annotation_path_benny = benny_annotations[pair_num]
+        annotation_path_sigal = sigal_annotations[pair_num]
+        annotation_path_smadar = smadar_annotations[pair_num]
+
+        if pair_num not in preds_index:
+            print(f'Skipping pair {pair_num}: missing predictions directory')
+            continue
+        annotation_path_model = os.path.join(preds_index[pair_num], 'output.nii.gz')
+        if not os.path.exists(annotation_path_model):
+            print(f'Skipping pair {pair_num}: missing model output file {annotation_path_model}')
+            continue
+
+        effective_num_pairs += 1
 
         current = load_xray(current_path)
         label_map_pos_avi, label_map_neg_avi = load_labels_map(annotation_path_avi, current.shape)
@@ -884,18 +990,21 @@ def main():
 
     # TODO: Sensitivity at consensus levels
 
+    if effective_num_pairs == 0:
+        raise RuntimeError('No complete pairs found to evaluate.')
+
     final_sensitivities = {f'Sensitivity Consensus Level {i + 1} (Positive)': s[0] / s[1] for i, s in enumerate(sensitivities_pos)}
     final_sensitivities.update({f'Sensitivity Consensus Level {i + 1} (Negative)': s[0] / s[1] for i, s in enumerate(sensitivities_neg)})
 
     final_sensitivities.update({f'Total detections & changes at Consensus Level {i + 1} (Positive)': (s[0], s[1]) for i, s in enumerate(sensitivities_pos)})
     final_sensitivities.update({f'Total detections & changes at Consensus Level {i + 1} (Negative)': (s[0], s[1]) for i, s in enumerate(sensitivities_neg)})
 
-    plot_curves([s[0] / s[1] for s in sensitivities_pos], [s[0] / s[1] for s in sensitivities_neg], '$M_{ICU}$', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels.png')
+    plot_curves([s[0] / s[1] for s in sensitivities_pos], [s[0] / s[1] for s in sensitivities_neg], '$M_{ICU}$', os.path.join(out_path, 'sensitivity_consensus_levels.png'))
 
-    plot_curves([s[0] / s[1] for s in sensitivities_pos_avi], [s[0] / s[1] for s in sensitivities_neg_avi], 'A', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_avi.png')
-    plot_curves([s[0] / s[1] for s in sensitivities_pos_benny], [s[0] / s[1] for s in sensitivities_neg_benny], 'B', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_benny.png')
-    plot_curves([s[0] / s[1] for s in sensitivities_pos_sigal], [s[0] / s[1] for s in sensitivities_neg_sigal], 'C', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_sigal.png')
-    plot_curves([s[0] / s[1] for s in sensitivities_pos_smadar], [s[0] / s[1] for s in sensitivities_neg_smadar], 'D', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_smadar.png')
+    plot_curves([s[0] / s[1] for s in sensitivities_pos_avi], [s[0] / s[1] for s in sensitivities_neg_avi], 'A', os.path.join(out_path, 'sensitivity_consensus_levels_avi.png'))
+    plot_curves([s[0] / s[1] for s in sensitivities_pos_benny], [s[0] / s[1] for s in sensitivities_neg_benny], 'B', os.path.join(out_path, 'sensitivity_consensus_levels_benny.png'))
+    plot_curves([s[0] / s[1] for s in sensitivities_pos_sigal], [s[0] / s[1] for s in sensitivities_neg_sigal], 'C', os.path.join(out_path, 'sensitivity_consensus_levels_sigal.png'))
+    plot_curves([s[0] / s[1] for s in sensitivities_pos_smadar], [s[0] / s[1] for s in sensitivities_neg_smadar], 'D', os.path.join(out_path, 'sensitivity_consensus_levels_smadar.png'))
     # plot_curves_multiple(
     #     {'Avi': [s[0] / s[1] for s in sensitivities_pos_avi], 'Benny': [s[0] / s[1] for s in sensitivities_pos_benny], 'Sigal': [s[0] / s[1] for s in sensitivities_pos_sigal], 'Smadar': [s[0] / s[1] for s in sensitivities_pos_smadar], 'Nitzan': [s[0] / s[1] for s in sensitivities_pos_nitzan]},
     #     {'Avi': [s[0] / s[1] for s in sensitivities_neg_avi], 'Benny': [s[0] / s[1] for s in sensitivities_neg_benny], 'Sigal': [s[0] / s[1] for s in sensitivities_neg_sigal], 'Smadar': [s[0] / s[1] for s in sensitivities_neg_smadar], 'Nitzan': [s[0] / s[1] for s in sensitivities_neg_nitzan]},
@@ -911,40 +1020,40 @@ def main():
     # Model
     hmdr_model_pos = total_overlapping_model_preds_pos / total_model_preds_pos
     hmdr_model_neg = total_overlapping_model_preds_neg / total_model_preds_neg
-    udpp_model_pos = sum(not_overlapping_model_preds_pos) / num_pairs
-    udpp_model_neg = sum(not_overlapping_model_preds_neg) / num_pairs
+    udpp_model_pos = sum(not_overlapping_model_preds_pos) / effective_num_pairs
+    udpp_model_neg = sum(not_overlapping_model_preds_neg) / effective_num_pairs
     udpp_model_pos_std = np.std(not_overlapping_model_preds_pos)
     udpp_model_neg_std = np.std(not_overlapping_model_preds_neg)
 
     # Avi
     hmdr_avi_pos = total_overlapping_avi_preds_pos / total_avi_preds_pos
     hmdr_avi_neg = total_overlapping_avi_preds_neg / total_avi_preds_neg
-    udpp_avi_pos = sum(not_overlapping_avi_preds_pos) / num_pairs
-    udpp_avi_neg = sum(not_overlapping_avi_preds_neg) / num_pairs
+    udpp_avi_pos = sum(not_overlapping_avi_preds_pos) / effective_num_pairs
+    udpp_avi_neg = sum(not_overlapping_avi_preds_neg) / effective_num_pairs
     udpp_avi_pos_std = np.std(not_overlapping_avi_preds_pos)
     udpp_avi_neg_std = np.std(not_overlapping_avi_preds_neg)
     
     # Benny
     hmdr_benny_pos = total_overlapping_benny_preds_pos / total_benny_preds_pos
     hmdr_benny_neg = total_overlapping_benny_preds_neg / total_benny_preds_neg
-    udpp_benny_pos = sum(not_overlapping_benny_preds_pos) / num_pairs
-    udpp_benny_neg = sum(not_overlapping_benny_preds_neg) / num_pairs
+    udpp_benny_pos = sum(not_overlapping_benny_preds_pos) / effective_num_pairs
+    udpp_benny_neg = sum(not_overlapping_benny_preds_neg) / effective_num_pairs
     udpp_benny_pos_std = np.std(not_overlapping_benny_preds_pos)
     udpp_benny_neg_std = np.std(not_overlapping_benny_preds_neg)
     
     # Sigal
     hmdr_sigal_pos = total_overlapping_sigal_preds_pos / total_sigal_preds_pos
     hmdr_sigal_neg = total_overlapping_sigal_preds_neg / total_sigal_preds_neg
-    udpp_sigal_pos = sum(not_overlapping_sigal_preds_pos) / num_pairs
-    udpp_sigal_neg = sum(not_overlapping_sigal_preds_neg) / num_pairs
+    udpp_sigal_pos = sum(not_overlapping_sigal_preds_pos) / effective_num_pairs
+    udpp_sigal_neg = sum(not_overlapping_sigal_preds_neg) / effective_num_pairs
     udpp_sigal_pos_std = np.std(not_overlapping_sigal_preds_pos)
     udpp_sigal_neg_std = np.std(not_overlapping_sigal_preds_neg)
     
     # Smadar
     hmdr_smadar_pos = total_overlapping_smadar_preds_pos / total_smadar_preds_pos
     hmdr_smadar_neg = total_overlapping_smadar_preds_neg / total_smadar_preds_neg
-    udpp_smadar_pos = sum(not_overlapping_smadar_preds_pos) / num_pairs
-    udpp_smadar_neg = sum(not_overlapping_smadar_preds_neg) / num_pairs
+    udpp_smadar_pos = sum(not_overlapping_smadar_preds_pos) / effective_num_pairs
+    udpp_smadar_neg = sum(not_overlapping_smadar_preds_neg) / effective_num_pairs
     udpp_smadar_pos_std = np.std(not_overlapping_smadar_preds_pos)
     udpp_smadar_neg_std = np.std(not_overlapping_smadar_preds_neg)
     
@@ -981,13 +1090,16 @@ def main():
     mat_per_label_pos = pairwise_agreement_mat_pos / (pairwise_agreement_mat_pos + pairwise_disagreement_mat_pos)
     mat_per_label_neg = pairwise_agreement_mat_neg / (pairwise_agreement_mat_neg + pairwise_disagreement_mat_neg)
     mat_per_label_all = (pairwise_agreement_mat_pos + pairwise_agreement_mat_neg) / (pairwise_agreement_mat_pos + pairwise_disagreement_mat_pos + pairwise_agreement_mat_neg + pairwise_disagreement_mat_neg)
-    mat_per_pair_pos = pairwise_agreement_per_pair_mat_pos / num_pairs
-    mat_per_pair_neg = pairwise_agreement_per_pair_mat_neg / num_pairs
+    np.fill_diagonal(pairwise_agreement_per_pair_mat_pos, effective_num_pairs)
+    np.fill_diagonal(pairwise_agreement_per_pair_mat_neg, effective_num_pairs)
+
+    mat_per_pair_pos = pairwise_agreement_per_pair_mat_pos / effective_num_pairs
+    mat_per_pair_neg = pairwise_agreement_per_pair_mat_neg / effective_num_pairs
 
     mat_per_pair_all = np.eye(num_observers)
     for n1, n2 in combinations(physician_to_idx_dict.keys(), 2):
         pai_per_pair = 0
-        for k in range(num_pairs):
+        for k in range(effective_num_pairs):
             c_ag_pos = agreements_num_list_pos[physician_to_idx_dict[n1]][physician_to_idx_dict[n2]][k]
             c_ag_neg = agreements_num_list_neg[physician_to_idx_dict[n1]][physician_to_idx_dict[n2]][k]
             c_ag = c_ag_pos + c_ag_neg
@@ -1001,8 +1113,8 @@ def main():
             if (c_ag_pos + c_disag_pos == 0 and c_ag_neg + c_disag_neg > 0) or (c_ag_pos + c_disag_pos > 0 and c_ag_neg + c_disag_neg == 0):
                 c_pai = c_pai * 0.5 + 0.5
             pai_per_pair += c_pai
-        mat_per_pair_all[physician_to_idx_dict[n1], physician_to_idx_dict[n2]] = pai_per_pair / num_pairs
-        mat_per_pair_all[physician_to_idx_dict[n2], physician_to_idx_dict[n1]] = pai_per_pair / num_pairs
+        mat_per_pair_all[physician_to_idx_dict[n1], physician_to_idx_dict[n2]] = pai_per_pair / effective_num_pairs
+        mat_per_pair_all[physician_to_idx_dict[n2], physician_to_idx_dict[n1]] = pai_per_pair / effective_num_pairs
 
     per_label_df_pos = {phy_n: mat_per_label_pos[i].tolist() for i, phy_n in enumerate(physician_to_idx_dict.keys())}
     per_label_df_neg = {phy_n: mat_per_label_neg[i].tolist() for i, phy_n in enumerate(physician_to_idx_dict.keys())}
