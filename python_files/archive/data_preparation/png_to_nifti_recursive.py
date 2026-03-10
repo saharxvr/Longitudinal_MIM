@@ -7,12 +7,12 @@ import nibabel as nib
 from PIL import Image
 
 
-def convert_png_to_nifti(png_path, delete_png=False):
+def convert_image_to_nifti(image_path, delete_source=False):
     """
-    Convert a single PNG file to NIfTI (.nii.gz) in the same directory.
+    Convert a single image file to NIfTI (.nii.gz) in the same directory.
     """
     # Load image
-    img = Image.open(png_path)
+    img = Image.open(image_path)
     data = np.array(img)
 
     # Convert RGB → grayscale if needed
@@ -26,35 +26,37 @@ def convert_png_to_nifti(png_path, delete_png=False):
 
     nifti_img = nib.Nifti1Image(data, affine)
 
-    out_path = os.path.splitext(png_path)[0] + ".nii.gz"
+    out_path = os.path.splitext(image_path)[0] + ".nii.gz"
     nib.save(nifti_img, out_path)
 
-    if delete_png:
-        os.remove(png_path)
+    if delete_source:
+        os.remove(image_path)
 
     return out_path
 
 
-def process_directory(root_dir, delete_png=False):
+def process_directory(root_dir, delete_source=False):
     """
-    Recursively process all PNG files under root_dir.
+    Recursively process all image files under root_dir.
     """
     count = 0
+    supported_exts = {".png", ".jpg", ".jpeg"}
 
     for root, _, files in os.walk(root_dir):
         for fname in files:
-            if fname.lower().endswith(".png"):
-                png_path = os.path.join(root, fname)
-                out_path = convert_png_to_nifti(png_path, delete_png)
-                print(f"[OK] {png_path} → {out_path}")
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in supported_exts:
+                image_path = os.path.join(root, fname)
+                out_path = convert_image_to_nifti(image_path, delete_source)
+                print(f"[OK] {image_path} → {out_path}")
                 count += 1
 
-    print(f"\nDone. Converted {count} PNG files.")
+    print(f"\nDone. Converted {count} image files.")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Recursively convert PNG files to NIfTI, preserving directory structure."
+        description="Recursively convert PNG/JPG/JPEG files to NIfTI, preserving directory structure."
     )
     parser.add_argument(
         "root_dir",
@@ -62,13 +64,13 @@ def main():
         help="Root directory containing PNG files"
     )
     parser.add_argument(
-        "--delete-png",
+        "--delete-source",
         action="store_true",
-        help="Delete PNG files after conversion"
+        help="Delete source image files after conversion"
     )
 
     args = parser.parse_args()
-    process_directory(args.root_dir, args.delete_png)
+    process_directory(args.root_dir, args.delete_source)
 
 
 if __name__ == "__main__":

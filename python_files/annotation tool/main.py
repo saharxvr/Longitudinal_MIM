@@ -46,7 +46,9 @@ class BoundingBoxLabelingApp:
 
         # Labeling setup
         self.current_label = "Appearance"
+        # Keep Persistence color only for backward compatibility when loading old annotations.
         self.label_colors = {"Appearance": "red", "Disappearance": "green", "Persistence": "yellow"}
+        self.selectable_labels = ["Appearance", "Disappearance"]
         self.persistence_colors = {"Increase": "red", "Decrease": "green", "None": "yellow"}
         self.tag_options = ["Consolidation", "Pneumothorax", "Pleural Effusion","Fluid Overload", "Other"]
         self.default_tag = self.tag_options[0]
@@ -97,7 +99,7 @@ class BoundingBoxLabelingApp:
         label_frame.pack(side=tk.TOP, pady=5)
         label_frame.configure(background='gray26')
 
-        for label in self.label_colors.keys():
+        for label in self.selectable_labels:
             btn = tk.Button(label_frame, text=label, bg=self.label_colors[label], command=lambda l=label: self.set_label(l), font='Helvetica 12 bold')
             btn.pack(side=tk.LEFT, padx=5, pady=5)
 

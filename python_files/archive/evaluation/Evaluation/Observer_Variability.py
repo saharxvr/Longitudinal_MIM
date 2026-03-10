@@ -12,6 +12,7 @@ from matplotlib import colors
 from scipy.ndimage import label
 from itertools import combinations
 import torchvision.transforms.v2 as v2
+import argparse
 
 
 # One time use function
@@ -613,18 +614,11 @@ def build_annotation_index(annotations_base_path: str, annotator: str):
 #     print(np.corrcoef(detection_table.T))
 
 
-def main():
-    # TEMP MODIFICATIONS (for local run on pairs 61-100 without Nitzan):
-    # 1) Pair range changed from original first-30 pairs to pairs 61-100:
-    #    - Original: num_pairs = 30, bias = 0
-    #    - Current : num_pairs = 40, bias = 60
-    # 2) Nitzan removed from observer set and all dependent calculations:
-    #    - Original observers: Avi, Benny, Sigal, Smadar, Nitzan, Model
-    #    - Current observers : Avi, Benny, Sigal, Smadar, Model
-    #    - Original counts   : num_humans = 5, num_observers = 6
-    #    - Current counts    : num_humans = 4, num_observers = 5
-    #    - Nitzan-specific loading/sensitivity/HMDR/UDPP/PAI entries were removed.
-    # To revert: restore the original values above and reintroduce Nitzan blocks.
+def main(pair_start=61, pair_end=100, out_dir_name='observer_variability'):
+    # Current evaluator setup:
+    # - Humans: Avi, Benny, Sigal, Smadar (Nitzan excluded)
+    # - Model:  included as fifth observer
+    # - Pair range: configurable via pair_start / pair_end
     current_dir = os.path.dirname(os.path.abspath(__file__))
     python_files_dir = os.path.normpath(os.path.join(current_dir, '../../..'))
     annotation_tool_dir = os.path.join(python_files_dir, 'annotation tool')
@@ -632,13 +626,17 @@ def main():
     model_outputs_base_path = os.path.join(annotation_tool_dir, 'predictions')
     annotations_base_path = os.path.join(annotation_tool_dir, 'Annotations')
     pairs_roots = [
+        os.path.join(annotation_tool_dir, 'Pairs1'),
+        os.path.join(annotation_tool_dir, 'Pairs2'),
+        os.path.join(annotation_tool_dir, 'Pairs3'),
+        os.path.join(annotation_tool_dir, 'Pairs4'),
         os.path.join(annotation_tool_dir, 'Pairs5'),
         os.path.join(annotation_tool_dir, 'Pairs6'),
         os.path.join(annotation_tool_dir, 'Pairs7'),
         os.path.join(annotation_tool_dir, 'pairs8'),
         os.path.join(annotation_tool_dir, 'Pairs8'),
     ]
-    out_path = os.path.join(annotation_tool_dir, 'observer_variability')
+    out_path = os.path.join(annotation_tool_dir, out_dir_name)
     os.makedirs(out_path, exist_ok=True)
 
     pairs_index = build_pair_dirs_index(pairs_roots)
@@ -654,9 +652,6 @@ def main():
     detections_table_neg = []
     detections_table_all = []
     physician_to_idx_dict = {'Avi': 0, 'Benny': 1, 'Sigal': 2, 'Smadar': 3, 'Model': 4}
-
-    num_pairs = 40
-    bias = 60
 
     sensitivities_pos = [[0, 0] for _ in range(num_humans)]
     sensitivities_neg = [[0, 0] for _ in range(num_humans)]
@@ -727,9 +722,8 @@ def main():
     
     effective_num_pairs = 0
 
-    for i in range(bias, num_pairs + bias):
-        print(f'Pair {i + 1}')
-        pair_num = i + 1
+    for pair_num in range(pair_start, pair_end + 1):
+        print(f'Pair {pair_num}')
 
         if pair_num not in pairs_index:
             print(f'Skipping pair {pair_num}: missing pair directory')
@@ -1219,6 +1213,12 @@ def main():
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Run observer variability evaluation over a pair range.')
+    parser.add_argument('--pair-start', type=int, default=61, help='Inclusive start pair number.')
+    parser.add_argument('--pair-end', type=int, default=100, help='Inclusive end pair number.')
+    parser.add_argument('--out-dir', type=str, default='observer_variability', help='Output directory name under annotation tool/.')
+    args = parser.parse_args()
+
     resize = v2.Resize((768, 768))
     struct = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
     differential_grad = colors.LinearSegmentedColormap.from_list('my_gradient', (
@@ -1234,5 +1234,5 @@ if __name__ == '__main__':
     SIGAL_POS = 2
     SMADAR_POS = 3
 
-    main()
+    main(pair_start=args.pair_start, pair_end=args.pair_end, out_dir_name=args.out_dir)
 
