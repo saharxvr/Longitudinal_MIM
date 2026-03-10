@@ -208,9 +208,10 @@ def postprocess(out):
     return out
 
 
-def main(use_segs=False):
+def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None):
     with torch.no_grad():
-        model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id45_Epoch3_Longitudinal_AllEntities_DEVICES_FT_Cons_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
+        if model_path is None:
+            model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id45_Epoch3_Longitudinal_AllEntities_DEVICES_FT_Cons_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
         # model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id42_Epoch15_Longitudinal_AllEntities_DEVICES_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
         # model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id38_Epoch10_Longitudinal_ConsolidationRotationInvariance_MoreEpochs_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
         # model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id39_Epoch15_Longitudinal_PleuralEffusionRotationInvariance_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
@@ -218,17 +219,22 @@ def main(use_segs=False):
         # model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id41_Epoch12_Longitudinal_FluidOverloadRotationInvariance_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
         model = LongitudinalMIMModelBig(dec=6, use_pos_embed=USE_POS_EMBED, patch_size=MASK_PATCH_SIZE).to(DEVICE)
 
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f'Model checkpoint not found: {model_path}')
+
         checkpoint_dict = torch.load(model_path)
         model.load_state_dict(checkpoint_dict['model_dict'], strict=True)
         model.eval()
 
-        preds_dir = os.path.normpath(os.path.join(current_dir, '../../../annotation tool/predictions'))
-        pairs_roots = [
-            os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs5')),
-            os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs6')),
-            os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs7')),
-            os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs8')),
-        ]
+        if preds_dir is None:
+            preds_dir = os.path.normpath(os.path.join(current_dir, '../../../annotation tool/predictions'))
+        if pairs_roots is None:
+            pairs_roots = [
+                os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs5')),
+                os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs6')),
+                os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs7')),
+                os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs8')),
+            ]
         segs_dir = os.path.normpath(os.path.join(current_dir, '../../../annotation tool/segs'))
 
         os.makedirs(preds_dir, exist_ok=True)
@@ -242,7 +248,11 @@ def main(use_segs=False):
             pred_d = f'{preds_dir}/{pair}'
             os.makedirs(pred_d, exist_ok=True)
 
-            prior_n, current_n = sorted([n for n in os.listdir(pair_d)])
+            nii_files = sorted([n for n in os.listdir(pair_d) if n.endswith('.nii.gz')])
+            if len(nii_files) < 2:
+                print(f'Skipping {pair}: fewer than 2 .nii.gz files in {pair_d}')
+                continue
+            prior_n, current_n = nii_files[0], nii_files[1]
             prior_p, current_p = f'{pair_d}/{prior_n}', f'{pair_d}/{current_n}'
 
             prior_n = prior_n[:-7]
@@ -290,6 +300,9 @@ def parse_args():
     segs_group.add_argument('--use-segs', dest='use_segs', action='store_true')
     segs_group.add_argument('--no-segs', dest='use_segs', action='store_false')
     parser.set_defaults(use_segs=True)
+    parser.add_argument('--model-path', type=str, default=None, help='Path to model checkpoint (.pt).')
+    parser.add_argument('--preds-dir', type=str, default=None, help='Output predictions directory.')
+    parser.add_argument('--pairs-roots', nargs='+', default=None, help='One or more roots containing pair directories.')
     return parser.parse_args()
 
 
@@ -304,4 +317,4 @@ if __name__ == '__main__':
         (0.600, (1.000, 0.604, 0.000)),
         (1.000, (0.682, 0.000, 0.000))))
     args = parse_args()
-    main(use_segs=args.use_segs)
+    main(use_segs=args.use_segs, model_path=args.model_path, preds_dir=args.preds_dir, pairs_roots=args.pairs_roots)
