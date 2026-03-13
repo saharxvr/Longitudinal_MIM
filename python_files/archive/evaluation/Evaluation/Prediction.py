@@ -208,7 +208,7 @@ def postprocess(out):
     return out
 
 
-def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None):
+def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None, segs_dir=None):
     with torch.no_grad():
         if model_path is None:
             model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id45_Epoch3_Longitudinal_AllEntities_DEVICES_FT_Cons_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
@@ -235,7 +235,16 @@ def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None):
                 os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs7')),
                 os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs8')),
             ]
-        segs_dir = os.path.normpath(os.path.join(current_dir, '../../../annotation tool/segs'))
+        if segs_dir is None:
+            local_segs_dir = os.path.normpath(os.path.join(current_dir, '../../../annotation tool/segs'))
+            legacy_segs_dir = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ICU_cases/segs'
+            if os.path.isdir(local_segs_dir):
+                segs_dir = local_segs_dir
+            elif os.path.isdir(legacy_segs_dir):
+                segs_dir = legacy_segs_dir
+            else:
+                segs_dir = local_segs_dir
+                print(f'Warning: segmentation directory not found. Expected one of: {local_segs_dir}, {legacy_segs_dir}')
 
         os.makedirs(preds_dir, exist_ok=True)
 
@@ -303,6 +312,7 @@ def parse_args():
     parser.add_argument('--model-path', type=str, default=None, help='Path to model checkpoint (.pt).')
     parser.add_argument('--preds-dir', type=str, default=None, help='Output predictions directory.')
     parser.add_argument('--pairs-roots', nargs='+', default=None, help='One or more roots containing pair directories.')
+    parser.add_argument('--segs-dir', type=str, default=None, help='Segmentation directory. If omitted, local path is used with legacy fallback.')
     return parser.parse_args()
 
 
@@ -317,4 +327,4 @@ if __name__ == '__main__':
         (0.600, (1.000, 0.604, 0.000)),
         (1.000, (0.682, 0.000, 0.000))))
     args = parse_args()
-    main(use_segs=args.use_segs, model_path=args.model_path, preds_dir=args.preds_dir, pairs_roots=args.pairs_roots)
+    main(use_segs=args.use_segs, model_path=args.model_path, preds_dir=args.preds_dir, pairs_roots=args.pairs_roots, segs_dir=args.segs_dir)
