@@ -614,7 +614,7 @@ def build_annotation_index(annotations_base_path: str, annotator: str):
 #     print(np.corrcoef(detection_table.T))
 
 
-def main(pair_start=61, pair_end=100, out_dir_name='observer_variability'):
+def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds_dir=None):
     # Current evaluator setup:
     # - Humans: Avi, Benny, Sigal, Smadar (Nitzan excluded)
     # - Model:  included as fifth observer
@@ -623,7 +623,10 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability'):
     python_files_dir = os.path.normpath(os.path.join(current_dir, '../../..'))
     annotation_tool_dir = os.path.join(python_files_dir, 'annotation tool')
 
-    model_outputs_base_path = os.path.join(annotation_tool_dir, 'predictions')
+    if preds_dir is None:
+        model_outputs_base_path = os.path.join(annotation_tool_dir, 'predictions')
+    else:
+        model_outputs_base_path = os.path.normpath(preds_dir)
     annotations_base_path = os.path.join(annotation_tool_dir, 'Annotations')
     pairs_roots = [
         os.path.join(annotation_tool_dir, 'Pairs1'),
@@ -1217,6 +1220,7 @@ if __name__ == '__main__':
     parser.add_argument('--pair-start', type=int, default=61, help='Inclusive start pair number.')
     parser.add_argument('--pair-end', type=int, default=100, help='Inclusive end pair number.')
     parser.add_argument('--out-dir', type=str, default='observer_variability', help='Output directory name under annotation tool/.')
+    parser.add_argument('--preds-dir', type=str, default=None, help='Predictions directory containing pair*/output.nii.gz. Defaults to annotation tool/predictions.')
     args = parser.parse_args()
 
     resize = v2.Resize((768, 768))
@@ -1234,5 +1238,5 @@ if __name__ == '__main__':
     SIGAL_POS = 2
     SMADAR_POS = 3
 
-    main(pair_start=args.pair_start, pair_end=args.pair_end, out_dir_name=args.out_dir)
+    main(pair_start=args.pair_start, pair_end=args.pair_end, out_dir_name=args.out_dir, preds_dir=args.preds_dir)
 

@@ -376,6 +376,7 @@ def create_seg_diff_map_from_rotated(
 	max_diff_val: float,
 	max_seg_depth: torch.Tensor,
 	avg_k: Optional[int],
+	projection_dim: int = 2,
 ) -> np.ndarray:
 	"""Create a 2D diff map from a rotated multi-label 3D seg (effusion/pnx/cardiomegaly)."""
 	seg_for_diff = c_rotated_seg.clone()
@@ -383,7 +384,7 @@ def create_seg_diff_map_from_rotated(
 	seg_for_diff[seg_for_diff == pos_num] = 1
 	seg_for_diff[seg_for_diff == neg_num] = -1
 
-	diff_map_for_seg = torch.nan_to_num(torch.sum(seg_for_diff, dim=2) / max_seg_depth, nan=0.0).cpu().squeeze()
+	diff_map_for_seg = torch.nan_to_num(torch.sum(seg_for_diff, dim=projection_dim) / max_seg_depth, nan=0.0).cpu().squeeze()
 	diff_map_for_seg = resize(diff_map_for_seg[None, ...])
 	if avg_k is not None:
 		diff_map_for_seg = torch.nn.functional.avg_pool2d(
@@ -440,6 +441,7 @@ def create_entity_heatmap_from_mask(
 	angles_deg: Tuple[float, float, float],
 	*,
 	max_seg_depth: torch.Tensor,
+	projection_dim: int = 2,
 	avg_k: Optional[int] = 9,
 ) -> np.ndarray:
 	"""Project a per-entity 3D mask into a 2D heatmap aligned to the DRR.
@@ -451,12 +453,107 @@ def create_entity_heatmap_from_mask(
 	rotated_mask = _rotate_and_crop_volume_like_seg(entity_mask_3d, seg_for_rotation, angles_deg)
 	rotated_mask = (rotated_mask > 0.5).float()
 
-	proj = torch.nan_to_num(torch.sum(rotated_mask, dim=2) / max_seg_depth, nan=0.0).cpu().squeeze()
+	proj = torch.nan_to_num(torch.sum(rotated_mask, dim=projection_dim) / max_seg_depth, nan=0.0).cpu().squeeze()
 	proj = resize(proj[None, ...])
 	if avg_k is not None:
 		proj = torch.nn.functional.avg_pool2d(proj, kernel_size=avg_k, stride=1, padding=avg_k // 2).squeeze()
 
 	return proj.numpy()
+
+
+def create_entity_diff_map_from_mask(
+	entity_mask_3d: torch.Tensor,
+	seg_for_rotation: torch.Tensor,
+	angles_deg: Tuple[float, float, float],
+	*,
+	max_seg_depth: torch.Tensor,
+	reference_diff_map: np.ndarray,
+	projection_dim: int = 2,
+	avg_k: Optional[int] = 9,
+) -> np.ndarray:
+	"""Create a signed per-entity diff map aligned to the generated DRR.
+
+	The entity 3D mask is projected to 2D and then weighted by the final diff map
+	for the same view/angles, producing a signed map suitable for supervision.
+	"""
+	hm = create_entity_heatmap_from_mask(
+		entity_mask_3d,
+		seg_for_rotation,
+		angles_deg,
+		max_seg_depth=max_seg_depth,
+		projection_dim=projection_dim,
+		avg_k=avg_k,
+	)
+
+	if hm.shape != reference_diff_map.shape:
+		raise ValueError(f'Entity map shape mismatch: {hm.shape} vs {reference_diff_map.shape}')
+
+	return hm.astype(np.float32) * reference_diff_map.astype(np.float32)
+
+
+def _safe_entity_name(name: str) -> str:
+	return ''.join(ch if (ch.isalnum() or ch in {'_', '-'}) else '_' for ch in name)
+
+
+def _save_entity_diff_outputs(
+	base_dir: str,
+	entity_diff_maps: Dict[str, np.ndarray],
+	added_entity_names: Sequence[str],
+) -> Dict[str, Any]:
+	"""Save forward/backward per-entity diff maps and return metadata paths.
+
+	Forward: per-entity maps for additions in X->Y direction.
+	Backward: reverse-order per-step maps for removals in Y->X direction.
+	"""
+	entity_dir = os.path.join(base_dir, 'entity_diff_maps')
+	forward_dir = os.path.join(entity_dir, 'forward')
+	backward_dir = os.path.join(entity_dir, 'backward')
+	os.makedirs(forward_dir, exist_ok=True)
+	os.makedirs(backward_dir, exist_ok=True)
+
+	meta: Dict[str, Any] = {
+		'forward': {},
+		'backward': {},
+		'order_added': list(added_entity_names),
+		'order_removed': list(reversed(list(added_entity_names))),
+	}
+
+	combined_forward = np.zeros_like(next(iter(entity_diff_maps.values())), dtype=np.float32)
+	for entity_name, dm in entity_diff_maps.items():
+		safe_name = _safe_entity_name(entity_name)
+		out_nii = os.path.join(forward_dir, f'{safe_name}.nii.gz')
+		save_arr_as_nifti(dm.T, out_nii)
+		plt.imsave(os.path.join(forward_dir, f'{safe_name}.png'), dm, cmap='seismic')
+		meta['forward'][entity_name] = f'entity_diff_maps/forward/{safe_name}.nii.gz'
+		combined_forward += dm.astype(np.float32)
+
+	save_arr_as_nifti(combined_forward.T, os.path.join(forward_dir, 'ALL.nii.gz'))
+	plt.imsave(os.path.join(forward_dir, 'ALL.png'), combined_forward, cmap='seismic')
+	meta['forward_all'] = 'entity_diff_maps/forward/ALL.nii.gz'
+
+	reverse_entities = list(reversed(list(added_entity_names)))
+	cumulative = np.zeros_like(combined_forward, dtype=np.float32)
+	for step_idx, entity_name in enumerate(reverse_entities, start=1):
+		dm = -entity_diff_maps.get(entity_name, np.zeros_like(combined_forward, dtype=np.float32))
+		cumulative += dm.astype(np.float32)
+		safe_name = _safe_entity_name(entity_name)
+		step_name = f'step{step_idx:02d}_remove_{safe_name}'
+		step_nii = os.path.join(backward_dir, f'{step_name}.nii.gz')
+		save_arr_as_nifti(dm.T, step_nii)
+		plt.imsave(os.path.join(backward_dir, f'{step_name}.png'), dm, cmap='seismic')
+		cum_name = f'step{step_idx:02d}_cumulative.nii.gz'
+		save_arr_as_nifti(cumulative.T, os.path.join(backward_dir, cum_name))
+		meta['backward'][entity_name] = {
+			'step_map': f'entity_diff_maps/backward/{step_name}.nii.gz',
+			'cumulative_map': f'entity_diff_maps/backward/{cum_name}',
+		}
+
+	all_backward = -combined_forward
+	save_arr_as_nifti(all_backward.T, os.path.join(backward_dir, 'ALL.nii.gz'))
+	plt.imsave(os.path.join(backward_dir, 'ALL.png'), all_backward, cmap='seismic')
+	meta['backward_all'] = 'entity_diff_maps/backward/ALL.nii.gz'
+
+	return meta
 
 
 def generate_alpha_map(x: torch.Tensor) -> torch.Tensor:
@@ -593,6 +690,7 @@ def rotate_pair_and_project(
 	max_sum: float,
 	min_sum: float,
 	rot_exp: float,
+	projection_dim: int = 2,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, torch.Tensor, Tuple[float, float, float]]:
 	"""Rotate+crop the (registered_prior, current) stack and project both to DRRs.
 
@@ -614,12 +712,12 @@ def rotate_pair_and_project(
 	current_ct = rotated_ct_cat[1]
 	registrated_prior_ct = rotated_ct_cat[0]
 
-	current_drr = project_ct(current_ct)
-	registrated_prior_drr = project_ct(registrated_prior_ct)
+	current_drr = project_ct(current_ct, dim=projection_dim)
+	registrated_prior_drr = project_ct(registrated_prior_ct, dim=projection_dim)
 
 	rotated_seg = torch.round(rotated_seg).squeeze()
 	rotated_boundary = (rotated_seg != 0)
-	projected_boundary = project_ct(rotated_boundary, is_seg=True)
+	projected_boundary = project_ct(rotated_boundary, dim=projection_dim, is_seg=True)
 
 	a1, a2, a3 = angles
 	return current_drr, registrated_prior_drr, projected_boundary, rotated_seg, (float(a1), float(a2), float(a3))
@@ -633,6 +731,7 @@ def rotate_prior_and_project(
 	max_sum: float,
 	min_sum: float,
 	rot_exp: float,
+	projection_dim: int = 2,
 ) -> Tuple[np.ndarray, Tuple[float, float, float]]:
 	"""Rotate+crop the prior CT alone and project to a DRR."""
 	rotated_prior, _, angles = random_rotate_ct_and_crop_according_to_seg(
@@ -646,7 +745,7 @@ def rotate_prior_and_project(
 		return_angles=True,
 	)
 	rotated_prior = rotated_prior.squeeze()
-	prior_drr = project_ct(rotated_prior)
+	prior_drr = project_ct(rotated_prior, dim=projection_dim)
 
 	a1, a2, a3 = angles
 	return prior_drr, (float(a1), float(a2), float(a3))
@@ -924,96 +1023,103 @@ def main() -> None:
 					seg_for_rotation[cm_seg == 1] = 8
 					seg_for_rotation[cm_seg == -1] = 9
 
-				# ANGLES / ROTATION + DRR GENERATION
-				current_drr, reg_prior_drr, projected_boundary, rotated_seg, angles_pair = rotate_pair_and_project(
-					registrated_prior,
-					current,
-					seg_for_rotation,
-					rot_ranges=rot_ranges,
-					max_sum=max_sum,
-					min_sum=min_sum,
-					rot_exp=rot_exp,
-				)
-				params['rotation_angles_pair_deg'] = angles_pair
+				# ANGLES / ROTATION + DRR GENERATION (AP and lateral views)
+				views = {
+					'ap': {'projection_dim': 2},
+					'lateral': {'projection_dim': 1},
+				}
 
-				prior_drr, angles_prior = rotate_prior_and_project(
-					prior,
-					segs_dict['lungs'],
-					rot_ranges=rot_ranges,
-					max_sum=max_sum,
-					min_sum=min_sum,
-					rot_exp=rot_exp,
-				)
-				params['rotation_angles_prior_deg'] = angles_prior
+				for view_name, view_cfg in views.items():
+					projection_dim = int(view_cfg['projection_dim'])
+					view_dir = os.path.join(c_out_dir, view_name)
+					os.makedirs(view_dir, exist_ok=True)
 
-				diff_map = calculate_diff_map(current_drr, reg_prior_drr, projected_boundary)
+					current_drr, reg_prior_drr, projected_boundary, rotated_seg, angles_pair = rotate_pair_and_project(
+						registrated_prior,
+						current,
+						seg_for_rotation,
+						rot_ranges=rot_ranges,
+						max_sum=max_sum,
+						min_sum=min_sum,
+						rot_exp=rot_exp,
+						projection_dim=projection_dim,
+					)
+					params[f'rotation_angles_pair_{view_name}_deg'] = angles_pair
 
-				# Extra maps: derived from the *same* rotated multi-label seg used during projection
-				rotated_boundary = rotated_seg != 0
-				max_depth = torch.max(torch.sum(rotated_boundary, dim=2))
+					prior_drr, angles_prior = rotate_prior_and_project(
+						prior,
+						segs_dict['lungs'],
+						rot_ranges=rot_ranges,
+						max_sum=max_sum,
+						min_sum=min_sum,
+						rot_exp=rot_exp,
+						projection_dim=projection_dim,
+					)
+					params[f'rotation_angles_prior_{view_name}_deg'] = angles_prior
 
-				# Per-entity heatmaps (projected change masks) + combined heatmap.
-				# Saved separately from the signed diff map.
-				if len(entity_masks_full) > 0:
-					heatmaps_dir = os.path.join(c_out_dir, 'entity_heatmaps')
-					os.makedirs(heatmaps_dir, exist_ok=True)
+					diff_map = calculate_diff_map(current_drr, reg_prior_drr, projected_boundary)
 
-					entity_heatmaps: Dict[str, str] = {}
-					ignored_in_all = {'ExternalDevices'}
-					combined_sum = np.zeros_like(current_drr, dtype=np.float32)
-					for entity_name, m_full in entity_masks_full.items():
-						hm = create_entity_heatmap_from_mask(
-							m_full,
-							seg_for_rotation,
-							angles_pair,
-							max_seg_depth=max_depth,
-							avg_k=9,
-						)
-						if entity_name not in ignored_in_all:
-							combined_sum += hm.astype(np.float32)
+					# Extra maps: derived from the same rotated multi-label seg used during projection.
+					rotated_boundary = rotated_seg != 0
+					max_depth = torch.max(torch.sum(rotated_boundary, dim=projection_dim))
 
-						out_nii = os.path.join(heatmaps_dir, f'{entity_name}.nii.gz')
-						save_arr_as_nifti(hm.T, out_nii)
-						plt.imsave(os.path.join(heatmaps_dir, f'{entity_name}.png'), hm, cmap='hot')
-						entity_heatmaps[entity_name] = f'entity_heatmaps/{entity_name}.nii.gz'
+					if 'PleuralEffusion' in added_entity_names:
+						diff_map += create_seg_diff_map_from_rotated(rotated_seg, 2, 3, 0.35, max_depth, 9, projection_dim=projection_dim)
 
-					# Save raw sum (can exceed 1.0). For PNG preview, normalize to [0,1].
-					save_arr_as_nifti(combined_sum.T, os.path.join(heatmaps_dir, 'ALL.nii.gz'))
-					combined_png = combined_sum
-					mx = float(np.max(combined_png))
-					if mx > 0:
-						combined_png = combined_png / mx
-					plt.imsave(os.path.join(heatmaps_dir, 'ALL.png'), combined_png, cmap='hot')
-					params['entity_heatmaps'] = entity_heatmaps
-					params['entity_heatmaps_all'] = 'entity_heatmaps/ALL.nii.gz'
-					params['entity_heatmaps_all_aggregation'] = 'sum'
-					params['entity_heatmaps_all_ignored'] = sorted(list(ignored_in_all))
+					if 'Pneumothorax' in added_entity_names:
+						diff_map += create_seg_diff_map_from_rotated(rotated_seg, 4, 5, 0.25, max_depth, 9, projection_dim=projection_dim)
+						diff_map += create_seg_diff_map_from_rotated(rotated_seg, 6, 7, 0.25, max_depth, 9, projection_dim=projection_dim)
 
-				if 'PleuralEffusion' in added_entity_names:
-					diff_map += create_seg_diff_map_from_rotated(rotated_seg, 2, 3, 0.35, max_depth, 9)
-
-				if 'Pneumothorax' in added_entity_names:
-					diff_map += create_seg_diff_map_from_rotated(rotated_seg, 4, 5, 0.25, max_depth, 9)
-					diff_map += create_seg_diff_map_from_rotated(rotated_seg, 6, 7, 0.25, max_depth, 9)
-
-				if 'Cardiomegaly' in added_entity_names:
-					if cardiomegaly_progress in {1, -1}:
-						cm = create_seg_diff_map_from_rotated(rotated_seg, 8, 9, 0.35, max_depth, 9)
-						if cardiomegaly_progress == 1:
-							cm = np.clip(cm, a_min=0, a_max=None)
+					if 'Cardiomegaly' in added_entity_names:
+						if cardiomegaly_progress in {1, -1}:
+							cm = create_seg_diff_map_from_rotated(rotated_seg, 8, 9, 0.35, max_depth, 9, projection_dim=projection_dim)
+							if cardiomegaly_progress == 1:
+								cm = np.clip(cm, a_min=0, a_max=None)
+							else:
+								cm = np.clip(cm, a_min=None, a_max=0)
 						else:
-							cm = np.clip(cm, a_min=None, a_max=0)
-					else:
-						cm = np.zeros_like(current_drr)
-					diff_map += cm
+							cm = np.zeros_like(current_drr)
+						diff_map += cm
 
-				save_arr_as_nifti(prior_drr.T, f'{c_out_dir}/prior.nii.gz')
-				save_arr_as_nifti(current_drr.T, f'{c_out_dir}/current.nii.gz')
-				save_arr_as_nifti(diff_map.T, f'{c_out_dir}/diff_map.nii.gz')
+					# Replace per-entity heatmaps with signed per-entity diff maps.
+					if len(entity_masks_full) > 0:
+						entity_diff_maps: Dict[str, np.ndarray] = {}
+						for entity_name, m_full in entity_masks_full.items():
+							edm = create_entity_diff_map_from_mask(
+								m_full,
+								seg_for_rotation,
+								angles_pair,
+								max_seg_depth=max_depth,
+								reference_diff_map=diff_map,
+								projection_dim=projection_dim,
+								avg_k=9,
+							)
+							entity_diff_maps[entity_name] = edm.astype(np.float32)
 
-				plt.imsave(f'{c_out_dir}/prior.png', prior_drr, cmap='gray')
-				plt.imsave(f'{c_out_dir}/current.png', current_drr, cmap='gray')
-				plot_diff_on_current(diff_map, current_drr, f'{c_out_dir}/current_with_differences.png')
+						entity_meta = _save_entity_diff_outputs(
+							view_dir,
+							entity_diff_maps,
+							added_entity_names,
+						)
+						params[f'entity_diff_maps_{view_name}'] = entity_meta
+
+					save_arr_as_nifti(prior_drr.T, os.path.join(view_dir, 'prior.nii.gz'))
+					save_arr_as_nifti(current_drr.T, os.path.join(view_dir, 'current.nii.gz'))
+					save_arr_as_nifti(diff_map.T, os.path.join(view_dir, 'diff_map.nii.gz'))
+
+					plt.imsave(os.path.join(view_dir, 'prior.png'), prior_drr, cmap='gray')
+					plt.imsave(os.path.join(view_dir, 'current.png'), current_drr, cmap='gray')
+					plot_diff_on_current(diff_map, current_drr, os.path.join(view_dir, 'current_with_differences.png'))
+
+					if view_name == 'ap':
+						# Backward compatibility with existing dataset loader expectations.
+						save_arr_as_nifti(prior_drr.T, f'{c_out_dir}/prior.nii.gz')
+						save_arr_as_nifti(current_drr.T, f'{c_out_dir}/current.nii.gz')
+						save_arr_as_nifti(diff_map.T, f'{c_out_dir}/diff_map.nii.gz')
+						plt.imsave(f'{c_out_dir}/prior.png', prior_drr, cmap='gray')
+						plt.imsave(f'{c_out_dir}/current.png', current_drr, cmap='gray')
+						plot_diff_on_current(diff_map, current_drr, f'{c_out_dir}/current_with_differences.png')
+
 				log_params(params, f'{c_out_dir}/params.json')
 
 				pairs_created += 1
