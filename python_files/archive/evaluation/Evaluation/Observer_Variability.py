@@ -3,7 +3,6 @@ import json
 import nibabel as nib
 from skimage.draw import ellipse
 import os
-import re
 import torch
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -12,7 +11,6 @@ from matplotlib import colors
 from scipy.ndimage import label
 from itertools import combinations
 import torchvision.transforms.v2 as v2
-import argparse
 
 
 # One time use function
@@ -550,58 +548,6 @@ def get_sensitivity_at_consensus_levels(model_map, human_maps):
     return sensitivities
 
 
-def _pair_num_from_name(name: str):
-    nums = re.findall(r'\d+', name)
-    if not nums:
-        return None
-    return int(nums[-1])
-
-
-def build_pair_dirs_index(pairs_roots):
-    pair_to_dir = {}
-    for root in pairs_roots:
-        if not os.path.isdir(root):
-            print(f'Skipping missing pairs root: {root}')
-            continue
-
-        for child in os.listdir(root):
-            child_path = os.path.join(root, child)
-            if not os.path.isdir(child_path):
-                continue
-
-            pair_num = _pair_num_from_name(child)
-            if pair_num is None:
-                continue
-
-            pair_to_dir[pair_num] = child_path
-
-    return pair_to_dir
-
-
-def build_annotation_index(annotations_base_path: str, annotator: str):
-    annotator_dir = os.path.join(annotations_base_path, annotator)
-    pair_to_json = {}
-
-    if not os.path.isdir(annotator_dir):
-        print(f'Warning: missing annotations directory for {annotator}: {annotator_dir}')
-        return pair_to_json
-
-    for walk_dir, _, files in os.walk(annotator_dir):
-        for file_name in files:
-            if not file_name.lower().endswith('.json'):
-                continue
-
-            pair_num = _pair_num_from_name(file_name)
-            if pair_num is None:
-                pair_num = _pair_num_from_name(os.path.basename(walk_dir))
-            if pair_num is None:
-                continue
-
-            pair_to_json[pair_num] = os.path.join(walk_dir, file_name)
-
-    return pair_to_json
-
-
 # def plot_detection_table_graphs(detection_table, category_name):
 #     print(f'Category name: {category_name}')
 #     detection_table = np.array(detection_table)
@@ -614,47 +560,21 @@ def build_annotation_index(annotations_base_path: str, annotator: str):
 #     print(np.corrcoef(detection_table.T))
 
 
-def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds_dir=None):
-    # Current evaluator setup:
-    # - Humans: Avi, Benny, Sigal, Smadar (Nitzan excluded)
-    # - Model:  included as fifth observer
-    # - Pair range: configurable via pair_start / pair_end
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    python_files_dir = os.path.normpath(os.path.join(current_dir, '../../..'))
-    annotation_tool_dir = os.path.join(python_files_dir, 'annotation tool')
+def main():
+    model_outputs_base_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ICU_cases/test_predictions/all_entities_model'
+    annotations_base_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/PhysicianAnnotations'
+    pairs_base_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/Pairs_ICU'
+    out_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability'
 
-    if preds_dir is None:
-        model_outputs_base_path = os.path.join(annotation_tool_dir, 'predictions')
-    else:
-        model_outputs_base_path = os.path.normpath(preds_dir)
-    annotations_base_path = os.path.join(annotation_tool_dir, 'Annotations')
-    pairs_roots = [
-        os.path.join(annotation_tool_dir, 'Pairs1'),
-        os.path.join(annotation_tool_dir, 'Pairs2'),
-        os.path.join(annotation_tool_dir, 'Pairs3'),
-        os.path.join(annotation_tool_dir, 'Pairs4'),
-        os.path.join(annotation_tool_dir, 'Pairs5'),
-        os.path.join(annotation_tool_dir, 'Pairs6'),
-        os.path.join(annotation_tool_dir, 'Pairs7'),
-        os.path.join(annotation_tool_dir, 'pairs8'),
-        os.path.join(annotation_tool_dir, 'Pairs8'),
-    ]
-    out_path = os.path.join(annotation_tool_dir, out_dir_name)
-    os.makedirs(out_path, exist_ok=True)
-
-    pairs_index = build_pair_dirs_index(pairs_roots)
-    preds_index = build_pair_dirs_index([model_outputs_base_path])
-    avi_annotations = build_annotation_index(annotations_base_path, 'Avi')
-    benny_annotations = build_annotation_index(annotations_base_path, 'Benny')
-    sigal_annotations = build_annotation_index(annotations_base_path, 'Sigal')
-    smadar_annotations = build_annotation_index(annotations_base_path, 'Smadar')
-
-    num_humans = 4
-    num_observers = 5
+    num_humans = 5
+    num_observers = 6
     detections_table_pos = []
     detections_table_neg = []
     detections_table_all = []
-    physician_to_idx_dict = {'Avi': 0, 'Benny': 1, 'Sigal': 2, 'Smadar': 3, 'Model': 4}
+    physician_to_idx_dict = {'Avi': 0, 'Benny': 1, 'Sigal': 2, 'Smadar': 3, 'Nitzan': 4, 'Model': 5}
+
+    num_pairs = 30
+    bias = 0
 
     sensitivities_pos = [[0, 0] for _ in range(num_humans)]
     sensitivities_neg = [[0, 0] for _ in range(num_humans)]
@@ -671,14 +591,17 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
     sensitivities_pos_smadar = [[0, 0] for _ in range(num_humans - 1)]
     sensitivities_neg_smadar = [[0, 0] for _ in range(num_humans - 1)]
     
+    sensitivities_pos_nitzan = [[0, 0] for _ in range(num_humans - 1)]
+    sensitivities_neg_nitzan = [[0, 0] for _ in range(num_humans - 1)]
+
     pairwise_agreement_mat_pos = np.eye(num_observers)
     pairwise_agreement_mat_neg = np.eye(num_observers)
 
     pairwise_disagreement_mat_pos = np.zeros((num_observers, num_observers))
     pairwise_disagreement_mat_neg = np.zeros((num_observers, num_observers))
 
-    pairwise_agreement_per_pair_mat_pos = np.zeros((num_observers, num_observers))
-    pairwise_agreement_per_pair_mat_neg = np.zeros((num_observers, num_observers))
+    pairwise_agreement_per_pair_mat_pos = np.eye(num_observers) * num_pairs
+    pairwise_agreement_per_pair_mat_neg = np.eye(num_observers) * num_pairs
 
     agreements_num_list_pos = [[[] for _ in range(num_observers)] for __ in range(num_observers)]
     agreements_num_list_neg = [[[] for _ in range(num_observers)] for __ in range(num_observers)]
@@ -723,55 +646,30 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
     not_overlapping_smadar_preds_pos = []
     not_overlapping_smadar_preds_neg = []
     
-    effective_num_pairs = 0
+    total_nitzan_preds_pos = 0
+    total_nitzan_preds_neg = 0
+    total_overlapping_nitzan_preds_pos = 0
+    total_overlapping_nitzan_preds_neg = 0
+    not_overlapping_nitzan_preds_pos = []
+    not_overlapping_nitzan_preds_neg = []
 
-    for pair_num in range(pair_start, pair_end + 1):
-        print(f'Pair {pair_num}')
-
-        if pair_num not in pairs_index:
-            print(f'Skipping pair {pair_num}: missing pair directory')
-            continue
-        pair_path = pairs_index[pair_num]
-
-        nii_files = sorted([p for p in os.listdir(pair_path) if p.endswith('.nii.gz')])
-        if len(nii_files) < 2:
-            print(f'Skipping pair {pair_num}: fewer than 2 .nii.gz files in {pair_path}')
-            continue
-        current_path = os.path.join(pair_path, nii_files[1])
-
-        if pair_num not in avi_annotations:
-            print(f'Skipping pair {pair_num}: missing Avi annotation')
-            continue
-        if pair_num not in benny_annotations:
-            print(f'Skipping pair {pair_num}: missing Benny annotation')
-            continue
-        if pair_num not in sigal_annotations:
-            print(f'Skipping pair {pair_num}: missing Sigal annotation')
-            continue
-        if pair_num not in smadar_annotations:
-            print(f'Skipping pair {pair_num}: missing Smadar annotation')
-            continue
-
-        annotation_path_avi = avi_annotations[pair_num]
-        annotation_path_benny = benny_annotations[pair_num]
-        annotation_path_sigal = sigal_annotations[pair_num]
-        annotation_path_smadar = smadar_annotations[pair_num]
-
-        if pair_num not in preds_index:
-            print(f'Skipping pair {pair_num}: missing predictions directory')
-            continue
-        annotation_path_model = os.path.join(preds_index[pair_num], 'output.nii.gz')
-        if not os.path.exists(annotation_path_model):
-            print(f'Skipping pair {pair_num}: missing model output file {annotation_path_model}')
-            continue
-
-        effective_num_pairs += 1
+    for i in range(bias, num_pairs + bias):
+        print(f'Pair {i + 1}')
+        pair_path = f'{pairs_base_path}/pair{i+1}'
+        current_path = f'{pair_path}/{sorted([p for p in os.listdir(pair_path) if p.endswith(".nii.gz")])[1]}'
+        annotation_path_avi = f'{annotations_base_path}/Avi/{i+1}.json'
+        annotation_path_benny = f'{annotations_base_path}/Benny/{i+1}.json'
+        annotation_path_sigal = f'{annotations_base_path}/Sigal/{i+1}.json'
+        annotation_path_smadar = f'{annotations_base_path}/Smadar/{i+1}.json'
+        annotation_path_nitzan = f'{annotations_base_path}/Nitzan/{i+1}.json'
+        annotation_path_model = f'{model_outputs_base_path}/pair{i+1}/output.nii.gz'
 
         current = load_xray(current_path)
         label_map_pos_avi, label_map_neg_avi = load_labels_map(annotation_path_avi, current.shape)
         label_map_pos_benny, label_map_neg_benny = load_labels_map(annotation_path_benny, current.shape)
         label_map_pos_sigal, label_map_neg_sigal = load_labels_map(annotation_path_sigal, current.shape)
         label_map_pos_smadar, label_map_neg_smadar = load_labels_map(annotation_path_smadar, current.shape)
+        label_map_pos_nitzan, label_map_neg_nitzan = load_labels_map(annotation_path_nitzan, current.shape)
         label_map_pos_model, label_map_neg_model = load_model_labels_map(annotation_path_model)
 
         # if i == 3:
@@ -803,8 +701,8 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
         
         # Model
         
-        c_sensitivities_pos = get_sensitivity_at_consensus_levels(label_map_pos_model, (label_map_pos_avi, label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar))
-        c_sensitivities_neg = get_sensitivity_at_consensus_levels(label_map_neg_model, (label_map_neg_avi, label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar))
+        c_sensitivities_pos = get_sensitivity_at_consensus_levels(label_map_pos_model, (label_map_pos_avi, label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        c_sensitivities_neg = get_sensitivity_at_consensus_levels(label_map_neg_model, (label_map_neg_avi, label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
 
         for k, (detections, changes) in enumerate(c_sensitivities_pos):
             sensitivities_pos[k][0] += detections
@@ -816,8 +714,8 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
         
         # Humans
 
-        c_sensitivities_pos_avi = get_sensitivity_at_consensus_levels(label_map_pos_avi, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar))
-        c_sensitivities_neg_avi = get_sensitivity_at_consensus_levels(label_map_neg_avi, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar))
+        c_sensitivities_pos_avi = get_sensitivity_at_consensus_levels(label_map_pos_avi, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        c_sensitivities_neg_avi = get_sensitivity_at_consensus_levels(label_map_neg_avi, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
         
         for k, (detections, changes) in enumerate(c_sensitivities_pos_avi):
             sensitivities_pos_avi[k][0] += detections
@@ -827,8 +725,8 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
             sensitivities_neg_avi[k][0] += detections
             sensitivities_neg_avi[k][1] += changes
         
-        c_sensitivities_pos_benny = get_sensitivity_at_consensus_levels(label_map_pos_benny, (label_map_pos_avi, label_map_pos_sigal, label_map_pos_smadar))
-        c_sensitivities_neg_benny = get_sensitivity_at_consensus_levels(label_map_neg_benny, (label_map_neg_avi, label_map_neg_sigal, label_map_neg_smadar))
+        c_sensitivities_pos_benny = get_sensitivity_at_consensus_levels(label_map_pos_benny, (label_map_pos_avi, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        c_sensitivities_neg_benny = get_sensitivity_at_consensus_levels(label_map_neg_benny, (label_map_neg_avi, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
         
         for k, (detections, changes) in enumerate(c_sensitivities_pos_benny):
             sensitivities_pos_benny[k][0] += detections
@@ -838,8 +736,8 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
             sensitivities_neg_benny[k][0] += detections
             sensitivities_neg_benny[k][1] += changes
         
-        c_sensitivities_pos_sigal = get_sensitivity_at_consensus_levels(label_map_pos_sigal, (label_map_pos_benny, label_map_pos_avi, label_map_pos_smadar))
-        c_sensitivities_neg_sigal = get_sensitivity_at_consensus_levels(label_map_neg_sigal, (label_map_neg_benny, label_map_neg_avi, label_map_neg_smadar))
+        c_sensitivities_pos_sigal = get_sensitivity_at_consensus_levels(label_map_pos_sigal, (label_map_pos_benny, label_map_pos_avi, label_map_pos_smadar, label_map_pos_nitzan))
+        c_sensitivities_neg_sigal = get_sensitivity_at_consensus_levels(label_map_neg_sigal, (label_map_neg_benny, label_map_neg_avi, label_map_neg_smadar, label_map_neg_nitzan))
         
         for k, (detections, changes) in enumerate(c_sensitivities_pos_sigal):
             sensitivities_pos_sigal[k][0] += detections
@@ -849,8 +747,8 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
             sensitivities_neg_sigal[k][0] += detections
             sensitivities_neg_sigal[k][1] += changes
         
-        c_sensitivities_pos_smadar = get_sensitivity_at_consensus_levels(label_map_pos_smadar, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_avi))
-        c_sensitivities_neg_smadar = get_sensitivity_at_consensus_levels(label_map_neg_smadar, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_avi))
+        c_sensitivities_pos_smadar = get_sensitivity_at_consensus_levels(label_map_pos_smadar, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_avi, label_map_pos_nitzan))
+        c_sensitivities_neg_smadar = get_sensitivity_at_consensus_levels(label_map_neg_smadar, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_avi, label_map_neg_nitzan))
         
         for k, (detections, changes) in enumerate(c_sensitivities_pos_smadar):
             sensitivities_pos_smadar[k][0] += detections
@@ -860,11 +758,22 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
             sensitivities_neg_smadar[k][0] += detections
             sensitivities_neg_smadar[k][1] += changes
         
+        c_sensitivities_pos_nitzan = get_sensitivity_at_consensus_levels(label_map_pos_nitzan, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_avi))
+        c_sensitivities_neg_nitzan = get_sensitivity_at_consensus_levels(label_map_neg_nitzan, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_avi))
+        
+        for k, (detections, changes) in enumerate(c_sensitivities_pos_nitzan):
+            sensitivities_pos_nitzan[k][0] += detections
+            sensitivities_pos_nitzan[k][1] += changes
+
+        for k, (detections, changes) in enumerate(c_sensitivities_neg_nitzan):
+            sensitivities_neg_nitzan[k][0] += detections
+            sensitivities_neg_nitzan[k][1] += changes
+        
         # TODO: HMDR/UDPP measures
         
         # Model
-        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_model, (label_map_pos_avi, label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar))
-        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_model, (label_map_neg_avi, label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar))
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_model, (label_map_pos_avi, label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_model, (label_map_neg_avi, label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
         
         total_model_preds_pos += total_preds_pos
         total_model_preds_neg += total_preds_neg
@@ -874,8 +783,8 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
         not_overlapping_model_preds_neg.append(not_overlapping_neg)
         
         # Avi
-        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_avi, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar))
-        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_avi, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar))
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_avi, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_avi, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
 
         total_avi_preds_pos += total_preds_pos
         total_avi_preds_neg += total_preds_neg
@@ -885,8 +794,8 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
         not_overlapping_avi_preds_neg.append(not_overlapping_neg)
         
         # Benny
-        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_benny, (label_map_pos_avi, label_map_pos_sigal, label_map_pos_smadar))
-        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_benny, (label_map_neg_avi, label_map_neg_sigal, label_map_neg_smadar))
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_benny, (label_map_pos_avi, label_map_pos_sigal, label_map_pos_smadar, label_map_pos_nitzan))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_benny, (label_map_neg_avi, label_map_neg_sigal, label_map_neg_smadar, label_map_neg_nitzan))
 
         total_benny_preds_pos += total_preds_pos
         total_benny_preds_neg += total_preds_neg
@@ -896,8 +805,8 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
         not_overlapping_benny_preds_neg.append(not_overlapping_neg)
         
         # Sigal
-        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_sigal, (label_map_pos_benny, label_map_pos_avi, label_map_pos_smadar))
-        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_sigal, (label_map_neg_benny, label_map_neg_avi, label_map_neg_smadar))
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_sigal, (label_map_pos_benny, label_map_pos_avi, label_map_pos_smadar, label_map_pos_nitzan))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_sigal, (label_map_neg_benny, label_map_neg_avi, label_map_neg_smadar, label_map_neg_nitzan))
 
         total_sigal_preds_pos += total_preds_pos
         total_sigal_preds_neg += total_preds_neg
@@ -907,8 +816,8 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
         not_overlapping_sigal_preds_neg.append(not_overlapping_neg)
         
         # Smadar
-        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_smadar, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_avi))
-        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_smadar, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_avi))
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_smadar, (label_map_pos_benny, label_map_pos_sigal, label_map_pos_avi, label_map_pos_nitzan))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_smadar, (label_map_neg_benny, label_map_neg_sigal, label_map_neg_avi, label_map_neg_nitzan))
 
         total_smadar_preds_pos += total_preds_pos
         total_smadar_preds_neg += total_preds_neg
@@ -917,9 +826,20 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
         not_overlapping_smadar_preds_pos.append(not_overlapping_pos)
         not_overlapping_smadar_preds_neg.append(not_overlapping_neg)
         
+        # Nitzan
+        overlapping_pos, not_overlapping_pos, total_preds_pos = get_HMDR_and_UDPP_counts(label_map_pos_nitzan, (label_map_pos_avi, label_map_pos_benny, label_map_pos_sigal, label_map_pos_smadar))
+        overlapping_neg, not_overlapping_neg, total_preds_neg = get_HMDR_and_UDPP_counts(label_map_neg_nitzan, (label_map_neg_avi, label_map_neg_benny, label_map_neg_sigal, label_map_neg_smadar))
+
+        total_nitzan_preds_pos += total_preds_pos
+        total_nitzan_preds_neg += total_preds_neg
+        total_overlapping_nitzan_preds_pos += overlapping_pos
+        total_overlapping_nitzan_preds_neg += overlapping_neg
+        not_overlapping_nitzan_preds_pos.append(not_overlapping_pos)
+        not_overlapping_nitzan_preds_neg.append(not_overlapping_neg)
+
         # TODO: PAI
-        inf_list_pos = ((label_map_pos_avi, 'Avi'), (label_map_pos_benny, 'Benny'), (label_map_pos_sigal, 'Sigal'), (label_map_pos_smadar, 'Smadar'), (label_map_pos_model, 'Model'))
-        inf_list_neg = ((label_map_neg_avi, 'Avi'), (label_map_neg_benny, 'Benny'), (label_map_neg_sigal, 'Sigal'), (label_map_neg_smadar, 'Smadar'), (label_map_neg_model, 'Model'))
+        inf_list_pos = ((label_map_pos_avi, 'Avi'), (label_map_pos_benny, 'Benny'), (label_map_pos_sigal, 'Sigal'), (label_map_pos_smadar, 'Smadar'), (label_map_pos_nitzan, 'Nitzan'), (label_map_pos_model, 'Model'))
+        inf_list_neg = ((label_map_neg_avi, 'Avi'), (label_map_neg_benny, 'Benny'), (label_map_neg_sigal, 'Sigal'), (label_map_neg_smadar, 'Smadar'), (label_map_neg_nitzan, 'Nitzan'), (label_map_neg_model, 'Model'))
 
         for inf_list, agreement_mat, disagreement_mat, agreement_per_pair_mat, total_labels_lst, lists_for_per_pair_all in zip([inf_list_pos, inf_list_neg], [pairwise_agreement_mat_pos, pairwise_agreement_mat_neg], [pairwise_disagreement_mat_pos, pairwise_disagreement_mat_neg], [pairwise_agreement_per_pair_mat_pos, pairwise_agreement_per_pair_mat_neg], [total_labels_pos, total_labels_neg], [(agreements_num_list_pos, disagreements_num_list_pos), (agreements_num_list_neg, disagreements_num_list_neg)]):
             for label_map1_inf, label_map2_inf in combinations(inf_list, 2):
@@ -987,21 +907,21 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
 
     # TODO: Sensitivity at consensus levels
 
-    if effective_num_pairs == 0:
-        raise RuntimeError('No complete pairs found to evaluate.')
-
     final_sensitivities = {f'Sensitivity Consensus Level {i + 1} (Positive)': s[0] / s[1] for i, s in enumerate(sensitivities_pos)}
     final_sensitivities.update({f'Sensitivity Consensus Level {i + 1} (Negative)': s[0] / s[1] for i, s in enumerate(sensitivities_neg)})
 
     final_sensitivities.update({f'Total detections & changes at Consensus Level {i + 1} (Positive)': (s[0], s[1]) for i, s in enumerate(sensitivities_pos)})
     final_sensitivities.update({f'Total detections & changes at Consensus Level {i + 1} (Negative)': (s[0], s[1]) for i, s in enumerate(sensitivities_neg)})
 
-    plot_curves([s[0] / s[1] for s in sensitivities_pos], [s[0] / s[1] for s in sensitivities_neg], '$M_{ICU}$', os.path.join(out_path, 'sensitivity_consensus_levels.png'))
+    plot_curves([s[0] / s[1] for s in sensitivities_pos], [s[0] / s[1] for s in sensitivities_neg], '$M_{ICU}$', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels.png')
 
-    plot_curves([s[0] / s[1] for s in sensitivities_pos_avi], [s[0] / s[1] for s in sensitivities_neg_avi], 'A', os.path.join(out_path, 'sensitivity_consensus_levels_avi.png'))
-    plot_curves([s[0] / s[1] for s in sensitivities_pos_benny], [s[0] / s[1] for s in sensitivities_neg_benny], 'B', os.path.join(out_path, 'sensitivity_consensus_levels_benny.png'))
-    plot_curves([s[0] / s[1] for s in sensitivities_pos_sigal], [s[0] / s[1] for s in sensitivities_neg_sigal], 'C', os.path.join(out_path, 'sensitivity_consensus_levels_sigal.png'))
-    plot_curves([s[0] / s[1] for s in sensitivities_pos_smadar], [s[0] / s[1] for s in sensitivities_neg_smadar], 'D', os.path.join(out_path, 'sensitivity_consensus_levels_smadar.png'))
+    plot_curves([s[0] / s[1] for s in sensitivities_pos_avi], [s[0] / s[1] for s in sensitivities_neg_avi], 'A', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_avi.png')
+    plot_curves([s[0] / s[1] for s in sensitivities_pos_benny], [s[0] / s[1] for s in sensitivities_neg_benny], 'B', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_benny.png')
+    plot_curves([s[0] / s[1] for s in sensitivities_pos_sigal], [s[0] / s[1] for s in sensitivities_neg_sigal], 'C', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_sigal.png')
+    plot_curves([s[0] / s[1] for s in sensitivities_pos_smadar], [s[0] / s[1] for s in sensitivities_neg_smadar], 'D', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_smadar.png')
+    plot_curves([s[0] / s[1] for s in sensitivities_pos_nitzan], [s[0] / s[1] for s in sensitivities_neg_nitzan], 'E', f'/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ObserverVariability/sensitivity_consensus_levels_nitzan.png')
+
+
     # plot_curves_multiple(
     #     {'Avi': [s[0] / s[1] for s in sensitivities_pos_avi], 'Benny': [s[0] / s[1] for s in sensitivities_pos_benny], 'Sigal': [s[0] / s[1] for s in sensitivities_pos_sigal], 'Smadar': [s[0] / s[1] for s in sensitivities_pos_smadar], 'Nitzan': [s[0] / s[1] for s in sensitivities_pos_nitzan]},
     #     {'Avi': [s[0] / s[1] for s in sensitivities_neg_avi], 'Benny': [s[0] / s[1] for s in sensitivities_neg_benny], 'Sigal': [s[0] / s[1] for s in sensitivities_neg_sigal], 'Smadar': [s[0] / s[1] for s in sensitivities_neg_smadar], 'Nitzan': [s[0] / s[1] for s in sensitivities_neg_nitzan]},
@@ -1017,43 +937,51 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
     # Model
     hmdr_model_pos = total_overlapping_model_preds_pos / total_model_preds_pos
     hmdr_model_neg = total_overlapping_model_preds_neg / total_model_preds_neg
-    udpp_model_pos = sum(not_overlapping_model_preds_pos) / effective_num_pairs
-    udpp_model_neg = sum(not_overlapping_model_preds_neg) / effective_num_pairs
+    udpp_model_pos = sum(not_overlapping_model_preds_pos) / num_pairs
+    udpp_model_neg = sum(not_overlapping_model_preds_neg) / num_pairs
     udpp_model_pos_std = np.std(not_overlapping_model_preds_pos)
     udpp_model_neg_std = np.std(not_overlapping_model_preds_neg)
 
     # Avi
     hmdr_avi_pos = total_overlapping_avi_preds_pos / total_avi_preds_pos
     hmdr_avi_neg = total_overlapping_avi_preds_neg / total_avi_preds_neg
-    udpp_avi_pos = sum(not_overlapping_avi_preds_pos) / effective_num_pairs
-    udpp_avi_neg = sum(not_overlapping_avi_preds_neg) / effective_num_pairs
+    udpp_avi_pos = sum(not_overlapping_avi_preds_pos) / num_pairs
+    udpp_avi_neg = sum(not_overlapping_avi_preds_neg) / num_pairs
     udpp_avi_pos_std = np.std(not_overlapping_avi_preds_pos)
     udpp_avi_neg_std = np.std(not_overlapping_avi_preds_neg)
     
     # Benny
     hmdr_benny_pos = total_overlapping_benny_preds_pos / total_benny_preds_pos
     hmdr_benny_neg = total_overlapping_benny_preds_neg / total_benny_preds_neg
-    udpp_benny_pos = sum(not_overlapping_benny_preds_pos) / effective_num_pairs
-    udpp_benny_neg = sum(not_overlapping_benny_preds_neg) / effective_num_pairs
+    udpp_benny_pos = sum(not_overlapping_benny_preds_pos) / num_pairs
+    udpp_benny_neg = sum(not_overlapping_benny_preds_neg) / num_pairs
     udpp_benny_pos_std = np.std(not_overlapping_benny_preds_pos)
     udpp_benny_neg_std = np.std(not_overlapping_benny_preds_neg)
     
     # Sigal
     hmdr_sigal_pos = total_overlapping_sigal_preds_pos / total_sigal_preds_pos
     hmdr_sigal_neg = total_overlapping_sigal_preds_neg / total_sigal_preds_neg
-    udpp_sigal_pos = sum(not_overlapping_sigal_preds_pos) / effective_num_pairs
-    udpp_sigal_neg = sum(not_overlapping_sigal_preds_neg) / effective_num_pairs
+    udpp_sigal_pos = sum(not_overlapping_sigal_preds_pos) / num_pairs
+    udpp_sigal_neg = sum(not_overlapping_sigal_preds_neg) / num_pairs
     udpp_sigal_pos_std = np.std(not_overlapping_sigal_preds_pos)
     udpp_sigal_neg_std = np.std(not_overlapping_sigal_preds_neg)
     
     # Smadar
     hmdr_smadar_pos = total_overlapping_smadar_preds_pos / total_smadar_preds_pos
     hmdr_smadar_neg = total_overlapping_smadar_preds_neg / total_smadar_preds_neg
-    udpp_smadar_pos = sum(not_overlapping_smadar_preds_pos) / effective_num_pairs
-    udpp_smadar_neg = sum(not_overlapping_smadar_preds_neg) / effective_num_pairs
+    udpp_smadar_pos = sum(not_overlapping_smadar_preds_pos) / num_pairs
+    udpp_smadar_neg = sum(not_overlapping_smadar_preds_neg) / num_pairs
     udpp_smadar_pos_std = np.std(not_overlapping_smadar_preds_pos)
     udpp_smadar_neg_std = np.std(not_overlapping_smadar_preds_neg)
     
+    # Nitzan
+    hmdr_nitzan_pos = total_overlapping_nitzan_preds_pos / total_nitzan_preds_pos
+    hmdr_nitzan_neg = total_overlapping_nitzan_preds_neg / total_nitzan_preds_neg
+    udpp_nitzan_pos = sum(not_overlapping_nitzan_preds_pos) / num_pairs
+    udpp_nitzan_neg = sum(not_overlapping_nitzan_preds_neg) / num_pairs
+    udpp_nitzan_pos_std = np.std(not_overlapping_nitzan_preds_pos)
+    udpp_nitzan_neg_std = np.std(not_overlapping_nitzan_preds_neg)
+
     # print(f'Precision pos = {union_precision_model_pos}')
     # print(f'Precision neg = {union_precision_model_neg}')
     # print(f'FPPI pos = {fppi_model_pos}')
@@ -1064,16 +992,19 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
                                'Benny HMDR (Positive)': hmdr_benny_pos, 'Benny HMDR (Negative)': hmdr_benny_neg,
                                'Sigal HMDR (Positive)': hmdr_sigal_pos, 'Sigal HMDR (Negative)': hmdr_sigal_neg,
                                'Smadar HMDR (Positive)': hmdr_smadar_pos, 'Smadar HMDR (Negative)': hmdr_smadar_neg,
+                               'Nitzan HMDR (Positive)': hmdr_nitzan_pos, 'Nitzan HMDR (Negative)': hmdr_nitzan_neg,
                                'UDPP Model (Positive)': udpp_model_pos, 'UDPP Model (Negative)': udpp_model_neg,
                                'UDPP Avi (Positive)': udpp_avi_pos, 'UDPP Avi (Negative)': udpp_avi_neg,
                                'UDPP Benny (Positive)': udpp_benny_pos, 'UDPP Benny (Negative)': udpp_benny_neg,
                                'UDPP Sigal (Positive)': udpp_sigal_pos, 'UDPP Sigal (Negative)': udpp_sigal_neg,
                                'UDPP Smadar (Positive)': udpp_smadar_pos, 'UDPP Smadar (Negative)': udpp_smadar_neg,
+                               'UDPP Nitzan (Positive)': udpp_nitzan_pos, 'UDPP Nitzan (Negative)': udpp_nitzan_neg,
                                'UDPP STD Model (Positive)': udpp_model_pos_std, 'UDPP STD Model (Negative)': udpp_model_neg_std,
                                'UDPP STD Avi (Positive)': udpp_avi_pos_std, 'UDPP STD Avi (Negative)': udpp_avi_neg_std,
                                'UDPP STD Benny (Positive)': udpp_benny_pos_std, 'UDPP STD Benny (Negative)': udpp_benny_neg_std,
                                'UDPP STD Sigal (Positive)': udpp_sigal_pos_std, 'UDPP STD Sigal (Negative)': udpp_sigal_neg_std,
                                'UDPP STD Smadar (Positive)': udpp_smadar_pos_std, 'UDPP STD Smadar (Negative)': udpp_smadar_neg_std,
+                               'UDPP STD Nitzan (Positive)': udpp_nitzan_pos_std, 'UDPP STD Nitzan (Negative)': udpp_nitzan_neg_std,
                                }
     with open(f'{out_path}/precision_measures.json', 'w') as f:
         json.dump(precision_measures_dict, f, indent=4)
@@ -1087,16 +1018,13 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
     mat_per_label_pos = pairwise_agreement_mat_pos / (pairwise_agreement_mat_pos + pairwise_disagreement_mat_pos)
     mat_per_label_neg = pairwise_agreement_mat_neg / (pairwise_agreement_mat_neg + pairwise_disagreement_mat_neg)
     mat_per_label_all = (pairwise_agreement_mat_pos + pairwise_agreement_mat_neg) / (pairwise_agreement_mat_pos + pairwise_disagreement_mat_pos + pairwise_agreement_mat_neg + pairwise_disagreement_mat_neg)
-    np.fill_diagonal(pairwise_agreement_per_pair_mat_pos, effective_num_pairs)
-    np.fill_diagonal(pairwise_agreement_per_pair_mat_neg, effective_num_pairs)
-
-    mat_per_pair_pos = pairwise_agreement_per_pair_mat_pos / effective_num_pairs
-    mat_per_pair_neg = pairwise_agreement_per_pair_mat_neg / effective_num_pairs
+    mat_per_pair_pos = pairwise_agreement_per_pair_mat_pos / num_pairs
+    mat_per_pair_neg = pairwise_agreement_per_pair_mat_neg / num_pairs
 
     mat_per_pair_all = np.eye(num_observers)
     for n1, n2 in combinations(physician_to_idx_dict.keys(), 2):
         pai_per_pair = 0
-        for k in range(effective_num_pairs):
+        for k in range(num_pairs):
             c_ag_pos = agreements_num_list_pos[physician_to_idx_dict[n1]][physician_to_idx_dict[n2]][k]
             c_ag_neg = agreements_num_list_neg[physician_to_idx_dict[n1]][physician_to_idx_dict[n2]][k]
             c_ag = c_ag_pos + c_ag_neg
@@ -1110,8 +1038,8 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
             if (c_ag_pos + c_disag_pos == 0 and c_ag_neg + c_disag_neg > 0) or (c_ag_pos + c_disag_pos > 0 and c_ag_neg + c_disag_neg == 0):
                 c_pai = c_pai * 0.5 + 0.5
             pai_per_pair += c_pai
-        mat_per_pair_all[physician_to_idx_dict[n1], physician_to_idx_dict[n2]] = pai_per_pair / effective_num_pairs
-        mat_per_pair_all[physician_to_idx_dict[n2], physician_to_idx_dict[n1]] = pai_per_pair / effective_num_pairs
+        mat_per_pair_all[physician_to_idx_dict[n1], physician_to_idx_dict[n2]] = pai_per_pair / num_pairs
+        mat_per_pair_all[physician_to_idx_dict[n2], physician_to_idx_dict[n1]] = pai_per_pair / num_pairs
 
     per_label_df_pos = {phy_n: mat_per_label_pos[i].tolist() for i, phy_n in enumerate(physician_to_idx_dict.keys())}
     per_label_df_neg = {phy_n: mat_per_label_neg[i].tolist() for i, phy_n in enumerate(physician_to_idx_dict.keys())}
@@ -1216,13 +1144,6 @@ def main(pair_start=61, pair_end=100, out_dir_name='observer_variability', preds
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Run observer variability evaluation over a pair range.')
-    parser.add_argument('--pair-start', type=int, default=61, help='Inclusive start pair number.')
-    parser.add_argument('--pair-end', type=int, default=100, help='Inclusive end pair number.')
-    parser.add_argument('--out-dir', type=str, default='observer_variability', help='Output directory name under annotation tool/.')
-    parser.add_argument('--preds-dir', type=str, default=None, help='Predictions directory containing pair*/output.nii.gz. Defaults to annotation tool/predictions.')
-    args = parser.parse_args()
-
     resize = v2.Resize((768, 768))
     struct = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
     differential_grad = colors.LinearSegmentedColormap.from_list('my_gradient', (
@@ -1238,5 +1159,5 @@ if __name__ == '__main__':
     SIGAL_POS = 2
     SMADAR_POS = 3
 
-    main(pair_start=args.pair_start, pair_end=args.pair_end, out_dir_name=args.out_dir, preds_dir=args.preds_dir)
+    main()
 
