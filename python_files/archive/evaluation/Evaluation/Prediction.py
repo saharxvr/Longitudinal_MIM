@@ -236,23 +236,24 @@ def apply_roi_mask(img_tensor, mask_np):
     return img_tensor * mask_t
 
 
-def crop_to_roi(img_tensor, mask_np, crop_pad_val=15):
-    """Crop image to ROI bounding box + padding, resize to 512x512, normalize & sharpen."""
+def crop_to_roi(img_raw, mask_np, crop_pad_val=15):
+    """Crop [H,W] image to ROI bbox + padding, resize to 512x512, normalize & sharpen.
+    Returns [1, 512, 512] tensor (same shape as preprocess_no_seg)."""
     if mask_np is None:
-        return img_tensor
+        return preprocess_no_seg(img_raw)
     mask_t = torch.from_numpy(mask_np).float()
     coords = mask_t.nonzero(as_tuple=False)
     if len(coords) == 0:
-        return img_tensor
+        return preprocess_no_seg(img_raw)
     x_min, x_max = coords[:, 0].min().item(), coords[:, 0].max().item()
     y_min, y_max = coords[:, 1].min().item(), coords[:, 1].max().item()
-    # Pad & clamp
+    # Pad & clamp to image bounds
     x_min = max(x_min - crop_pad_val, 0)
     y_min = max(y_min - crop_pad_val, 0)
-    x_max = min(x_max + crop_pad_val, img_tensor.shape[-2] - 1)
-    y_max = min(y_max + crop_pad_val, img_tensor.shape[-1] - 1)
-    cropped = img_tensor[..., x_min:x_max, y_min:y_max]
-    cropped = resize(cropped)
+    x_max = min(x_max + crop_pad_val, img_raw.shape[-2] - 1)
+    y_max = min(y_max + crop_pad_val, img_raw.shape[-1] - 1)
+    cropped = img_raw[..., x_min:x_max, y_min:y_max]
+    cropped = resize(cropped[None, ...])  # [H',W'] -> [1,512,512]
     cropped = (cropped - cropped.min()) / (cropped.max() - cropped.min() + 1e-8)
     cropped = adjust_sharpness(cropped, sharpness_factor=4.)
     cropped = torch.clamp(cropped, 0., 1.)
@@ -357,8 +358,8 @@ def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None, segs
                         print(f'  [SKIP] {roi_name}/{pair}: mask not found')
                         continue
                     if roi_mode == 'crop':
-                        prior = crop_to_roi(prior_raw[None, None, ...], roi_mask)
-                        current = crop_to_roi(current_raw[None, None, ...], roi_mask)
+                        prior = crop_to_roi(prior_raw, roi_mask)
+                        current = crop_to_roi(current_raw, roi_mask)
                     else:  # mask
                         prior = apply_roi_mask(prior_pp, roi_mask)
                         current = apply_roi_mask(current_pp, roi_mask)
