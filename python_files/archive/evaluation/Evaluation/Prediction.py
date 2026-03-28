@@ -208,7 +208,59 @@ def postprocess(out):
     return out
 
 
-def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None, segs_dir=None):
+ROI_NAMES = [
+    "full_image", "lungs", "lungs_heart", "lungs_mediastinum", "full_thorax",
+    "lungs_margin5", "lungs_med_margin5", "lungs_convex_hull",
+]
+
+
+def load_roi_mask(roi_masks_dir, roi_name, pair_name):
+    """Load a precomputed ROI mask. Returns None for full_image."""
+    if roi_name == "full_image" or roi_masks_dir is None:
+        return None
+    mask_path = os.path.join(roi_masks_dir, roi_name, pair_name, "mask.nii.gz")
+    if not os.path.exists(mask_path):
+        return None
+    arr = nib.load(mask_path).get_fdata()
+    arr = np.squeeze(arr)
+    return (arr > 0).astype(np.float32)
+
+
+def apply_roi_mask(img_tensor, mask_np):
+    """Multiply a preprocessed [1, 1, H, W] tensor by an ROI mask (resized to match)."""
+    if mask_np is None:
+        return img_tensor
+    mask_t = torch.from_numpy(mask_np).float().unsqueeze(0).unsqueeze(0)
+    mask_t = resize(mask_t)
+    mask_t = (mask_t > 0.5).float().to(img_tensor.device)
+    return img_tensor * mask_t
+
+
+def crop_to_roi(img_tensor, mask_np, crop_pad_val=15):
+    """Crop image to ROI bounding box + padding, resize to 512x512, normalize & sharpen."""
+    if mask_np is None:
+        return img_tensor
+    mask_t = torch.from_numpy(mask_np).float()
+    coords = mask_t.nonzero(as_tuple=False)
+    if len(coords) == 0:
+        return img_tensor
+    x_min, x_max = coords[:, 0].min().item(), coords[:, 0].max().item()
+    y_min, y_max = coords[:, 1].min().item(), coords[:, 1].max().item()
+    # Pad & clamp
+    x_min = max(x_min - crop_pad_val, 0)
+    y_min = max(y_min - crop_pad_val, 0)
+    x_max = min(x_max + crop_pad_val, img_tensor.shape[-2] - 1)
+    y_max = min(y_max + crop_pad_val, img_tensor.shape[-1] - 1)
+    cropped = img_tensor[..., x_min:x_max, y_min:y_max]
+    cropped = resize(cropped)
+    cropped = (cropped - cropped.min()) / (cropped.max() - cropped.min() + 1e-8)
+    cropped = adjust_sharpness(cropped, sharpness_factor=4.)
+    cropped = torch.clamp(cropped, 0., 1.)
+    return cropped
+
+
+def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None, segs_dir=None,
+         roi_masks_dir=None, roi_names=None, roi_mode='mask'):
     with torch.no_grad():
         if model_path is None:
             model_path = '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/saved_models/Longitudinal_MIM/Checkpoint_id45_Epoch3_Longitudinal_AllEntities_DEVICES_FT_Cons_Sharpen_Dropout_ExtendedConvNet_1Channel_single128_Sched_Decoder6_Eff_ViT_L1L2_GN.pt'
@@ -249,13 +301,11 @@ def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None, segs
         os.makedirs(preds_dir, exist_ok=True)
 
         pair_dirs = collect_pair_dirs(pairs_roots)
+        rois_to_run = roi_names if roi_names else [None]  # None = original (no ROI)
 
         for pair_d in pair_dirs:
             pair = os.path.basename(pair_d)
             print(f'Working on {pair}')
-
-            pred_d = f'{preds_dir}/{pair}'
-            os.makedirs(pred_d, exist_ok=True)
 
             nii_files = sorted([n for n in os.listdir(pair_d) if n.endswith('.nii.gz')])
             if len(nii_files) < 2:
@@ -269,8 +319,8 @@ def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None, segs
 
             prior_nif = nib.load(prior_p)
             aff = prior_nif.affine
-            prior = torch.tensor(prior_nif.get_fdata().T, dtype=torch.float32)
-            current = torch.tensor(nib.load(current_p).get_fdata().T, dtype=torch.float32)
+            prior_raw = torch.tensor(prior_nif.get_fdata().T, dtype=torch.float32)
+            current_raw = torch.tensor(nib.load(current_p).get_fdata().T, dtype=torch.float32)
 
             if use_segs:
                 prior_seg_p = f'{segs_dir}/{prior_n}_seg.nii.gz'
@@ -284,23 +334,52 @@ def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None, segs
                 prior_seg = torch.tensor(nib.load(prior_seg_p).get_fdata().T)
                 current_seg = torch.tensor(nib.load(current_seg_p).get_fdata().T)
 
-                prior = preprocess(prior, prior_seg, crop_pad_val=15, crop_seg=False)
-                current = preprocess(current, current_seg, crop_pad_val=15, crop_seg=False)
+                prior_pp = preprocess(prior_raw, prior_seg, crop_pad_val=15, crop_seg=False)
+                current_pp = preprocess(current_raw, current_seg, crop_pad_val=15, crop_seg=False)
             else:
-                prior = preprocess_no_seg(prior)
-                current = preprocess_no_seg(current)
+                prior_pp = preprocess_no_seg(prior_raw)
+                current_pp = preprocess_no_seg(current_raw)
 
-            plot_pair(prior, current, pred_d)
+            for roi_name in rois_to_run:
+                if roi_name is not None:
+                    pred_d = f'{preds_dir}/{roi_mode}/{roi_name}/{pair}'
+                else:
+                    pred_d = f'{preds_dir}/{pair}'
+                os.makedirs(pred_d, exist_ok=True)
 
-            output = pred(prior, current, model)
+                if os.path.exists(f'{pred_d}/output.nii.gz'):
+                    continue  # skip already computed
 
-            output = postprocess(output)
+                # Apply ROI to images
+                if roi_name is not None:
+                    roi_mask = load_roi_mask(roi_masks_dir, roi_name, pair)
+                    if roi_name != 'full_image' and roi_mask is None:
+                        print(f'  [SKIP] {roi_name}/{pair}: mask not found')
+                        continue
+                    if roi_mode == 'crop':
+                        prior = crop_to_roi(prior_raw[None, None, ...], roi_mask)
+                        current = crop_to_roi(current_raw[None, None, ...], roi_mask)
+                    else:  # mask
+                        prior = apply_roi_mask(prior_pp, roi_mask)
+                        current = apply_roi_mask(current_pp, roi_mask)
+                else:
+                    prior = prior_pp
+                    current = current_pp
 
-            output_nif = nib.Nifti1Image(output.numpy().T, aff)
-            nib.save(output_nif, f'{pred_d}/output.nii.gz')
+                plot_pair(prior, current, pred_d)
 
-            plot_output_on_current(current, output, pred_d)
-            plot_output_on_current(current, (output > 0).float() - (output < 0).float(), pred_d, suffix='_bin')
+                output = pred(prior, current, model)
+
+                output = postprocess(output)
+
+                output_nif = nib.Nifti1Image(output.numpy().T, aff)
+                nib.save(output_nif, f'{pred_d}/output.nii.gz')
+
+                plot_output_on_current(current, output, pred_d)
+                plot_output_on_current(current, (output > 0).float() - (output < 0).float(), pred_d, suffix='_bin')
+
+                if roi_name is not None:
+                    print(f'  {roi_name} done')
 
 
 def parse_args():
@@ -313,6 +392,11 @@ def parse_args():
     parser.add_argument('--preds-dir', type=str, default=None, help='Output predictions directory.')
     parser.add_argument('--pairs-roots', nargs='+', default=None, help='One or more roots containing pair directories.')
     parser.add_argument('--segs-dir', type=str, default=None, help='Segmentation directory. If omitted, local path is used with legacy fallback.')
+    parser.add_argument('--roi-masks-dir', type=str, default=None, help='Directory with precomputed ROI masks. Enables ROI mode.')
+    parser.add_argument('--roi-names', nargs='+', default=None,
+                        help=f'Which ROIs to run. Default (when --roi-masks-dir given): all {len(ROI_NAMES)}. Options: {ROI_NAMES}')
+    parser.add_argument('--roi-mode', type=str, default='mask', choices=['mask', 'crop'],
+                        help='mask = zero outside ROI, crop = crop to ROI bbox & resize to 512.')
     return parser.parse_args()
 
 
@@ -327,4 +411,9 @@ if __name__ == '__main__':
         (0.600, (1.000, 0.604, 0.000)),
         (1.000, (0.682, 0.000, 0.000))))
     args = parse_args()
-    main(use_segs=args.use_segs, model_path=args.model_path, preds_dir=args.preds_dir, pairs_roots=args.pairs_roots, segs_dir=args.segs_dir)
+    roi_names = args.roi_names
+    if roi_names is None and args.roi_masks_dir is not None:
+        roi_names = ROI_NAMES
+    main(use_segs=args.use_segs, model_path=args.model_path, preds_dir=args.preds_dir,
+         pairs_roots=args.pairs_roots, segs_dir=args.segs_dir,
+         roi_masks_dir=args.roi_masks_dir, roi_names=roi_names, roi_mode=args.roi_mode)

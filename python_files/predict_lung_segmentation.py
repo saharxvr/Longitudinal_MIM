@@ -5,6 +5,7 @@ This script supports three loading modes:
 1) TorchScript model (recommended): --model-path model.ts --model-type torchscript
 2) Python model + checkpoint: provide --model-module, --model-class, --model-path
 3) Open-source pretrained model (no local checkpoint): --model-type xrv-chestx-det
+4) Open-source pretrained thorax mask (no local checkpoint): --model-type xrv-chestx-det-thorax
 
 Expected model input:
 - Tensor of shape [B, 1, H, W]
@@ -37,6 +38,13 @@ python predict_lung_segmentation.py \
     --output-nii path/to/cxr_lung_seg.nii.gz \
     --model-type xrv-chestx-det \
     --device cuda
+
+Example (Open-source pretrained ChestX-Det thorax):
+python predict_lung_segmentation.py \
+    --input-nii path/to/cxr.nii.gz \
+    --output-nii path/to/cxr_thorax_seg.nii.gz \
+    --model-type xrv-chestx-det-thorax \
+    --device cuda
 """
 
 from __future__ import annotations
@@ -61,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-path", type=Path, default=None, help="Path to trained model (.ts/.pt/.pth).")
     parser.add_argument(
         "--model-type",
-        choices=["torchscript", "python", "xrv-chestx-det"],
+        choices=["torchscript", "python", "xrv-chestx-det", "xrv-chestx-det-thorax"],
         default="xrv-chestx-det",
         help="Model loading mode. Use torchscript when possible.",
     )
@@ -138,9 +146,9 @@ def _build_python_model(module_name: str, class_name: str, model_kwargs: dict) -
 
 
 class _XrvChestXDetWrapper(torch.nn.Module):
-    """Adapter around TorchXRayVision ChestX-Det model returning a 1-channel lung map."""
+    """Adapter around TorchXRayVision ChestX-Det model returning a 1-channel target map."""
 
-    def __init__(self):
+    def __init__(self, target_mode: str = "lung"):
         super().__init__()
         # TorchXRayVision's download progress bar prints block characters.
         # On some Windows terminals with cp1252 stdout this can crash.
@@ -155,19 +163,30 @@ class _XrvChestXDetWrapper(torch.nn.Module):
 
         self.model = xrv.baseline_models.chestx_det.PSPNet()
         targets = list(self.model.targets)
-        self.left_idx = targets.index("Left Lung")
-        self.right_idx = targets.index("Right Lung")
+        if target_mode == "lung":
+            selected_names = ["Left Lung", "Right Lung"]
+        elif target_mode == "thorax":
+            # Thorax proxy for CXR: combine lungs + central thoracic structures.
+            selected_names = ["Left Lung", "Right Lung", "Heart", "Mediastinum", "Facies Diaphragmatica"]
+        else:
+            raise ValueError(f"Unsupported ChestX-Det target mode: {target_mode}")
+
+        self.selected_idxs = [targets.index(name) for name in selected_names]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.model(x)
-        lungs = out[:, [self.left_idx, self.right_idx], ...]
-        # Combine left/right logits into one foreground logit-like map.
-        return torch.max(lungs, dim=1, keepdim=True).values
+        selected = out[:, self.selected_idxs, ...]
+        return torch.max(selected, dim=1, keepdim=True).values
 
 
 def _load_model(args: argparse.Namespace, device: torch.device) -> torch.nn.Module:
     if args.model_type == "xrv-chestx-det":
-        model = _XrvChestXDetWrapper().to(device)
+        model = _XrvChestXDetWrapper(target_mode="lung").to(device)
+        model.eval()
+        return model
+
+    if args.model_type == "xrv-chestx-det-thorax":
+        model = _XrvChestXDetWrapper(target_mode="thorax").to(device)
         model.eval()
         return model
 
@@ -242,7 +261,7 @@ def run_inference(args: argparse.Namespace) -> None:
     img_np = _normalize_01(img_np)
 
     # TorchXRayVision segmentation expects intensity in roughly [-1024, 1024].
-    if args.model_type == "xrv-chestx-det":
+    if args.model_type in {"xrv-chestx-det", "xrv-chestx-det-thorax"}:
         img_np = img_np * 2048.0 - 1024.0
 
     inp = torch.from_numpy(img_np)[None, None, ...].to(device)
@@ -270,7 +289,10 @@ def run_inference(args: argparse.Namespace) -> None:
     args.output_nii.parent.mkdir(parents=True, exist_ok=True)
     nib.save(out_nii, str(args.output_nii))
 
-    print(f"Saved lung mask to: {args.output_nii}")
+    if args.model_type == "xrv-chestx-det-thorax":
+        print(f"Saved thorax mask to: {args.output_nii}")
+    else:
+        print(f"Saved lung mask to: {args.output_nii}")
     print(f"Mask foreground pixels: {int(mask.sum())}")
 
 

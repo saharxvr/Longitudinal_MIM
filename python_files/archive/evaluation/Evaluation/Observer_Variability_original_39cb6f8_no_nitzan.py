@@ -3,14 +3,15 @@ import json
 import nibabel as nib
 from skimage.draw import ellipse
 import os
-import torch
+import argparse
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 from matplotlib import colors
 from scipy.ndimage import label
 from itertools import combinations
-import torchvision.transforms.v2 as v2
+import re
+from skimage.transform import resize as sk_resize
 
 
 # One time use function
@@ -357,7 +358,9 @@ def load_labels_map(json_path, shape, label_mapping_dict=None):
 
 def load_model_labels_map(nif_path):
     labels = nib.load(nif_path).get_fdata()
-    labels = resize(torch.tensor(labels)[None, None, ...]).squeeze().numpy()
+    if labels.ndim > 2:
+        labels = np.squeeze(labels)
+    labels = sk_resize(labels, (768, 768), order=1, preserve_range=True, anti_aliasing=False)
 
     return (labels > 0).astype(int), (labels < 0).astype(int)
 
@@ -369,6 +372,36 @@ def resolve_model_output_path(base_path, pair_num):
         if os.path.exists(c_path):
             return c_path
     raise FileNotFoundError(f'Model output not found for pair {pair_num} in {base_path}')
+
+
+def resolve_pair_path(pairs_base_paths, pair_num):
+    for base_path in pairs_base_paths:
+        candidates = [f'{base_path}/pair{pair_num}', f'{base_path}/Pair{pair_num}']
+        for c_path in candidates:
+            if os.path.exists(c_path):
+                return c_path
+    raise FileNotFoundError(f'Pair folder not found for pair {pair_num} in: {pairs_base_paths}')
+
+
+def _extract_pair_num_from_name(file_name):
+    match = re.search(r'\d+', file_name)
+    return int(match.group()) if match else None
+
+
+def resolve_annotation_path(annotations_base_path, physician_name, pair_num):
+    physician_dir = f'{annotations_base_path}/{physician_name}'
+    if not os.path.exists(physician_dir):
+        raise FileNotFoundError(f'Annotation directory not found: {physician_dir}')
+
+    for root, _, files in os.walk(physician_dir):
+        for f_name in files:
+            if not f_name.lower().endswith('.json'):
+                continue
+            c_pair_num = _extract_pair_num_from_name(f_name)
+            if c_pair_num == pair_num:
+                return f'{root}/{f_name}'
+
+    raise FileNotFoundError(f'Annotation JSON not found for {physician_name}, pair {pair_num} in {physician_dir}')
 
 
 def update_matches_dict(matches_dict, label_to_physician_dict, ccs_avi, ccs_benny, ccs_sigal, ccs_smadar, t=1):
@@ -569,11 +602,28 @@ def get_sensitivity_at_consensus_levels(model_map, human_maps):
 #     print(np.corrcoef(detection_table.T))
 
 
-def main():
-    model_outputs_base_path = 'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/Sahar_work/files/predictions'
-    annotations_base_path = 'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/Sahar_work/files/annotations_61_98_no_nitzan'
-    pairs_base_path = 'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/Sahar_work/files/Pairs61_98'
-    out_path = 'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/Sahar_work/files/new61_98_no_nitzan'
+def parse_args():
+    parser = argparse.ArgumentParser(description='Observer variability for selected pair ranges')
+    parser.add_argument('--start-pair', type=int, default=1, help='First pair index (inclusive)')
+    parser.add_argument('--end-pair', type=int, default=100, help='Last pair index (inclusive)')
+    parser.add_argument('--out-path', type=str, default='c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/Sahar_work/files/observer_variability_1_100_stats', help='Output directory path')
+    return parser.parse_args()
+
+
+def main(start_pair=1, end_pair=100, out_path='c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/Sahar_work/files/observer_variability_1_100_stats'):
+    model_outputs_base_path = 'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/Sahar_work/files/predictions_1_100'
+    annotations_base_path = 'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/annotation tool/Annotations'
+    pairs_base_paths = [
+        'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/annotation tool/Pairs1',
+        'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/annotation tool/Pairs2',
+        'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/annotation tool/Pairs3',
+        'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/annotation tool/Pairs4',
+        'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/annotation tool/Pairs5',
+        'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/annotation tool/Pairs6',
+        'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/annotation tool/Pairs7',
+        'c:/Users/saharaharon/thesis/Longitudinal_MIM/python_files/annotation tool/Pairs8',
+    ]
+    os.makedirs(out_path, exist_ok=True)
 
     num_humans = 4
     num_observers = 5
@@ -582,8 +632,8 @@ def main():
     detections_table_all = []
     physician_to_idx_dict = {'Avi': 0, 'Benny': 1, 'Sigal': 2, 'Smadar': 3, 'Model': 4}
 
-    num_pairs = 38
-    bias = 60
+    num_pairs = end_pair - start_pair + 1
+    bias = start_pair - 1
 
     sensitivities_pos = [[0, 0] for _ in range(num_humans)]
     sensitivities_neg = [[0, 0] for _ in range(num_humans)]
@@ -657,14 +707,15 @@ def main():
     
 
     for i in range(bias, num_pairs + bias):
-        print(f'Pair {i + 1}')
-        pair_path = f'{pairs_base_path}/pair{i+1}'
+        pair_num = i + 1
+        print(f'Pair {pair_num}')
+        pair_path = resolve_pair_path(pairs_base_paths, pair_num)
         current_path = f'{pair_path}/{sorted([p for p in os.listdir(pair_path) if p.endswith(".nii.gz")])[1]}'
-        annotation_path_avi = f'{annotations_base_path}/Avi/{i+1}.json'
-        annotation_path_benny = f'{annotations_base_path}/Benny/{i+1}.json'
-        annotation_path_sigal = f'{annotations_base_path}/Sigal/{i+1}.json'
-        annotation_path_smadar = f'{annotations_base_path}/Smadar/{i+1}.json'
-        annotation_path_model = resolve_model_output_path(model_outputs_base_path, i + 1)
+        annotation_path_avi = resolve_annotation_path(annotations_base_path, 'Avi', pair_num)
+        annotation_path_benny = resolve_annotation_path(annotations_base_path, 'Benny', pair_num)
+        annotation_path_sigal = resolve_annotation_path(annotations_base_path, 'Sigal', pair_num)
+        annotation_path_smadar = resolve_annotation_path(annotations_base_path, 'Smadar', pair_num)
+        annotation_path_model = resolve_model_output_path(model_outputs_base_path, pair_num)
 
         current = load_xray(current_path)
         label_map_pos_avi, label_map_neg_avi = load_labels_map(annotation_path_avi, current.shape)
@@ -1112,7 +1163,7 @@ def main():
 
 
 if __name__ == '__main__':
-    resize = v2.Resize((768, 768))
+    args = parse_args()
     struct = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
     differential_grad = colors.LinearSegmentedColormap.from_list('my_gradient', (
         # Edit this gradient at https://eltos.github.io/gradient/#0:3CFF3D-40:00FFB3-50:FFFCFC-60:FF9A00-100:AE0000
@@ -1127,5 +1178,5 @@ if __name__ == '__main__':
     SIGAL_POS = 2
     SMADAR_POS = 3
 
-    main()
+    main(start_pair=args.start_pair, end_pair=args.end_pair, out_path=args.out_path)
 
