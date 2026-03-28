@@ -229,11 +229,11 @@ def load_roi_mask(roi_masks_dir, roi_name, pair_name):
 
 
 def apply_roi_mask(img_tensor, mask_np):
-    """Multiply a preprocessed [1, 1, H, W] tensor by an ROI mask (resized to match)."""
+    """Multiply a preprocessed [1, H, W] tensor by an ROI mask (resized to match)."""
     if mask_np is None:
         return img_tensor
-    mask_t = torch.from_numpy(mask_np).float().unsqueeze(0).unsqueeze(0)
-    mask_t = resize(mask_t)
+    mask_t = torch.from_numpy(mask_np).float().unsqueeze(0)  # [1, H, W]
+    mask_t = resize(mask_t)  # [1, 512, 512]
     mask_t = (mask_t > 0.5).float().to(img_tensor.device)
     return img_tensor * mask_t
 
