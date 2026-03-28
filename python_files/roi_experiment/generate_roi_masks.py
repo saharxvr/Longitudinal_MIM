@@ -199,6 +199,17 @@ def pick_current_nii(pair_dir: Path) -> Path:
     return nii_files[1]  # "current" image (second chronologically)
 
 
+def pick_both_nii(pair_dir: Path) -> tuple[Path, Path]:
+    """Return (prior_path, current_path) — the two raw .nii.gz files."""
+    nii_files = sorted(
+        [p for p in pair_dir.iterdir()
+         if p.name.endswith(".nii.gz") and "_lung_seg" not in p.name and "_seg" not in p.name],
+    )
+    if len(nii_files) < 2:
+        raise FileNotFoundError(f"Expected >=2 raw .nii.gz in {pair_dir}, found {len(nii_files)}")
+    return nii_files[0], nii_files[1]
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
@@ -221,21 +232,27 @@ def main():
     for pair_num in range(args.start_pair, args.end_pair + 1):
         try:
             pair_dir = resolve_pair_path(args.pairs_roots, pair_num)
-            current_nii_path = pick_current_nii(pair_dir)
+            prior_path, current_path = pick_both_nii(pair_dir)
         except FileNotFoundError as e:
             print(f"[SKIP] Pair {pair_num}: {e}")
             continue
 
-        img_np, ref_nii = _load_nifti_2d(current_nii_path)
-        channel_masks = compute_channel_masks(img_np, model, targets, device)
-        roi_masks = build_all_roi_masks(channel_masks, img_np.shape)
+        # Process both images in the pair
+        for nii_path in [prior_path, current_path]:
+            # Image stem without .nii.gz  (e.g. "9A")
+            img_stem = nii_path.name[:-7]
 
-        for roi_name, mask in roi_masks.items():
-            out_path = args.out_dir / roi_name / f"pair{pair_num}" / "mask.nii.gz"
-            _save_mask(mask, ref_nii, out_path)
+            img_np, ref_nii = _load_nifti_2d(nii_path)
+            channel_masks = compute_channel_masks(img_np, model, targets, device)
+            roi_masks = build_all_roi_masks(channel_masks, img_np.shape)
 
-        fg_summary = {n: int(m.sum()) for n, m in roi_masks.items()}
-        print(f"Pair {pair_num}: {fg_summary}")
+            for roi_name, mask in roi_masks.items():
+                # Output:  out_dir/{roi_name}/{img_stem}_seg.nii.gz
+                out_path = args.out_dir / roi_name / f"{img_stem}_seg.nii.gz"
+                _save_mask(mask, ref_nii, out_path)
+
+            fg_summary = {n: int(m.sum()) for n, m in roi_masks.items()}
+            print(f"Pair {pair_num} / {img_stem}: {fg_summary}")
 
     print("Done.")
 

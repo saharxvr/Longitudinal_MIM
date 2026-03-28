@@ -43,14 +43,17 @@ def resolve_pair_path(pairs_roots: list[str], pair_num: int) -> Path:
     raise FileNotFoundError(f"Pair {pair_num} not found")
 
 
-def pick_current_nii(pair_dir: Path) -> Path:
+def pick_current_nii(pair_dir: Path) -> tuple[Path, str]:
+    """Return (current_nii_path, image_stem) e.g. ('.../9B.nii.gz', '9B')."""
     nii_files = sorted(
         [p for p in pair_dir.iterdir()
-         if p.name.endswith(".nii.gz") and "_seg" not in p.name],
+         if p.name.endswith(".nii.gz") and "_seg" not in p.name and "_lung_seg" not in p.name],
     )
     if len(nii_files) < 2:
         raise FileNotFoundError(f"Expected >=2 raw .nii.gz in {pair_dir}")
-    return nii_files[1]
+    current = nii_files[1]
+    stem = current.name[:-7]  # strip .nii.gz
+    return current, stem
 
 
 def main():
@@ -73,7 +76,8 @@ def main():
     for row, pair_num in enumerate(pairs):
         try:
             pair_dir = resolve_pair_path(args.pairs_roots, pair_num)
-            img = _norm(_load_2d(pick_current_nii(pair_dir)))
+            nii_path, img_stem = pick_current_nii(pair_dir)
+            img = _norm(_load_2d(nii_path))
         except FileNotFoundError as e:
             print(f"[SKIP] pair {pair_num}: {e}")
             for col in range(n_rois):
@@ -82,7 +86,7 @@ def main():
 
         for col, roi_name in enumerate(ROI_NAMES):
             ax = axes[row, col]
-            mask_path = args.roi_masks_dir / roi_name / f"pair{pair_num}" / "mask.nii.gz"
+            mask_path = args.roi_masks_dir / roi_name / f"{img_stem}_seg.nii.gz"
             ax.imshow(img.T, cmap="gray")
             if mask_path.exists():
                 mask = (_load_2d(mask_path) > 0).astype(np.float32)
