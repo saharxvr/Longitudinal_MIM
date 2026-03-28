@@ -248,7 +248,7 @@ def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None, segs
             pred_d = f'{preds_dir}/{pair}'
             os.makedirs(pred_d, exist_ok=True)
 
-            nii_files = sorted([n for n in os.listdir(pair_d) if n.endswith('.nii.gz')])
+            nii_files = sorted([n for n in os.listdir(pair_d) if n.endswith('.nii.gz') and '_seg' not in n])
             if len(nii_files) < 2:
                 print(f'Skipping {pair}: fewer than 2 .nii.gz files in {pair_d}')
                 continue
