@@ -218,12 +218,14 @@ def load_roi_mask(roi_masks_dir, roi_name, pair_name):
     """Load a precomputed ROI mask. Returns None for full_image."""
     if roi_name == "full_image" or roi_masks_dir is None:
         return None
-    mask_path = os.path.join(roi_masks_dir, roi_name, pair_name, "mask.nii.gz")
-    if not os.path.exists(mask_path):
-        return None
-    arr = nib.load(mask_path).get_fdata()
-    arr = np.squeeze(arr)
-    return (arr > 0).astype(np.float32)
+    # Try exact name, then lowercase (masks saved as pair1, dirs may be Pair1)
+    for name_variant in [pair_name, pair_name.lower()]:
+        mask_path = os.path.join(roi_masks_dir, roi_name, name_variant, "mask.nii.gz")
+        if os.path.exists(mask_path):
+            arr = nib.load(mask_path).get_fdata()
+            arr = np.squeeze(arr)
+            return (arr > 0).astype(np.float32)
+    return None
 
 
 def apply_roi_mask(img_tensor, mask_np):
