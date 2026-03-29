@@ -235,7 +235,7 @@ def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None, segs
                 os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs7')),
                 os.path.normpath(os.path.join(current_dir, '../../../annotation tool/Pairs8')),
             ]
-        segs_dir = segs_dir or os.path.normpath(os.path.join(current_dir, '../../../annotation tool/segs'))
+        segs_dir = segs_dir or '/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/ICU_cases/segs'
 
         os.makedirs(preds_dir, exist_ok=True)
 
