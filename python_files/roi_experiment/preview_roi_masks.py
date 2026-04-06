@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
@@ -67,9 +69,10 @@ def main():
 
     pairs = args.pairs
     n_pairs = len(pairs)
-    n_rois = len(ROI_NAMES)
+    all_cols = ROI_NAMES + ["Itamar segs"]
+    n_cols = len(all_cols)
 
-    fig, axes = plt.subplots(n_pairs, n_rois, figsize=(2.8 * n_rois, 3 * n_pairs))
+    fig, axes = plt.subplots(n_pairs, n_cols, figsize=(2.8 * n_cols, 3 * n_pairs))
     if n_pairs == 1:
         axes = axes[np.newaxis, :]
 
@@ -80,14 +83,15 @@ def main():
             img = _norm(_load_2d(nii_path))
         except FileNotFoundError as e:
             print(f"[SKIP] pair {pair_num}: {e}")
-            for col in range(n_rois):
+            for col in range(n_cols):
                 axes[row, col].axis("off")
             continue
 
-        for col, roi_name in enumerate(ROI_NAMES):
+        for col, col_name in enumerate(all_cols):
             ax = axes[row, col]
-            mask_path = args.roi_masks_dir / roi_name / f"{img_stem}_seg.nii.gz"
             ax.imshow(img.T, cmap="gray")
+
+            mask_path = args.roi_masks_dir / col_name / f"{img_stem}_seg.nii.gz"
             if mask_path.exists():
                 mask = (_load_2d(mask_path) > 0).astype(np.float32)
                 ax.imshow(mask.T, cmap="Reds", alpha=0.35)
@@ -95,8 +99,9 @@ def main():
                 ax.set_xlabel(f"{fg_pct:.0f}%", fontsize=7)
             else:
                 ax.set_xlabel("missing", fontsize=7, color="red")
+
             if row == 0:
-                ax.set_title(roi_name.replace("_", "\n"), fontsize=8)
+                ax.set_title(col_name.replace("_", "\n"), fontsize=8)
             if col == 0:
                 ax.set_ylabel(f"pair {pair_num}", fontsize=9)
             ax.set_xticks([])
