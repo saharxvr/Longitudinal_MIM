@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import re
+import json
 
 import numpy as np
 
@@ -104,17 +105,57 @@ def pred(prior, current, model):
 
 def preprocess(img: torch.Tensor, boundary_seg: torch.Tensor, crop_pad_val=15, crop_seg=False):
     assert img.shape == boundary_seg.shape, (img.shape, boundary_seg.shape)
+    orig_h, orig_w = img.shape[-2], img.shape[-1]
 
     boundary_seg_coords = boundary_seg.nonzero().T
-    x_min, x_max = torch.min(boundary_seg_coords[-2]), torch.max(boundary_seg_coords[-2])
-    y_min, y_max = torch.min(boundary_seg_coords[-1]), torch.max(boundary_seg_coords[-1])
+    x_min = torch.min(boundary_seg_coords[-2]).item()
+    x_max = torch.max(boundary_seg_coords[-2]).item()
+    y_min = torch.min(boundary_seg_coords[-1]).item()
+    y_max = torch.max(boundary_seg_coords[-1]).item()
 
-    x_min = max(x_min.item() - crop_pad_val, 0)
-    y_min = max(y_min.item() - crop_pad_val, 0)
-    x_max = min(x_max.item() + crop_pad_val, img.shape[-2] - 1)
-    y_max = min(y_max.item() + crop_pad_val, img.shape[-1] - 1)
+    x_min = max(x_min - crop_pad_val, 0)
+    y_min = max(y_min - crop_pad_val, 0)
+    x_max = min(x_max + crop_pad_val, orig_h - 1)
+    y_max = min(y_max + crop_pad_val, orig_w - 1)
 
-    img = img[..., x_min: x_max, y_min: y_max]
+    # Best-fit square: expand bbox to square preserving proportions
+    bbox_h = x_max - x_min
+    bbox_w = y_max - y_min
+    side = max(bbox_h, bbox_w)
+
+    cx = (x_min + x_max) // 2
+    cy = (y_min + y_max) // 2
+    sq_x_min = cx - side // 2
+    sq_y_min = cy - side // 2
+    sq_x_max = sq_x_min + side
+    sq_y_max = sq_y_min + side
+
+    # Clamp square to image boundaries
+    if sq_x_min < 0:
+        sq_x_max -= sq_x_min
+        sq_x_min = 0
+    if sq_y_min < 0:
+        sq_y_max -= sq_y_min
+        sq_y_min = 0
+    if sq_x_max > orig_h:
+        sq_x_min -= (sq_x_max - orig_h)
+        sq_x_max = orig_h
+    if sq_y_max > orig_w:
+        sq_y_min -= (sq_y_max - orig_w)
+        sq_y_max = orig_w
+    sq_x_min = max(sq_x_min, 0)
+    sq_y_min = max(sq_y_min, 0)
+
+    crop_info = {
+        'sq_x_min': sq_x_min,
+        'sq_y_min': sq_y_min,
+        'square_size': side,
+        'orig_h': orig_h,
+        'orig_w': orig_w,
+        'target_size': 512,
+    }
+
+    img = img[..., sq_x_min:sq_x_max, sq_y_min:sq_y_max]
     img = resize(img[None, ...])
 
     img = (img - torch.min(img)) / (torch.max(img) - torch.min(img))
@@ -129,20 +170,55 @@ def preprocess(img: torch.Tensor, boundary_seg: torch.Tensor, crop_pad_val=15, c
     img = torch.clamp(img, 0., 1.)
 
     if crop_seg:
-        boundary_seg = boundary_seg[..., x_min: x_max, y_min: y_max]
+        boundary_seg = boundary_seg[..., sq_x_min:sq_x_max, sq_y_min:sq_y_max]
         boundary_seg = resize(boundary_seg[None, ...])
 
-        return img, boundary_seg
+        return img, boundary_seg, crop_info
 
-    return img
+    return img, crop_info
 
 
 def preprocess_no_seg(img: torch.Tensor):
+    orig_h, orig_w = img.shape[-2], img.shape[-1]
+    side = max(orig_h, orig_w)
+
+    cx, cy = orig_h // 2, orig_w // 2
+    sq_x_min = cx - side // 2
+    sq_y_min = cy - side // 2
+    sq_x_max = sq_x_min + side
+    sq_y_max = sq_y_min + side
+
+    # Clamp square to image boundaries
+    if sq_x_min < 0:
+        sq_x_max -= sq_x_min
+        sq_x_min = 0
+    if sq_y_min < 0:
+        sq_y_max -= sq_y_min
+        sq_y_min = 0
+    if sq_x_max > orig_h:
+        sq_x_min -= (sq_x_max - orig_h)
+        sq_x_max = orig_h
+    if sq_y_max > orig_w:
+        sq_y_min -= (sq_y_max - orig_w)
+        sq_y_max = orig_w
+    sq_x_min = max(sq_x_min, 0)
+    sq_y_min = max(sq_y_min, 0)
+
+    crop_info = {
+        'sq_x_min': sq_x_min,
+        'sq_y_min': sq_y_min,
+        'square_size': side,
+        'orig_h': orig_h,
+        'orig_w': orig_w,
+        'target_size': 512,
+    }
+
+    img = img[..., sq_x_min:sq_x_max, sq_y_min:sq_y_max]
     img = resize(img[None, ...])
     img = (img - torch.min(img)) / (torch.max(img) - torch.min(img))
     img = adjust_sharpness(img, sharpness_factor=4.)
     img = torch.clamp(img, 0., 1.)
-    return img
+    return img, crop_info
 
 
 def _pair_sort_key(path_or_name: str):
@@ -275,11 +351,15 @@ def main(use_segs=False, model_path=None, preds_dir=None, pairs_roots=None, segs
                 prior_seg = torch.tensor(nib.load(prior_seg_p).get_fdata().T)
                 current_seg = torch.tensor(nib.load(current_seg_p).get_fdata().T)
 
-                prior = preprocess(prior, prior_seg, crop_pad_val=15, crop_seg=False)
-                current = preprocess(current, current_seg, crop_pad_val=15, crop_seg=False)
+                prior, prior_crop_info = preprocess(prior, prior_seg, crop_pad_val=15, crop_seg=False)
+                current, current_crop_info = preprocess(current, current_seg, crop_pad_val=15, crop_seg=False)
             else:
-                prior = preprocess_no_seg(prior)
-                current = preprocess_no_seg(current)
+                prior, prior_crop_info = preprocess_no_seg(prior)
+                current, current_crop_info = preprocess_no_seg(current)
+
+            crop_info = {'prior': prior_crop_info, 'current': current_crop_info}
+            with open(f'{pred_d}/crop_info.json', 'w') as f:
+                json.dump(crop_info, f, indent=2)
 
             plot_pair(prior, current, pred_d)
 
