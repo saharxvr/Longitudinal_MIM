@@ -1,0 +1,53 @@
+# Default experiment configuration for Foundation-Based Difference Detection.
+# Values mirror constants.py and can override them at runtime.
+
+experiment:
+  name: foundation_contrastive_diff_v1
+  seed: 42
+
+backbone:
+  name: chexfound                  # chexfound | rad_dino | imagenet_vit | parent_efficientnet
+  checkpoint: ""                   # path to CheXFound teacher_checkpoint.pth
+  config: ""                       # path to CheXFound config yaml
+  last_n_layers: 4                 # concat patch tokens from last N layers
+  freeze: true
+  allow_last_block_adapter: false
+  use_feature_cache: true          # precompute frozen tokens once, train head on cache
+  feature_cache_dir: ./feature_cache
+
+difference_head:
+  fusion_mode: diff                # diff | concat | cross_attention
+  d_glori: 768
+  num_heads: 8
+  use_adaptive_temperature: true   # fine-grained local branch
+  use_pyramid_patch_merging: true  # coarse-grained local branch
+  integrate_global_cls: true       # global [CLS] difference skip
+  embed_dim: 256
+
+projection_heads:
+  use_disentanglement: true
+  proj_dim: 128
+
+losses:
+  lambda_seg: 1.0
+  lambda_contrastive: 0.5
+  lambda_orthogonality: 0.1
+  lambda_direction: 0.0
+  contrastive_loss: supcon         # supcon | triplet
+  supcon_temperature: 0.1
+  triplet_margin: 0.5
+
+data:
+  train_pairs_dir: ""
+  val_pairs_dir: ""
+  real_test_pairs_dir: ""
+  img_size: 512
+
+training:
+  batch_size: 8
+  max_lr: 0.0003
+  weight_decay: 0.01
+  epochs: 50
+  update_every_batches: 4
+  save_folder: ./checkpoints
+  plots_folder: ./plots
