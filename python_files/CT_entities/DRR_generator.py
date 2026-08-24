@@ -244,6 +244,16 @@ def parse_args():
     )
 
     parser.add_argument(
+        '--single_pathology',
+        action='store_true',
+        help=(
+            "Add AT MOST ONE pathology per pair (chosen as a categorical over the given "
+            "per-type probabilities; remaining probability mass -> no pathology), then devices. "
+            "Used by the foundation_contrastive_diff study (1 max pathology + angle diff + devices)."
+        )
+    )
+
+    parser.add_argument(
         '-d', '--decay_prob_on_add',
         type=float,
         default=1.,
@@ -1739,6 +1749,183 @@ def add_entities_to_pair(scans, segs, orig_scan, orig_lungs, intra_pulmonary_ent
     return c_dict
 
 
+def _choose_single_pathology(intra_pulmonary_entities, extra_pulmonary_entities):
+    """Pick at most one pathology as a categorical over the per-type weights.
+
+    The 'no pathology' weight is max(0, 1 - sum(type weights)), so passing e.g.
+    -CO .2 -PL .2 -PN .2 -FL .2 yields 20% each type and 20% clean pairs.
+    Returns (entity_cls, is_intra) or (None, None) for 'no pathology'.
+    """
+    options = []  # (entity_cls, is_intra, weight)
+    for entity, prob in intra_pulmonary_entities:
+        options.append((entity, True, max(0., float(prob))))
+    for entity, prob in extra_pulmonary_entities:
+        options.append((entity, False, max(0., float(prob))))
+
+    none_weight = max(0., 1. - sum(w for _, _, w in options))
+    total = sum(w for _, _, w in options) + none_weight
+    if total <= 0:
+        return None, None
+
+    r = random.random() * total
+    acc = 0.
+    for entity, is_intra, w in options:
+        acc += w
+        if r <= acc:
+            return entity, is_intra
+    return None, None
+
+
+def add_single_pathology_to_pair(scans, segs, orig_scan, orig_lungs, intra_pulmonary_entities, extra_pulmonary_entities, devices_entity, entity_prob_decay):
+    """Like add_entities_to_pair but adds AT MOST ONE pathology, then devices.
+
+    Keeps the same registrated_prior placement as add_entities_to_pair: intra-
+    pulmonary change is applied before the clone (captured by intensity diff),
+    extra-pulmonary after (captured by seg-based diff). Devices are added after
+    the clone so they cancel in the diff (nuisance ignored in the GT map).
+    """
+    patient_mode = random.choices(['supine', 'erect'], weights=[0.8, 0.2], k=1)[0]
+    pleural_effusion_patient_mode = 'erect' if patient_mode == 'erect' else ('supine' if random.random() < 0.5 else 'semi-supine')
+
+    c_dict = {'scans': scans, 'segs': segs, 'orig_scan': orig_scan, 'orig_lungs': orig_lungs, 'patient_mode': patient_mode, 'pleural_effusion_patient_mode': pleural_effusion_patient_mode, 'added_entity_names': [], 'log_params': True}
+
+    entity, is_intra = _choose_single_pathology(intra_pulmonary_entities, extra_pulmonary_entities)
+
+    if entity is not None and is_intra:
+        c_dict.update(entity.add_to_CT_pair(**c_dict))
+        c_dict['added_entity_names'].append(entity.__name__)
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    c_dict['registrated_prior'] = c_dict['scans'][0].clone()
+
+    if entity is not None and not is_intra:
+        c_dict.update(entity.add_to_CT_pair(**c_dict))
+        c_dict['added_entity_names'].append(entity.__name__)
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    if len(devices_entity) > 0:
+        for dev_entity, prob in devices_entity:
+            if random.random() < prob:
+                c_dict.update(dev_entity.add_to_CT_pair(**c_dict))
+                c_dict['added_entity_names'].append(dev_entity.__name__)
+                torch.cuda.empty_cache()
+                gc.collect()
+
+    return c_dict
+
+
+# Maps generator entity class names to the study's anomaly-type vocabulary.
+ENTITY_TO_ANOMALY = {
+    'Consolidation': 'consolidation',
+    'PleuralEffusion': 'pleural_effusion',
+    'Pneumothorax': 'pneumothorax',
+    'FluidOverload': 'fluid_overload',
+    'Cardiomegaly': 'cardiomegaly',
+}
+
+
+def _angles_to_floats(angles):
+    if angles is None:
+        return None
+    out = []
+    for a in angles:
+        try:
+            out.append(float(a.item()) if hasattr(a, 'item') else float(a))
+        except Exception:
+            out.append(None)
+    return out
+
+
+def build_pair_metadata(
+    diff_map,
+    added_entity_names,
+    *,
+    case_name,
+    ct_source_path,
+    pair_index,
+    current_angles,
+    prior_angles,
+    rot_ranges,
+    max_sum,
+    min_sum,
+    rot_exp,
+    patient_mode,
+    single_pathology_mode,
+    image_size=512,
+):
+    """Assemble a versatile, backward-compatible per-pair metadata dict.
+
+    Superset of the legacy {'added_entities': ...} record, adding labels and
+    factors needed across all study stages (RQ1 seg, RQ2 contrastive, RQ3
+    disentanglement) and for reuse by other research: anomaly type, change
+    direction, pathology-vs-nuisance, device flag, and the prior/current
+    projection-angle delta.
+    """
+    anomalies = [ENTITY_TO_ANOMALY[e] for e in added_entity_names if e in ENTITY_TO_ANOMALY]
+    anomaly_type = anomalies[0] if anomalies else 'none'
+    has_devices = 'ExternalDevices' in added_entity_names
+
+    d = np.asarray(diff_map, dtype=np.float32)
+    total = int(d.size) if d.size else 1
+    abs_sum = float(np.abs(d).sum())
+    net = float(d.sum())
+    changed_fraction = float(np.count_nonzero(d)) / total
+    direction_score = float(net / (abs_sum + 1e-8))
+    if changed_fraction < 1e-4:
+        direction = 'none'
+    elif direction_score > 0.05:
+        direction = 'appearance'
+    elif direction_score < -0.05:
+        direction = 'disappearance'
+    else:
+        direction = 'mixed'
+
+    ca = _angles_to_floats(current_angles)
+    pa = _angles_to_floats(prior_angles)
+    angle_delta = None
+    angle_delta_l2 = None
+    if ca and pa and None not in ca and None not in pa:
+        angle_delta = [c - p for c, p in zip(ca, pa)]
+        angle_delta_l2 = float(math.sqrt(sum(x * x for x in angle_delta)))
+
+    return {
+        'schema_version': 2,
+        'added_entities': list(added_entity_names),
+        'anomaly_type': anomaly_type,
+        'anomalies_present': anomalies,
+        'num_pathologies': len(anomalies),
+        'single_pathology_mode': bool(single_pathology_mode),
+        'has_devices': bool(has_devices),
+        'pathology_vs_nuisance': 'pathology' if anomaly_type != 'none' else 'nuisance',
+        'direction': direction,
+        'direction_score': direction_score,
+        'diff_stats': {
+            'changed_fraction': changed_fraction,
+            'positive_fraction': float((d > 0).sum() / total),
+            'negative_fraction': float((d < 0).sum() / total),
+            'max_abs': float(np.abs(d).max()) if d.size else 0.0,
+        },
+        'current_angles_deg': ca,
+        'prior_angles_deg': pa,
+        'angle_delta_deg': angle_delta,
+        'angle_delta_l2_deg': angle_delta_l2,
+        'rotation_config': {
+            'rot_ranges': list(rot_ranges),
+            'max_sum': float(max_sum),
+            'min_sum': float(min_sum),
+            'exponent': float(rot_exp),
+        },
+        'patient_mode': patient_mode,
+        'case': case_name,
+        'ct_source_path': ct_source_path,
+        'pair_index': int(pair_index),
+        'image_size': int(image_size),
+        'files': {'prior': 'prior.nii.gz', 'current': 'current.nii.gz', 'diff_map': 'diff_map.nii.gz'},
+    }
+
+
 def main():
     args = parse_args()
 
@@ -1941,7 +2128,10 @@ def main():
                 scans = [cropped_scan.clone().to(DEVICE), cropped_scan.clone().to(DEVICE)]
                 segs = [prior_cropped_segs_dict, current_cropped_segs_dict]
 
-                ret_dict = add_entities_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition)
+                if args.single_pathology:
+                    ret_dict = add_single_pathology_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition)
+                else:
+                    ret_dict = add_entities_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition)
 
                 torch.cuda.empty_cache()
                 gc.collect()
@@ -1993,7 +2183,7 @@ def main():
                 torch.cuda.empty_cache()
                 gc.collect()
 
-                rotated_ct_cat, seg_for_rotation = random_rotate_ct_and_crop_according_to_seg(ct_cat, seg_for_rotation, return_ct_seg=True, rot_ranges=rot_ranges, max_angles_sum=max_sum, min_angles_sum=min_sum, exponent=rot_exp)
+                rotated_ct_cat, seg_for_rotation, current_angles = random_rotate_ct_and_crop_according_to_seg(ct_cat, seg_for_rotation, return_ct_seg=True, return_angles=True, rot_ranges=rot_ranges, max_angles_sum=max_sum, min_angles_sum=min_sum, exponent=rot_exp)
 
                 current_ct = rotated_ct_cat[1]
                 registrated_prior_ct = rotated_ct_cat[0]
@@ -2044,7 +2234,7 @@ def main():
                 torch.cuda.empty_cache()
                 gc.collect()
 
-                prior_ct, prior_rotated_seg = random_rotate_ct_and_crop_according_to_seg(prior, segs_dict['lungs'], return_ct_seg=True, rot_ranges=rot_ranges, max_angles_sum=max_sum, min_angles_sum=min_sum, exponent=rot_exp)
+                prior_ct, prior_rotated_seg, prior_angles = random_rotate_ct_and_crop_according_to_seg(prior, segs_dict['lungs'], return_ct_seg=True, return_angles=True, rot_ranges=rot_ranges, max_angles_sum=max_sum, min_angles_sum=min_sum, exponent=rot_exp)
                 prior_ct = prior_ct.squeeze()
 
                 prior = project_ct(prior_ct)
@@ -2074,6 +2264,21 @@ def main():
 
                 plot_diff_on_current(diff_map, current, f'{c_out_dir}/current_with_differences.png')
 
+                params = build_pair_metadata(
+                    diff_map,
+                    added_entity_names,
+                    case_name=case_name,
+                    ct_source_path=ct_p,
+                    pair_index=i,
+                    current_angles=current_angles,
+                    prior_angles=prior_angles,
+                    rot_ranges=rot_ranges,
+                    max_sum=max_sum,
+                    min_sum=min_sum,
+                    rot_exp=rot_exp,
+                    patient_mode=ret_dict.get('patient_mode'),
+                    single_pathology_mode=args.single_pathology,
+                )
                 log_params(params, f'{c_out_dir}/params.json')
 
                 pairs_created += 1

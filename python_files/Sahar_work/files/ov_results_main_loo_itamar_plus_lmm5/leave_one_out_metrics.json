@@ -1,0 +1,717 @@
+{
+    "convention_notes": {
+        "consensus_level": "Consensus level k = a change region that at least k reference observers agreed on. recall_by_level[k-1] is the leave-one-out recall against those level>=k findings.",
+        "humans": "Leave-one-out: each physician is scored against the consensus of all OTHER physicians (4 levels).",
+        "model_full_panel": "Convention A: model scored against the consensus of ALL physicians (5 levels).",
+        "model_swap_in": "Convention B: model swapped in for each held-out physician and scored against the remaining physicians (4 levels); values averaged over the held-out physician. Directly comparable to a physician's leave-one-out score.",
+        "false_negative_pairs_by_level": "Per level k: pairs where the reference consensus has >=1 change at level>=k but the observer detected none of them.",
+        "specificity": "Level-1 only: among pairs where the reference consensus has no change (of that sign), fraction where the observer also marked none (true-negative rate)."
+    },
+    "pairs_processed": 100,
+    "annotation_coverage": {
+        "Avi": 100,
+        "Benny": 100,
+        "Sigal": 100,
+        "Smadar": 100,
+        "Nitzan": 100
+    },
+    "per_observer": {
+        "Avi": {
+            "recall_by_level_pos": [
+                0.4186046511627907,
+                0.6736842105263158,
+                0.7777777777777778,
+                0.8484848484848485
+            ],
+            "recall_by_level_neg": [
+                0.38636363636363635,
+                0.5394736842105263,
+                0.75,
+                0.7142857142857143
+            ],
+            "false_negative_pairs_by_level_pos": [
+                35,
+                18,
+                8,
+                4
+            ],
+            "false_negative_pairs_by_level_neg": [
+                34,
+                20,
+                9,
+                5
+            ],
+            "false_negative_pair_rate_by_level_pos": [
+                0.38461538461538464,
+                0.2608695652173913,
+                0.16666666666666666,
+                0.14285714285714285
+            ],
+            "false_negative_pair_rate_by_level_neg": [
+                0.44155844155844154,
+                0.3448275862068966,
+                0.24324324324324326,
+                0.25
+            ],
+            "consensus_findings_by_level_pos": [
+                172,
+                95,
+                63,
+                33
+            ],
+            "consensus_findings_by_level_neg": [
+                132,
+                76,
+                40,
+                21
+            ],
+            "specificity_pos": 0.6666666666666666,
+            "specificity_neg": 0.8695652173913043,
+            "consensus_negative_pairs_pos": 9,
+            "consensus_negative_pairs_neg": 23
+        },
+        "Benny": {
+            "recall_by_level_pos": [
+                0.4645161290322581,
+                0.6741573033707865,
+                0.71875,
+                0.7714285714285715
+            ],
+            "recall_by_level_neg": [
+                0.448,
+                0.5694444444444444,
+                0.6904761904761905,
+                0.6956521739130435
+            ],
+            "false_negative_pairs_by_level_pos": [
+                28,
+                16,
+                12,
+                7
+            ],
+            "false_negative_pairs_by_level_neg": [
+                30,
+                21,
+                13,
+                7
+            ],
+            "false_negative_pair_rate_by_level_pos": [
+                0.3218390804597701,
+                0.24615384615384617,
+                0.24489795918367346,
+                0.23333333333333334
+            ],
+            "false_negative_pair_rate_by_level_neg": [
+                0.4166666666666667,
+                0.375,
+                0.3333333333333333,
+                0.3181818181818182
+            ],
+            "consensus_findings_by_level_pos": [
+                155,
+                89,
+                64,
+                35
+            ],
+            "consensus_findings_by_level_neg": [
+                125,
+                72,
+                42,
+                23
+            ],
+            "specificity_pos": 0.46153846153846156,
+            "specificity_neg": 0.7142857142857143,
+            "consensus_negative_pairs_pos": 13,
+            "consensus_negative_pairs_neg": 28
+        },
+        "Sigal": {
+            "recall_by_level_pos": [
+                0.4,
+                0.6947368421052632,
+                0.8125,
+                0.875
+            ],
+            "recall_by_level_neg": [
+                0.42424242424242425,
+                0.618421052631579,
+                0.85,
+                0.9285714285714286
+            ],
+            "false_negative_pairs_by_level_pos": [
+                37,
+                18,
+                8,
+                3
+            ],
+            "false_negative_pairs_by_level_neg": [
+                30,
+                14,
+                6,
+                1
+            ],
+            "false_negative_pair_rate_by_level_pos": [
+                0.39361702127659576,
+                0.2608695652173913,
+                0.16,
+                0.1111111111111111
+            ],
+            "false_negative_pair_rate_by_level_neg": [
+                0.379746835443038,
+                0.2413793103448276,
+                0.16216216216216217,
+                0.07142857142857142
+            ],
+            "consensus_findings_by_level_pos": [
+                185,
+                95,
+                64,
+                32
+            ],
+            "consensus_findings_by_level_neg": [
+                132,
+                76,
+                40,
+                14
+            ],
+            "specificity_pos": 1.0,
+            "specificity_neg": 0.9523809523809523,
+            "consensus_negative_pairs_pos": 6,
+            "consensus_negative_pairs_neg": 21
+        },
+        "Smadar": {
+            "recall_by_level_pos": [
+                0.4519774011299435,
+                0.7362637362637363,
+                0.8125,
+                0.9411764705882353
+            ],
+            "recall_by_level_neg": [
+                0.43703703703703706,
+                0.6197183098591549,
+                0.8444444444444444,
+                1.0
+            ],
+            "false_negative_pairs_by_level_pos": [
+                36,
+                19,
+                10,
+                2
+            ],
+            "false_negative_pairs_by_level_neg": [
+                33,
+                17,
+                7,
+                0
+            ],
+            "false_negative_pair_rate_by_level_pos": [
+                0.3829787234042553,
+                0.2835820895522388,
+                0.19607843137254902,
+                0.06896551724137931
+            ],
+            "false_negative_pair_rate_by_level_neg": [
+                0.4125,
+                0.2982456140350877,
+                0.16279069767441862,
+                0.0
+            ],
+            "consensus_findings_by_level_pos": [
+                177,
+                91,
+                64,
+                34
+            ],
+            "consensus_findings_by_level_neg": [
+                135,
+                71,
+                45,
+                15
+            ],
+            "specificity_pos": 1.0,
+            "specificity_neg": 1.0,
+            "consensus_negative_pairs_pos": 6,
+            "consensus_negative_pairs_neg": 20
+        },
+        "Nitzan": {
+            "recall_by_level_pos": [
+                0.5502958579881657,
+                0.8043478260869565,
+                0.896551724137931,
+                1.0
+            ],
+            "recall_by_level_neg": [
+                0.5928571428571429,
+                0.7761194029850746,
+                0.9428571428571428,
+                0.9285714285714286
+            ],
+            "false_negative_pairs_by_level_pos": [
+                31,
+                13,
+                5,
+                0
+            ],
+            "false_negative_pairs_by_level_neg": [
+                25,
+                8,
+                2,
+                1
+            ],
+            "false_negative_pair_rate_by_level_pos": [
+                0.3333333333333333,
+                0.19696969696969696,
+                0.10638297872340426,
+                0.0
+            ],
+            "false_negative_pair_rate_by_level_neg": [
+                0.3125,
+                0.1509433962264151,
+                0.06060606060606061,
+                0.07142857142857142
+            ],
+            "consensus_findings_by_level_pos": [
+                169,
+                92,
+                58,
+                28
+            ],
+            "consensus_findings_by_level_neg": [
+                140,
+                67,
+                35,
+                14
+            ],
+            "specificity_pos": 0.8571428571428571,
+            "specificity_neg": 1.0,
+            "consensus_negative_pairs_pos": 7,
+            "consensus_negative_pairs_neg": 20
+        },
+        "Model": {
+            "recall_by_level_pos": [
+                0.42162162162162165,
+                0.6534653465346535,
+                0.7236842105263158,
+                0.8269230769230769,
+                0.8888888888888888
+            ],
+            "recall_by_level_neg": [
+                0.4676258992805755,
+                0.6071428571428571,
+                0.7142857142857143,
+                0.75,
+                0.7692307692307693
+            ],
+            "false_negative_pairs_by_level_pos": [
+                36,
+                20,
+                11,
+                5,
+                3
+            ],
+            "false_negative_pairs_by_level_neg": [
+                33,
+                23,
+                13,
+                8,
+                3
+            ],
+            "false_negative_pair_rate_by_level_pos": [
+                0.3829787234042553,
+                0.273972602739726,
+                0.19642857142857142,
+                0.11904761904761904,
+                0.13043478260869565
+            ],
+            "false_negative_pair_rate_by_level_neg": [
+                0.4125,
+                0.3709677419354839,
+                0.2826086956521739,
+                0.26666666666666666,
+                0.23076923076923078
+            ],
+            "consensus_findings_by_level_pos": [
+                185,
+                101,
+                76,
+                52,
+                27
+            ],
+            "consensus_findings_by_level_neg": [
+                139,
+                84,
+                49,
+                32,
+                13
+            ],
+            "specificity_pos": 0.8333333333333334,
+            "specificity_neg": 0.75,
+            "consensus_negative_pairs_pos": 6,
+            "consensus_negative_pairs_neg": 20
+        }
+    },
+    "model_full_panel": {
+        "recall_by_level_pos": [
+            0.42162162162162165,
+            0.6534653465346535,
+            0.7236842105263158,
+            0.8269230769230769,
+            0.8888888888888888
+        ],
+        "recall_by_level_neg": [
+            0.4676258992805755,
+            0.6071428571428571,
+            0.7142857142857143,
+            0.75,
+            0.7692307692307693
+        ],
+        "false_negative_pairs_by_level_pos": [
+            36,
+            20,
+            11,
+            5,
+            3
+        ],
+        "false_negative_pairs_by_level_neg": [
+            33,
+            23,
+            13,
+            8,
+            3
+        ],
+        "false_negative_pair_rate_by_level_pos": [
+            0.3829787234042553,
+            0.273972602739726,
+            0.19642857142857142,
+            0.11904761904761904,
+            0.13043478260869565
+        ],
+        "false_negative_pair_rate_by_level_neg": [
+            0.4125,
+            0.3709677419354839,
+            0.2826086956521739,
+            0.26666666666666666,
+            0.23076923076923078
+        ],
+        "consensus_findings_by_level_pos": [
+            185,
+            101,
+            76,
+            52,
+            27
+        ],
+        "consensus_findings_by_level_neg": [
+            139,
+            84,
+            49,
+            32,
+            13
+        ],
+        "specificity_pos": 0.8333333333333334,
+        "specificity_neg": 0.75,
+        "consensus_negative_pairs_pos": 6,
+        "consensus_negative_pairs_neg": 20
+    },
+    "model_swap_in": {
+        "per_held_out_physician": {
+            "Avi": {
+                "recall_by_level_pos": [
+                    0.4418604651162791,
+                    0.6631578947368421,
+                    0.746031746031746,
+                    0.8787878787878788
+                ],
+                "recall_by_level_neg": [
+                    0.4772727272727273,
+                    0.6447368421052632,
+                    0.75,
+                    0.8095238095238095
+                ],
+                "false_negative_pairs_by_level_pos": [
+                    34,
+                    18,
+                    8,
+                    4
+                ],
+                "false_negative_pairs_by_level_neg": [
+                    32,
+                    20,
+                    9,
+                    4
+                ],
+                "false_negative_pair_rate_by_level_pos": [
+                    0.37362637362637363,
+                    0.2608695652173913,
+                    0.16666666666666666,
+                    0.14285714285714285
+                ],
+                "false_negative_pair_rate_by_level_neg": [
+                    0.4155844155844156,
+                    0.3448275862068966,
+                    0.24324324324324326,
+                    0.2
+                ],
+                "consensus_findings_by_level_pos": [
+                    172,
+                    95,
+                    63,
+                    33
+                ],
+                "consensus_findings_by_level_neg": [
+                    132,
+                    76,
+                    40,
+                    21
+                ],
+                "specificity_pos": 0.6666666666666666,
+                "specificity_neg": 0.6956521739130435,
+                "consensus_negative_pairs_pos": 9,
+                "consensus_negative_pairs_neg": 23
+            },
+            "Benny": {
+                "recall_by_level_pos": [
+                    0.4645161290322581,
+                    0.6741573033707865,
+                    0.765625,
+                    0.8857142857142857
+                ],
+                "recall_by_level_neg": [
+                    0.504,
+                    0.6388888888888888,
+                    0.7142857142857143,
+                    0.7391304347826086
+                ],
+                "false_negative_pairs_by_level_pos": [
+                    31,
+                    17,
+                    8,
+                    3
+                ],
+                "false_negative_pairs_by_level_neg": [
+                    28,
+                    19,
+                    11,
+                    6
+                ],
+                "false_negative_pair_rate_by_level_pos": [
+                    0.3563218390804598,
+                    0.26153846153846155,
+                    0.16326530612244897,
+                    0.1
+                ],
+                "false_negative_pair_rate_by_level_neg": [
+                    0.3888888888888889,
+                    0.3392857142857143,
+                    0.28205128205128205,
+                    0.2727272727272727
+                ],
+                "consensus_findings_by_level_pos": [
+                    155,
+                    89,
+                    64,
+                    35
+                ],
+                "consensus_findings_by_level_neg": [
+                    125,
+                    72,
+                    42,
+                    23
+                ],
+                "specificity_pos": 0.6923076923076923,
+                "specificity_neg": 0.7857142857142857,
+                "consensus_negative_pairs_pos": 13,
+                "consensus_negative_pairs_neg": 28
+            },
+            "Sigal": {
+                "recall_by_level_pos": [
+                    0.42702702702702705,
+                    0.6736842105263158,
+                    0.78125,
+                    0.8125
+                ],
+                "recall_by_level_neg": [
+                    0.4696969696969697,
+                    0.618421052631579,
+                    0.7,
+                    0.7142857142857143
+                ],
+                "false_negative_pairs_by_level_pos": [
+                    36,
+                    18,
+                    8,
+                    5
+                ],
+                "false_negative_pairs_by_level_neg": [
+                    33,
+                    20,
+                    11,
+                    4
+                ],
+                "false_negative_pair_rate_by_level_pos": [
+                    0.3829787234042553,
+                    0.2608695652173913,
+                    0.16,
+                    0.18518518518518517
+                ],
+                "false_negative_pair_rate_by_level_neg": [
+                    0.4177215189873418,
+                    0.3448275862068966,
+                    0.2972972972972973,
+                    0.2857142857142857
+                ],
+                "consensus_findings_by_level_pos": [
+                    185,
+                    95,
+                    64,
+                    32
+                ],
+                "consensus_findings_by_level_neg": [
+                    132,
+                    76,
+                    40,
+                    14
+                ],
+                "specificity_pos": 0.8333333333333334,
+                "specificity_neg": 0.7142857142857143,
+                "consensus_negative_pairs_pos": 6,
+                "consensus_negative_pairs_neg": 21
+            },
+            "Smadar": {
+                "recall_by_level_pos": [
+                    0.4350282485875706,
+                    0.6923076923076923,
+                    0.796875,
+                    0.8823529411764706
+                ],
+                "recall_by_level_neg": [
+                    0.4740740740740741,
+                    0.647887323943662,
+                    0.7333333333333333,
+                    0.7333333333333333
+                ],
+                "false_negative_pairs_by_level_pos": [
+                    37,
+                    16,
+                    8,
+                    4
+                ],
+                "false_negative_pairs_by_level_neg": [
+                    33,
+                    19,
+                    12,
+                    4
+                ],
+                "false_negative_pair_rate_by_level_pos": [
+                    0.39361702127659576,
+                    0.23880597014925373,
+                    0.1568627450980392,
+                    0.13793103448275862
+                ],
+                "false_negative_pair_rate_by_level_neg": [
+                    0.4125,
+                    0.3333333333333333,
+                    0.27906976744186046,
+                    0.26666666666666666
+                ],
+                "consensus_findings_by_level_pos": [
+                    177,
+                    91,
+                    64,
+                    34
+                ],
+                "consensus_findings_by_level_neg": [
+                    135,
+                    71,
+                    45,
+                    15
+                ],
+                "specificity_pos": 0.8333333333333334,
+                "specificity_neg": 0.75,
+                "consensus_negative_pairs_pos": 6,
+                "consensus_negative_pairs_neg": 20
+            },
+            "Nitzan": {
+                "recall_by_level_pos": [
+                    0.46153846153846156,
+                    0.6630434782608695,
+                    0.7931034482758621,
+                    0.8928571428571429
+                ],
+                "recall_by_level_neg": [
+                    0.4714285714285714,
+                    0.6119402985074627,
+                    0.7428571428571429,
+                    0.7857142857142857
+                ],
+                "false_negative_pairs_by_level_pos": [
+                    36,
+                    18,
+                    8,
+                    3
+                ],
+                "false_negative_pairs_by_level_neg": [
+                    35,
+                    18,
+                    9,
+                    3
+                ],
+                "false_negative_pair_rate_by_level_pos": [
+                    0.3870967741935484,
+                    0.2727272727272727,
+                    0.1702127659574468,
+                    0.125
+                ],
+                "false_negative_pair_rate_by_level_neg": [
+                    0.4375,
+                    0.33962264150943394,
+                    0.2727272727272727,
+                    0.21428571428571427
+                ],
+                "consensus_findings_by_level_pos": [
+                    169,
+                    92,
+                    58,
+                    28
+                ],
+                "consensus_findings_by_level_neg": [
+                    140,
+                    67,
+                    35,
+                    14
+                ],
+                "specificity_pos": 0.7142857142857143,
+                "specificity_neg": 0.75,
+                "consensus_negative_pairs_pos": 7,
+                "consensus_negative_pairs_neg": 20
+            }
+        },
+        "averaged": {
+            "recall_by_level_pos": [
+                0.44599406626031934,
+                0.6732701158405013,
+                0.7765770388615216,
+                0.8704424497071557
+            ],
+            "recall_by_level_neg": [
+                0.47929446849446855,
+                0.6323748812153711,
+                0.7280952380952381,
+                0.7563975155279503
+            ],
+            "false_negative_pair_rate_by_level_pos": [
+                0.37872814631624657,
+                0.2589621669699541,
+                0.16340149676892032,
+                0.13819467250501732
+            ],
+            "false_negative_pair_rate_by_level_neg": [
+                0.41443896469212926,
+                0.34037937230845494,
+                0.2748777725521912,
+                0.24787878787878787
+            ],
+            "specificity_pos": 0.7479853479853481,
+            "specificity_neg": 0.7391304347826086
+        }
+    },
+    "skipped": []
+}

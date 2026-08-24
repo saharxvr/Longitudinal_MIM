@@ -289,6 +289,22 @@ def get_sensitivity_at_consensus_levels(model_map: np.ndarray, human_maps: list[
     return sens
 
 
+def evaluate_recall_fn_spec(obs_map: np.ndarray, ref_maps: list[np.ndarray]) -> dict:
+    """Per-pair building blocks for recall / false-negative-pairs / specificity (one sign).
+
+    Reference consensus is the union (level >= 1) of the reference observers' findings.
+    Returns raw counts for a single pair; the caller aggregates across pairs and derives:
+      - recall            = detected / ref_total
+      - false-negative pair = (ref_total > 0 and detected == 0)
+      - consensus-negative pair = (ref_total == 0); true-negative if also obs_count == 0
+    """
+    if not ref_maps:
+        return {"ref_total": 0, "detected": 0, "obs_count": 0}
+    detected, ref_total = get_sensitivity_at_consensus_levels(obs_map, ref_maps)[0]
+    _, obs_count = label(obs_map != 0, STRUCT_3x3)
+    return {"ref_total": int(ref_total), "detected": int(detected), "obs_count": int(obs_count)}
+
+
 def plot_matrix(matrix_df: pd.DataFrame, output_path: Path, title: str) -> None:
     n = matrix_df.shape[0]
     figsize = max(6, int(n * 2.0))

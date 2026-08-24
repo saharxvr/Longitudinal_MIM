@@ -1,0 +1,119 @@
+{
+    "convention_notes": {
+        "humans": "Leave-one-out: each human is scored against the consensus of all OTHER humans.",
+        "model_full_panel": "Convention A: model scored against the consensus of ALL humans.",
+        "model_swap_in": "Convention B: model swapped in for each held-out human and scored against the remaining humans; rates averaged over the held-out human. Directly comparable to a human's leave-one-out score (both use N-1 references).",
+        "false_negative_pairs": "Pairs where the reference consensus has >=1 change but the observer detected none.",
+        "specificity": "Among pairs where the reference consensus has no change (of that sign), fraction where the observer also marked none (true-negative rate)."
+    },
+    "per_observer": {
+        "Benny": {
+            "recall_pos": 0.5625,
+            "recall_neg": 0.5,
+            "false_negative_pairs_pos": 8,
+            "false_negative_pairs_neg": 9,
+            "false_negative_pair_rate_pos": 0.27586206896551724,
+            "false_negative_pair_rate_neg": 0.42857142857142855,
+            "specificity_pos": 0.6666666666666666,
+            "specificity_neg": 0.8571428571428571,
+            "consensus_negative_pairs_pos": 6,
+            "consensus_negative_pairs_neg": 14
+        },
+        "Nathalia": {
+            "recall_pos": 0.6530612244897959,
+            "recall_neg": 0.4411764705882353,
+            "false_negative_pairs_pos": 4,
+            "false_negative_pairs_neg": 8,
+            "false_negative_pair_rate_pos": 0.14814814814814814,
+            "false_negative_pair_rate_neg": 0.4,
+            "specificity_pos": 0.5,
+            "specificity_neg": 0.8,
+            "consensus_negative_pairs_pos": 8,
+            "consensus_negative_pairs_neg": 15
+        },
+        "Thaer": {
+            "recall_pos": 0.54,
+            "recall_neg": 0.3225806451612903,
+            "false_negative_pairs_pos": 11,
+            "false_negative_pairs_neg": 12,
+            "false_negative_pair_rate_pos": 0.3548387096774194,
+            "false_negative_pair_rate_neg": 0.5714285714285714,
+            "specificity_pos": 1.0,
+            "specificity_neg": 0.8571428571428571,
+            "consensus_negative_pairs_pos": 4,
+            "consensus_negative_pairs_neg": 14
+        },
+        "Model": {
+            "recall_pos": 0.7636363636363637,
+            "recall_neg": 0.0,
+            "false_negative_pairs_pos": 4,
+            "false_negative_pairs_neg": 23,
+            "false_negative_pair_rate_pos": 0.12903225806451613,
+            "false_negative_pair_rate_neg": 1.0,
+            "specificity_pos": 0.0,
+            "specificity_neg": 1.0,
+            "consensus_negative_pairs_pos": 4,
+            "consensus_negative_pairs_neg": 12
+        }
+    },
+    "model_full_panel": {
+        "recall_pos": 0.7636363636363637,
+        "recall_neg": 0.0,
+        "false_negative_pairs_pos": 4,
+        "false_negative_pairs_neg": 23,
+        "false_negative_pair_rate_pos": 0.12903225806451613,
+        "false_negative_pair_rate_neg": 1.0,
+        "specificity_pos": 0.0,
+        "specificity_neg": 1.0,
+        "consensus_negative_pairs_pos": 4,
+        "consensus_negative_pairs_neg": 12
+    },
+    "model_swap_in": {
+        "per_held_out_human": {
+            "Benny": {
+                "recall_pos": 0.7708333333333334,
+                "recall_neg": 0.0,
+                "false_negative_pairs_pos": 6,
+                "false_negative_pairs_neg": 21,
+                "false_negative_pair_rate_pos": 0.20689655172413793,
+                "false_negative_pair_rate_neg": 1.0,
+                "specificity_pos": 0.0,
+                "specificity_neg": 1.0,
+                "consensus_negative_pairs_pos": 6,
+                "consensus_negative_pairs_neg": 14
+            },
+            "Nathalia": {
+                "recall_pos": 0.7755102040816326,
+                "recall_neg": 0.0,
+                "false_negative_pairs_pos": 2,
+                "false_negative_pairs_neg": 20,
+                "false_negative_pair_rate_pos": 0.07407407407407407,
+                "false_negative_pair_rate_neg": 1.0,
+                "specificity_pos": 0.0,
+                "specificity_neg": 1.0,
+                "consensus_negative_pairs_pos": 8,
+                "consensus_negative_pairs_neg": 15
+            },
+            "Thaer": {
+                "recall_pos": 0.76,
+                "recall_neg": 0.0,
+                "false_negative_pairs_pos": 5,
+                "false_negative_pairs_neg": 21,
+                "false_negative_pair_rate_pos": 0.16129032258064516,
+                "false_negative_pair_rate_neg": 1.0,
+                "specificity_pos": 0.0,
+                "specificity_neg": 1.0,
+                "consensus_negative_pairs_pos": 4,
+                "consensus_negative_pairs_neg": 14
+            }
+        },
+        "averaged": {
+            "recall_pos": 0.768781179138322,
+            "recall_neg": 0.0,
+            "false_negative_pair_rate_pos": 0.1474203161262857,
+            "false_negative_pair_rate_neg": 1.0,
+            "specificity_pos": 0.0,
+            "specificity_neg": 1.0
+        }
+    }
+}
