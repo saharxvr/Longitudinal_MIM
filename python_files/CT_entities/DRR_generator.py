@@ -168,8 +168,21 @@ def parse_args():
     parser.add_argument(
         '-n', '--number_pairs',
         type=int,
-        required=True,
-        help="The total number of synthetic pairs to create (Required!)",
+        default=0,
+        help="Global target number of synthetic pairs. Ignored if --pairs_per_ct is set.",
+        metavar='INT'
+    )
+
+    parser.add_argument(
+        '--pairs_per_ct',
+        type=int,
+        default=0,
+        help=(
+            "Directly set the number of distinct changes (pair indices) generated per CT, "
+            "bypassing the global -n cap. Recommended for parallel multi-PC runs: give each PC a "
+            "disjoint CT slice via -s/--slices_for_CTs_list and the SAME --pairs_per_ct. "
+            "Total files per CT = pairs_per_ct * fixed_change_variants."
+        ),
         metavar='INT'
     )
 
@@ -2015,7 +2028,15 @@ def main():
         ct_paths += cur_ct_paths
     ct_paths = sorted(ct_paths)
     num_paths = len(ct_paths)
-    pairs_per_ct = math.ceil(total_pairs_num / num_paths)
+    # --pairs_per_ct sets pairs/CT directly (parallel-friendly, no global cap); else derive from -n.
+    if int(args.pairs_per_ct) > 0:
+        pairs_per_ct = int(args.pairs_per_ct)
+        use_global_cap = False
+    else:
+        if total_pairs_num <= 0:
+            raise SystemExit('Provide -n/--number_pairs (global total) or --pairs_per_ct (per-CT count).')
+        pairs_per_ct = math.ceil(total_pairs_num / num_paths)
+        use_global_cap = True
     num_variants = int(args.fixed_change_variants) if (args.single_pathology and int(args.fixed_change_variants) > 1) else 1
 
     # import platform
@@ -2339,7 +2360,7 @@ def main():
                 # Check memory and perform aggressive cleanup if needed
                 check_memory_and_cleanup(MEMORY_THRESHOLD_GB, f"After pair {i}")
 
-                if pairs_created == total_pairs_num:
+                if use_global_cap and pairs_created == total_pairs_num:
                     print("Done generating synthetic pairs. Exiting.")
                     exit()
                 

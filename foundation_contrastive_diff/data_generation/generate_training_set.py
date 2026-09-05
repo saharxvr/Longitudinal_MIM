@@ -53,8 +53,10 @@ def parse_args() -> argparse.Namespace:
         description=__doc__,
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    p.add_argument("-n", "--number_pairs", type=int, required=True,
-                   help="Total number of synthetic pairs to generate (across this process).")
+    p.add_argument("-n", "--number_pairs", type=int, default=0,
+                   help="Global target number of pairs. Ignored if --pairs_per_ct is set.")
+    p.add_argument("--pairs_per_ct", type=int, default=0,
+                   help="Distinct changes per CT (parallel-friendly; bypasses -n). Use the SAME value on every PC.")
     p.add_argument("-o", "--output", type=str, required=True,
                    help="Output directory for the generated pairs.")
     p.add_argument("-i", "--input", nargs="+", default=None,
@@ -87,6 +89,9 @@ def main() -> int:
     if args.num_slices < 1 or not (0 <= args.slice_index < args.num_slices):
         raise SystemExit(f"Invalid slice: slice_index={args.slice_index}, num_slices={args.num_slices}")
 
+    if args.number_pairs <= 0 and args.pairs_per_ct <= 0:
+        raise SystemExit("Provide -n/--number_pairs (global total) or --pairs_per_ct (per-CT count).")
+
     if not os.path.isfile(_DRR_GENERATOR):
         raise SystemExit(f"Could not find DRR_generator.py at: {_DRR_GENERATOR}")
 
@@ -109,6 +114,8 @@ def main() -> int:
         "-m", str(args.memory_threshold),
         "--fixed_change_variants", str(args.fixed_change_variants),
     ]
+    if args.pairs_per_ct and args.pairs_per_ct > 0:
+        cmd += ["--pairs_per_ct", str(args.pairs_per_ct)]
     if args.input:
         cmd += ["-i", *args.input]
 
