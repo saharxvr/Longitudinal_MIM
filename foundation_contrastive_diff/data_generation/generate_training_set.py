@@ -68,6 +68,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--devices_prob", type=float, default=DEFAULT_DEVICE_PROB)
     p.add_argument("--rotation_params", nargs=4, type=float, default=DEFAULT_ROTATION_PARAMS)
     p.add_argument("--memory_threshold", type=float, default=25.0)
+    # K>1: emit K variants per change (same pathology change, different angle/devices) for contrastive positives.
+    p.add_argument("--fixed_change_variants", type=int, default=1)
 
     # Parallelization: split the CT list into num_slices contiguous chunks and run chunk slice_index.
     p.add_argument("--slice_index", type=int, default=0, help="Which CT-list chunk to process (0-based).")
@@ -105,6 +107,7 @@ def main() -> int:
         "-r", *[str(x) for x in args.rotation_params],
         "-s", f"{a:.6f}", f"{b:.6f}",
         "-m", str(args.memory_threshold),
+        "--fixed_change_variants", str(args.fixed_change_variants),
     ]
     if args.input:
         cmd += ["-i", *args.input]

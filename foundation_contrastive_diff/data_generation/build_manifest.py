@@ -30,6 +30,7 @@ from typing import Any, Dict, Iterator, List
 # Columns promoted to the flat CSV (everything is still in the JSONL).
 _CSV_COLUMNS = [
     "pair_id", "case", "pair_index",
+    "change_group_id", "variant_index", "num_variants",
     "anomaly_type", "direction", "pathology_vs_nuisance",
     "num_pathologies", "has_devices", "single_pathology_mode",
     "direction_score", "changed_fraction", "angle_delta_l2_deg",
@@ -80,6 +81,9 @@ def _flat_row(rec: Dict[str, Any]) -> Dict[str, Any]:
         "pair_id": rec.get("pair_id"),
         "case": rec.get("case"),
         "pair_index": rec.get("pair_index"),
+        "change_group_id": rec.get("change_group_id"),
+        "variant_index": rec.get("variant_index"),
+        "num_variants": rec.get("num_variants"),
         "anomaly_type": rec.get("anomaly_type"),
         "direction": rec.get("direction"),
         "pathology_vs_nuisance": rec.get("pathology_vs_nuisance"),
@@ -156,6 +160,7 @@ def main() -> int:
     summary = {
         "num_pairs": len(records),
         "num_cases": len({r.get("case") for r in records}),
+        "num_change_groups": len({r.get("change_group_id") for r in records}),
         "by_anomaly_type": dict(Counter(r.get("anomaly_type") for r in records)),
         "by_direction": dict(Counter(r.get("direction") for r in records)),
         "with_devices": int(sum(1 for r in records if r.get("has_devices"))),

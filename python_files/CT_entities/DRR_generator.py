@@ -54,6 +54,7 @@ import os
 import sys
 import gc
 import json
+import zlib
 import argparse
 import shutil
 import psutil
@@ -251,6 +252,19 @@ def parse_args():
             "per-type probabilities; remaining probability mass -> no pathology), then devices. "
             "Used by the foundation_contrastive_diff study (1 max pathology + angle diff + devices)."
         )
+    )
+
+    parser.add_argument(
+        '--fixed_change_variants',
+        type=int,
+        default=1,
+        help=(
+            "K>1: for each change, emit K variants sharing the SAME pathology change but with "
+            "DIFFERENT angles and devices, saved under pair{i}/variant{v}/ with a shared "
+            "'change_group_id'. Lets contrastive learning treat them as positives (same semantic "
+            "change, varied nuisance). Requires --single_pathology."
+        ),
+        metavar='INT'
     )
 
     parser.add_argument(
@@ -1776,7 +1790,7 @@ def _choose_single_pathology(intra_pulmonary_entities, extra_pulmonary_entities)
     return None, None
 
 
-def add_single_pathology_to_pair(scans, segs, orig_scan, orig_lungs, intra_pulmonary_entities, extra_pulmonary_entities, devices_entity, entity_prob_decay):
+def add_single_pathology_to_pair(scans, segs, orig_scan, orig_lungs, intra_pulmonary_entities, extra_pulmonary_entities, devices_entity, entity_prob_decay, nuisance_seed=None):
     """Like add_entities_to_pair but adds AT MOST ONE pathology, then devices.
 
     Keeps the same registrated_prior placement as add_entities_to_pair: intra-
@@ -1804,6 +1818,11 @@ def add_single_pathology_to_pair(scans, segs, orig_scan, orig_lungs, intra_pulmo
         c_dict['added_entity_names'].append(entity.__name__)
         torch.cuda.empty_cache()
         gc.collect()
+
+    # Re-seed so device nuisance varies while the pathology (seeded upstream) stays fixed.
+    if nuisance_seed is not None:
+        random.seed(int(nuisance_seed))
+        torch.manual_seed(int(nuisance_seed))
 
     if len(devices_entity) > 0:
         for dev_entity, prob in devices_entity:
@@ -1853,6 +1872,9 @@ def build_pair_metadata(
     rot_exp,
     patient_mode,
     single_pathology_mode,
+    change_group_id=None,
+    variant_index=0,
+    num_variants=1,
     image_size=512,
 ):
     """Assemble a versatile, backward-compatible per-pair metadata dict.
@@ -1921,6 +1943,9 @@ def build_pair_metadata(
         'case': case_name,
         'ct_source_path': ct_source_path,
         'pair_index': int(pair_index),
+        'change_group_id': change_group_id,
+        'variant_index': int(variant_index),
+        'num_variants': int(num_variants),
         'image_size': int(image_size),
         'files': {'prior': 'prior.nii.gz', 'current': 'current.nii.gz', 'diff_map': 'diff_map.nii.gz'},
     }
@@ -1984,6 +2009,7 @@ def main():
     ct_paths = sorted(ct_paths)
     num_paths = len(ct_paths)
     pairs_per_ct = math.ceil(total_pairs_num / num_paths)
+    num_variants = int(args.fixed_change_variants) if (args.single_pathology and int(args.fixed_change_variants) > 1) else 1
 
     # import platform
     # computer_name = platform.node()
@@ -2041,7 +2067,8 @@ def main():
 
         out_path = f'{out_base_dir}/{case_name}'
 
-        if os.path.exists(f'{out_path}/pair{pairs_per_ct - 1}/params.json'):
+        _last_variant = f'variant{num_variants - 1}/' if num_variants > 1 else ''
+        if os.path.exists(f'{out_path}/pair{pairs_per_ct - 1}/{_last_variant}params.json'):
             print('Case completed. Skipping')
             continue
         
@@ -2106,10 +2133,21 @@ def main():
             prior_cropped_segs_dict = {k: v.clone() for k, v in cropped_segs_dict.items()}
             current_cropped_segs_dict = {k: v.clone() for k, v in cropped_segs_dict.items()}
 
-            for i in range(pairs_per_ct):
-                print(f'Working on pair {i}')
-
-                c_out_dir = f'{out_path}/pair{i}'
+            pair_variant_indices = [(_pi, _pv) for _pi in range(pairs_per_ct) for _pv in range(num_variants)]
+            for i, variant_idx in pair_variant_indices:
+                change_group_id = f'{case_name}/pair{i}'
+                if num_variants > 1:
+                    print(f'Working on pair {i} variant {variant_idx}')
+                    c_out_dir = f'{out_path}/pair{i}/variant{variant_idx}'
+                    # Same pathology change across all variants of pair i; nuisance (devices + angles) varies.
+                    change_seed = zlib.crc32(f'{case_name}_{i}'.encode()) & 0x7fffffff
+                    nuisance_seed = (change_seed + 1 + variant_idx) & 0x7fffffff
+                    random.seed(change_seed)
+                    torch.manual_seed(change_seed)
+                else:
+                    print(f'Working on pair {i}')
+                    c_out_dir = f'{out_path}/pair{i}'
+                    nuisance_seed = None
                 os.makedirs(c_out_dir, exist_ok=True)
 
                 if os.path.exists(f'{c_out_dir}/params.json'):
@@ -2129,7 +2167,7 @@ def main():
                 segs = [prior_cropped_segs_dict, current_cropped_segs_dict]
 
                 if args.single_pathology:
-                    ret_dict = add_single_pathology_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition)
+                    ret_dict = add_single_pathology_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition, nuisance_seed=nuisance_seed)
                 else:
                     ret_dict = add_entities_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition)
 
@@ -2278,6 +2316,9 @@ def main():
                     rot_exp=rot_exp,
                     patient_mode=ret_dict.get('patient_mode'),
                     single_pathology_mode=args.single_pathology,
+                    change_group_id=change_group_id,
+                    variant_index=variant_idx,
+                    num_variants=num_variants,
                 )
                 log_params(params, f'{c_out_dir}/params.json')
 
