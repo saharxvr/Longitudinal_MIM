@@ -1904,6 +1904,10 @@ def build_pair_metadata(
     else:
         direction = 'mixed'
 
+    # A pathology can be applied yet unchanged (e.g. progress=0): label by the REALIZED change.
+    realized_change = direction != 'none'
+    effective_anomaly_type = anomaly_type if realized_change else 'none'
+
     ca = _angles_to_floats(current_angles)
     pa = _angles_to_floats(prior_angles)
     angle_delta = None
@@ -1913,14 +1917,17 @@ def build_pair_metadata(
         angle_delta_l2 = float(math.sqrt(sum(x * x for x in angle_delta)))
 
     return {
-        'schema_version': 2,
+        'schema_version': 3,
         'added_entities': list(added_entity_names),
         'anomaly_type': anomaly_type,
+        'effective_anomaly_type': effective_anomaly_type,
+        'realized_change': bool(realized_change),
         'anomalies_present': anomalies,
         'num_pathologies': len(anomalies),
         'single_pathology_mode': bool(single_pathology_mode),
         'has_devices': bool(has_devices),
         'pathology_vs_nuisance': 'pathology' if anomaly_type != 'none' else 'nuisance',
+        'effective_pathology_vs_nuisance': 'pathology' if realized_change else 'nuisance',
         'direction': direction,
         'direction_score': direction_score,
         'diff_stats': {
