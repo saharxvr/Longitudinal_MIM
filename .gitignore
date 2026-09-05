@@ -14,3 +14,14 @@ python_files/annotation tool/**/*.pkg
 
 # Archived observer-variability results (moved outside the working tree)
 /ov_results_archive/
+
+# Office temporary lock files
+~$*.docx
+~$*.xlsx
+
+# Foundation study: track lightweight X-ray PNG previews under samples/, but never
+# the heavy volumes / caches.
+foundation_contrastive_diff/feature_cache/
+foundation_contrastive_diff/samples/**/*.nii.gz
+foundation_contrastive_diff/samples/**/*.pt
+foundation_contrastive_diff/samples/**/*.npy
