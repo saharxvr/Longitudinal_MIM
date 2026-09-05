@@ -99,7 +99,7 @@ def main() -> int:
     b = (args.slice_index + 1) / args.num_slices
 
     cmd = [
-        args.python, _DRR_GENERATOR,
+        args.python, "-u", _DRR_GENERATOR,
         "-n", str(args.number_pairs),
         "-o", args.output,
         "--single_pathology",
