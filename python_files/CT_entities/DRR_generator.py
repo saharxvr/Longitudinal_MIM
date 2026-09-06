@@ -187,6 +187,16 @@ def parse_args():
     )
 
     parser.add_argument(
+        '--reuse_change',
+        action='store_true',
+        help=(
+            "With --fixed_change_variants K>1: generate the pathology ONCE per change and reuse it "
+            "across variants, varying only devices + rotation (faster; truly identical change). "
+            "Pathology is cached on CPU. Opt-in — validate on a small run before large-scale use."
+        )
+    )
+
+    parser.add_argument(
         '-i', '--input',
         nargs='+',
         type=str,
@@ -1803,7 +1813,7 @@ def _choose_single_pathology(intra_pulmonary_entities, extra_pulmonary_entities)
     return None, None
 
 
-def add_single_pathology_to_pair(scans, segs, orig_scan, orig_lungs, intra_pulmonary_entities, extra_pulmonary_entities, devices_entity, entity_prob_decay, nuisance_seed=None):
+def add_single_pathology_to_pair(scans, segs, orig_scan, orig_lungs, intra_pulmonary_entities, extra_pulmonary_entities, devices_entity, entity_prob_decay, nuisance_seed=None, add_devices=True):
     """Like add_entities_to_pair but adds AT MOST ONE pathology, then devices.
 
     Keeps the same registrated_prior placement as add_entities_to_pair: intra-
@@ -1833,11 +1843,11 @@ def add_single_pathology_to_pair(scans, segs, orig_scan, orig_lungs, intra_pulmo
         gc.collect()
 
     # Re-seed so device nuisance varies while the pathology (seeded upstream) stays fixed.
-    if nuisance_seed is not None:
+    if add_devices and nuisance_seed is not None:
         random.seed(int(nuisance_seed))
         torch.manual_seed(int(nuisance_seed))
 
-    if len(devices_entity) > 0:
+    if add_devices and len(devices_entity) > 0:
         for dev_entity, prob in devices_entity:
             if random.random() < prob:
                 c_dict.update(dev_entity.add_to_CT_pair(**c_dict))
@@ -1846,6 +1856,23 @@ def add_single_pathology_to_pair(scans, segs, orig_scan, orig_lungs, intra_pulmo
                 gc.collect()
 
     return c_dict
+
+
+def _apply_devices_only(scans, segs, registrated_prior, devices_entity):
+    """Add device nuisance to an already-built pair (used by --reuse_change variants).
+
+    Devices go on current and registrated_prior identically (so they cancel in the diff)
+    and independently on prior. Returns (scans, registrated_prior, added_device_names).
+    """
+    c_dict = {'scans': scans, 'segs': segs, 'registrated_prior': registrated_prior, 'added_entity_names': [], 'log_params': False}
+    if len(devices_entity) > 0:
+        for dev_entity, prob in devices_entity:
+            if random.random() < prob:
+                c_dict.update(dev_entity.add_to_CT_pair(**c_dict))
+                c_dict['added_entity_names'].append(dev_entity.__name__)
+                torch.cuda.empty_cache()
+                gc.collect()
+    return list(c_dict['scans']), c_dict['registrated_prior'], c_dict['added_entity_names']
 
 
 # Maps generator entity class names to the study's anomaly-type vocabulary.
@@ -2161,6 +2188,7 @@ def main():
             prior_cropped_segs_dict = {k: v.clone() for k, v in cropped_segs_dict.items()}
             current_cropped_segs_dict = {k: v.clone() for k, v in cropped_segs_dict.items()}
 
+            change_cache = {}  # device-free pathology per change index i, reused across variants
             pair_variant_indices = [(_pi, _pv) for _pi in range(pairs_per_ct) for _pv in range(num_variants)]
             for i, variant_idx in pair_variant_indices:
                 change_group_id = f'{case_name}/pair{i}'
@@ -2194,7 +2222,50 @@ def main():
                 scans = [cropped_scan.clone().to(DEVICE), cropped_scan.clone().to(DEVICE)]
                 segs = [prior_cropped_segs_dict, current_cropped_segs_dict]
 
-                if args.single_pathology:
+                reuse_variants = bool(args.reuse_change) and args.single_pathology and num_variants > 1
+                if reuse_variants:
+                    # Pathology generated ONCE per change (device-free), reused across variants;
+                    # only nuisance (devices + rotation) varies. Cached on CPU to spare GPU memory.
+                    if i not in change_cache:
+                        base = add_single_pathology_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition, add_devices=False)
+                        entry = {
+                            'prior': base['scans'][0].detach().cpu(),
+                            'current': base['scans'][1].detach().cpu(),
+                            'registrated_prior': base['registrated_prior'].detach().cpu(),
+                            'added_entity_names': list(base['added_entity_names']),
+                            'patient_mode': base.get('patient_mode'),
+                        }
+                        for _sk in ('pleural_effusion_seg', 'pneumothorax_seg', 'pneumothorax_sulcus_seg', 'cardiomegaly_seg'):
+                            if base.get(_sk) is not None:
+                                entry[_sk] = base[_sk].detach().cpu()
+                        if 'cardiomegaly_progress' in base:
+                            entry['cardiomegaly_progress'] = base['cardiomegaly_progress']
+                        change_cache[i] = entry
+                        del base
+                        torch.cuda.empty_cache()
+                        gc.collect()
+
+                    cached = change_cache[i]
+                    random.seed(nuisance_seed)
+                    torch.manual_seed(nuisance_seed)
+                    dev_scans = [cached['prior'].clone().to(DEVICE), cached['current'].clone().to(DEVICE)]
+                    dev_regprior = cached['registrated_prior'].clone().to(DEVICE)
+                    dev_scans, dev_regprior, dev_names = _apply_devices_only(dev_scans, segs, dev_regprior, cur_devices_entity)
+                    ret_dict = {
+                        'scans': dev_scans,
+                        'segs': segs,
+                        'registrated_prior': dev_regprior,
+                        'added_entity_names': list(cached['added_entity_names']) + list(dev_names),
+                        'patient_mode': cached.get('patient_mode'),
+                    }
+                    for _sk in ('pleural_effusion_seg', 'pneumothorax_seg', 'pneumothorax_sulcus_seg', 'cardiomegaly_seg'):
+                        if cached.get(_sk) is not None:
+                            ret_dict[_sk] = cached[_sk].clone().to(DEVICE)
+                    if 'cardiomegaly_progress' in cached:
+                        ret_dict['cardiomegaly_progress'] = cached['cardiomegaly_progress']
+                    if variant_idx == num_variants - 1:
+                        change_cache.pop(i, None)
+                elif args.single_pathology:
                     ret_dict = add_single_pathology_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition, nuisance_seed=nuisance_seed)
                 else:
                     ret_dict = add_entities_to_pair(scans, segs, orig_cropped_scan, orig_cropped_lungs, cur_intra_pulmonary_entities, cur_extra_pulmonary_entities, cur_devices_entity, entity_prob_decay_on_addition)

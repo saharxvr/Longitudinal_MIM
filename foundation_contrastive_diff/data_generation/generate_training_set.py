@@ -72,6 +72,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--memory_threshold", type=float, default=25.0)
     # K>1: emit K variants per change (same pathology change, different angle/devices) for contrastive positives.
     p.add_argument("--fixed_change_variants", type=int, default=1)
+    # Reuse the pathology across variants (faster; identical change) instead of regenerating it.
+    p.add_argument("--reuse_change", action="store_true")
 
     # Parallelization: split the CT list into num_slices contiguous chunks and run chunk slice_index.
     p.add_argument("--slice_index", type=int, default=0, help="Which CT-list chunk to process (0-based).")
@@ -116,6 +118,8 @@ def main() -> int:
     ]
     if args.pairs_per_ct and args.pairs_per_ct > 0:
         cmd += ["--pairs_per_ct", str(args.pairs_per_ct)]
+    if args.reuse_change:
+        cmd += ["--reuse_change"]
     if args.input:
         cmd += ["-i", *args.input]
 
