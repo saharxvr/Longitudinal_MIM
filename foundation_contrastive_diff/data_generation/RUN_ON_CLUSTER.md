@@ -58,15 +58,16 @@ source /cs/usr/sahar_aharon/Desktop/sahar_aharon/venv_new/bin/activate
 export LD_LIBRARY_PATH=/cs/usr/sahar_aharon/Desktop/sahar_aharon/venv_new/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib:$LD_LIBRARY_PATH
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-I=0            # <-- PC 1=0, PC 2=1, PC 3=2, PC 4=3
+I=0            # <-- UNIQUE per PC: PC1=0, PC2=1, PC3=2, PC4=3 (never reuse an index)
 N=4            # <-- total number of PCs
 
+# `>|` force-overwrites the log (zsh noclobber blocks a plain `>` if the file exists).
 nohup python foundation_contrastive_diff/data_generation/generate_training_set.py \
     -o /cs/labs/josko/sahar_aharon/fcd_train \
     --pairs_per_ct 20 --fixed_change_variants 3 --reuse_change \
     --num_slices $N --slice_index $I \
-    > /cs/labs/josko/sahar_aharon/fcd_train_pc$I.log 2>&1 &
-echo $! > /cs/labs/josko/sahar_aharon/fcd_train_pc$I.pid
+    >| /cs/labs/josko/sahar_aharon/fcd_train_pc$I.log 2>&1 &
+echo $! >| /cs/labs/josko/sahar_aharon/fcd_train_pc$I.pid
 ```
 
 Sizing: total files ≈ `num_CTs × pairs_per_ct × fixed_change_variants`.
@@ -93,8 +94,10 @@ ps -o pid,etime,%cpu,%mem -p $(cat /cs/labs/josko/sahar_aharon/fcd_train_pc0.pid
 ## 4. Stop / resume
 
 ```bash
-# stop one PC
+# stop one PC: use the .pid file (NOT .log), then kill the GPU child
 kill $(cat /cs/labs/josko/sahar_aharon/fcd_train_pc0.pid)
+pkill -f DRR_generator.py
+pgrep -af 'DRR_generator|generate_training_set'   # should print nothing
 ```
 It's **resumable** — finished pairs are skipped, so just re‑run the same launch
 block to continue after a stop, crash, or reclaimed node.
@@ -123,3 +126,6 @@ case‑disjoint `train/val/test` id lists. Loaders group contrastive positives b
   one generation process per GPU; use a bigger‑VRAM GPU if available (11 GB is tight).
 - **`nvidia-smi: command not found`**: not on PATH here — use the torch snippet in §0.
 - **Wrong Python** (e.g. itamar's venv): pass `--python /cs/usr/sahar_aharon/Desktop/sahar_aharon/venv_new/bin/python`.
+- **`kill: illegal pid`**: you catted the `.log` instead of the `.pid` file. Use `fcd_train_pc$I.pid`.
+- **`zsh: file exists: …`**: zsh `noclobber` blocks overwriting with `>`. Use `>|` (as above) or `rm` the old log first. If the redirect fails the job does NOT start.
+- **Each PC needs a different `--slice_index` (`I`)** — two PCs with the same index redo the same CTs.
