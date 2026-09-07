@@ -106,17 +106,25 @@ block to continue after a stop, crash, or reclaimed node.
 
 ---
 
-## 5. When done — build the dataset manifest (run once)
+## 5. When done — build the manifest, then split (run once)
 
 ```bash
 python foundation_contrastive_diff/data_generation/build_manifest.py \
-    -o /cs/labs/josko/sahar_aharon/fcd_train --split-out
+    -o /cs/labs/josko/sahar_aharon/fcd_train
 
-cat /cs/labs/josko/sahar_aharon/fcd_train/manifest_summary.json
+# patient-disjoint train/val/test split (80/10/10 by default)
+python foundation_contrastive_diff/data_generation/split_dataset.py \
+    -o /cs/labs/josko/sahar_aharon/fcd_train --train 0.8 --val 0.1 --test 0.1 --seed 0
+
+cat /cs/labs/josko/sahar_aharon/fcd_train/split_summary.json
 ```
-Produces `manifest.jsonl` / `manifest.csv` / `manifest_summary.json` and
-case‑disjoint `train/val/test` id lists. Loaders group contrastive positives by
-`change_group_id`; use `effective_anomaly_type` / `realized_change` for labels.
+`build_manifest.py` produces `manifest.jsonl` / `manifest.csv` / `manifest_summary.json`.
+`split_dataset.py` writes `split_{train,val,test}.txt` + `manifest_split.jsonl` (with a
+`split` field) and guarantees **no patient leaks** across splits (CT-RATE reconstructions
+`train_10000_a_1` / `_a_2` stay together) and **all variants of a change_group stay in one
+split**. Loaders group contrastive positives by `change_group_id`; use
+`effective_anomaly_type` / `realized_change` for labels. Real PNIMIT/ICU pairs remain the
+clinical test set; this synthetic split is for train/val (+ a synthetic dev test).
 
 ---
 

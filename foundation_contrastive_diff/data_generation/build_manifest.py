@@ -24,8 +24,13 @@ import csv
 import json
 import os
 import random
+import sys
 from collections import Counter
 from typing import Any, Dict, Iterator, List
+
+# Patient-level key so splits never leak same-patient CT-RATE reconstructions.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from split_dataset import patient_key
 
 # Columns promoted to the flat CSV (everything is still in the JSONL).
 _CSV_COLUMNS = [
@@ -115,19 +120,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def _write_splits(records: List[Dict[str, Any]], out_base: str, val_frac: float, test_frac: float, seed: int) -> None:
-    # Case-disjoint split so no CT leaks across train/val/test.
-    cases = sorted({r.get("case") for r in records if r.get("case")})
+    # Patient-disjoint split so no patient (incl. CT-RATE reconstructions) leaks across sets.
+    patients = sorted({patient_key(r.get("case", "")) for r in records if r.get("case")})
     rng = random.Random(seed)
-    rng.shuffle(cases)
-    n = len(cases)
+    rng.shuffle(patients)
+    n = len(patients)
     n_test = int(n * test_frac)
     n_val = int(n * val_frac)
-    test_cases = set(cases[:n_test])
-    val_cases = set(cases[n_test:n_test + n_val])
+    test_pats = set(patients[:n_test])
+    val_pats = set(patients[n_test:n_test + n_val])
     split_of = {}
     for r in records:
-        c = r.get("case")
-        split = "test" if c in test_cases else ("val" if c in val_cases else "train")
+        p = patient_key(r.get("case", ""))
+        split = "test" if p in test_pats else ("val" if p in val_pats else "train")
         split_of.setdefault(split, []).append(r["pair_id"])
     for split, ids in split_of.items():
         with open(f"{out_base}_{split}.txt", "w", encoding="utf-8") as f:
