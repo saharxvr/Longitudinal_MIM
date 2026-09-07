@@ -58,20 +58,22 @@ source /cs/usr/sahar_aharon/Desktop/sahar_aharon/venv_new/bin/activate
 export LD_LIBRARY_PATH=/cs/usr/sahar_aharon/Desktop/sahar_aharon/venv_new/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib:$LD_LIBRARY_PATH
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-I=0            # <-- UNIQUE per PC: PC1=0, PC2=1, PC3=2, PC4=3 (never reuse an index)
-N=4            # <-- total number of PCs
+I=0            # <-- UNIQUE per PC: 0, 1, 2, ... (never reuse an index)
+N=2            # <-- = NUMBER OF PCs you are running (NOT the number of variants!)
 
-# `>|` force-overwrites the log (zsh noclobber blocks a plain `>` if the file exists).
+# rm the old log/pid so the redirect works even under zsh noclobber.
+rm -f /cs/labs/josko/sahar_aharon/fcd_train_pc$I.log /cs/labs/josko/sahar_aharon/fcd_train_pc$I.pid
 nohup python foundation_contrastive_diff/data_generation/generate_training_set.py \
     -o /cs/labs/josko/sahar_aharon/fcd_train \
-    --pairs_per_ct 20 --fixed_change_variants 3 --reuse_change \
+    --pairs_per_ct 3 --fixed_change_variants 3 --reuse_change \
     --num_slices $N --slice_index $I \
-    >| /cs/labs/josko/sahar_aharon/fcd_train_pc$I.log 2>&1 &
-echo $! >| /cs/labs/josko/sahar_aharon/fcd_train_pc$I.pid
+    > /cs/labs/josko/sahar_aharon/fcd_train_pc$I.log 2>&1 &
+echo $! > /cs/labs/josko/sahar_aharon/fcd_train_pc$I.pid
 ```
 
-Sizing: total files ≈ `num_CTs × pairs_per_ct × fixed_change_variants`.
-`pairs_per_ct 20`, K=3, ~400 CTs → ~24,000 pairs (~8,000 change‑groups).
+Sizing: total pairs ≈ `num_CTs × pairs_per_ct × fixed_change_variants`.
+With 2469 CTs, `pairs_per_ct 3`, K=3 → ~22,000 pairs (~7,400 change‑groups).
+Set `--num_slices` = number of PCs so every CT is covered.
 The startup log prints `Total number of available CTs`.
 
 ---
