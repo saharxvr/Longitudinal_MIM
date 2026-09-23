@@ -13,24 +13,26 @@ import torch
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # =============================================================================
-# IMAGE / FEATURE DIMENSIONS  (CheXFound ViT-L/16 @ 512)
+# IMAGE / FEATURE DIMENSIONS  (RAD-DINO ViT-B/14 @ 518; our DRR/GT stay at 512)
 # =============================================================================
-IMG_SIZE = 512                  # Input CXR size (pixels) — CheXFound is trained at 512
-PATCH_SIZE = 16                 # ViT-L/16 patch size
-FEATURE_GRID = IMG_SIZE // PATCH_SIZE   # 32 x 32 patch grid
-NUM_PATCH_TOKENS = FEATURE_GRID ** 2    # 1024 patch tokens (+ 1 [CLS])
-BACKBONE_DIM = 1024             # ViT-L embedding dim (D_model)
-LAST_N_LAYERS = 4               # Concatenate patch tokens from last N layers (CheXFound default)
+IMG_SIZE = 512                  # our DRR / GT / decoder-output resolution
+BACKBONE_IMG_SIZE = 518         # RAD-DINO input size (backbone wrapper resizes internally)
+PATCH_SIZE = 14                 # ViT-B/14 patch size
+FEATURE_GRID = BACKBONE_IMG_SIZE // PATCH_SIZE   # 37 x 37 patch grid
+NUM_PATCH_TOKENS = FEATURE_GRID ** 2             # 1369 patch tokens (+ 1 [CLS])
+BACKBONE_DIM = 768              # ViT-B embedding dim (per layer)
+LAST_N_LAYERS = 1               # first try: last layer only (last-4 concat = ablation C)
 
 EMBED_DIM = 256                 # Difference embedding dimensionality (z)
 PROJ_DIM = 128                  # Projection-head output dimensionality
 
 # =============================================================================
-# BACKBONE  (CheXFound — arXiv:2502.05142, github.com/RPIDIAL/CheXFound, MIT)
+# BACKBONE
 # =============================================================================
-# One of: 'chexfound' (default), 'rad_dino', 'imagenet_vit', 'parent_efficientnet'
-BACKBONE = 'chexfound'
-CHEXFOUND_CHECKPOINT = ''       # path to teacher_checkpoint.pth (Google Drive)
+# One of: 'rad_dino' (default, HuggingFace), 'chexfound', 'imagenet_vit', 'parent_efficientnet'
+BACKBONE = 'rad_dino'
+RAD_DINO_MODEL = 'microsoft/rad-dino'   # HuggingFace model id (frozen CXR DINOv2 ViT-B/14)
+CHEXFOUND_CHECKPOINT = ''       # path to teacher_checkpoint.pth (ablation E, later)
 CHEXFOUND_CONFIG = ''           # path to CheXFound config yaml
 FREEZE_BACKBONE = True          # Keep foundation weights frozen
 ALLOW_LAST_BLOCK_ADAPTER = False  # Optional shallow adapter / LoRA on last block

@@ -1,92 +1,125 @@
 """
-Frozen chest X-ray foundation backbone (CheXFound).
+Frozen chest X-ray foundation backbone.
 
-Wraps the pretrained **CheXFound** model (Yang et al., IEEE TMI 2025,
-arXiv:2502.05142, github.com/RPIDIAL/CheXFound, MIT) and exposes a Siamese-friendly
-feature extractor whose weights stay frozen. Both prior and current images pass through
-the SAME instance (shared weights). Only the downstream difference head is trained.
+Default: **RAD-DINO** (`microsoft/rad-dino`, Microsoft) — a frozen DINOv2 ViT-B/14
+pretrained on chest X-rays, loaded via HuggingFace `transformers`. Both prior and current
+images pass through the SAME frozen instance (Siamese); only the difference head trains.
 
-CheXFound facts that drive this wrapper:
-    - ViT-Large, patch 16, input 512x512 -> 32x32 = 1024 patch tokens + 1 [CLS].
-    - Embedding dim D_model = 1024.
-    - Pretrained via DINOv2 self-distillation (MIM loss wt 3, [CLS] align wt 1) on CXR-987K.
-    - Downstream adaptation concatenates patch tokens from the LAST 4 layers.
-    - Released weights: teacher_checkpoint.pth. Requires PyTorch 2.0 + xFormers 0.0.18 + Linux.
+RAD-DINO facts that drive this wrapper:
+    - ViT-Base, patch 14, input 518x518 -> 37x37 = 1369 patch tokens + 1 [CLS], dim 768.
+    - DINOv2 self-supervised; may carry register tokens between [CLS] and patch tokens
+      (handled by taking the LAST NUM_PATCH_TOKENS tokens).
 
-Environment: this study runs on the school Linux PCs with CUDA GPUs (the same machines
-used to generate the synthetic DRRs), so CheXFound's Linux + xFormers + GPU requirements
-are satisfied natively. Because the backbone is frozen, the recommended workflow is still
-to PRECOMPUTE patch tokens once (see training/cache_features.py) and train the head on
-cached tensors purely for speed/memory efficiency, not as a platform workaround.
+Input adaptation: grayscale DRR [B,1,H,W] in [0,1] -> repeat to 3 channels, resize to
+518, normalize with the model's processor mean/std.
 
 Output:
-    forward(img) -> dict(patch_tokens [B, N, D], cls_token [B, D])
-        where N = NUM_PATCH_TOKENS (1024), D = BACKBONE_DIM (1024).
+    forward(img) -> dict(patch_tokens [B, N, D*last_n], cls_token [B, D])
+        N = NUM_PATCH_TOKENS (1369), D = BACKBONE_DIM (768).
 
-Alternative backbones for ablation (constants.BACKBONE):
-    'rad_dino', 'imagenet_vit', 'parent_efficientnet'.
+CheXFound (arXiv:2502.05142) is kept as ablation E and will slot into `_build_backbone`.
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class FrozenCXRBackbone(nn.Module):
-    """Frozen CheXFound feature extractor for CXR images."""
+    """Frozen foundation feature extractor for CXR images (RAD-DINO by default)."""
 
     def __init__(
         self,
-        name: str = "chexfound",
+        name: str = "rad_dino",
+        model_id: str = "microsoft/rad-dino",
         checkpoint: str = "",
         config: str = "",
-        last_n_layers: int = 4,
+        backbone_img_size: int = 518,
+        num_patch_tokens: int = 1369,
+        last_n_layers: int = 1,
         freeze: bool = True,
     ):
         super().__init__()
         self.name = name
-        self.last_n_layers = last_n_layers
-        self.backbone = self._build_backbone(name, checkpoint, config)
+        self.model_id = model_id
+        self.backbone_img_size = int(backbone_img_size)
+        self.num_patch_tokens = int(num_patch_tokens)
+        self.last_n_layers = int(last_n_layers)
+
+        self.backbone, mean, std = self._build_backbone(name, model_id, checkpoint, config)
+        # Normalization buffers (move with .to(device)).
+        self.register_buffer("_mean", torch.tensor(mean).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer("_std", torch.tensor(std).view(1, 3, 1, 1), persistent=False)
 
         if freeze:
             self.freeze()
 
     # ------------------------------------------------------------------
-    def _build_backbone(self, name: str, checkpoint: str, config: str) -> nn.Module:
-        """Instantiate the chosen pretrained backbone.
+    def _build_backbone(self, name, model_id, checkpoint, config):
+        """Instantiate the chosen pretrained backbone; return (module, mean, std)."""
+        if name == "rad_dino":
+            from transformers import AutoImageProcessor, AutoModel
 
-        TODO(Phase 1): implement each option.
-          - chexfound: vendor github.com/RPIDIAL/CheXFound under third_party/, build the
-            ViT-L/16 model from `config`, load `teacher_checkpoint.pth`, and configure it to
-            return intermediate tokens from the last `last_n_layers` layers + [CLS].
-          - rad_dino / imagenet_vit / parent_efficientnet: ablation baselines (RQ1, ablation E).
-        """
+            model = AutoModel.from_pretrained(model_id)
+            try:
+                proc = AutoImageProcessor.from_pretrained(model_id)
+                mean = list(proc.image_mean)
+                std = list(proc.image_std)
+            except Exception:
+                # RAD-DINO processor defaults if unavailable offline.
+                mean, std = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+            return model, mean, std
+
+        # chexfound / imagenet_vit / parent_efficientnet: ablations, added later.
         raise NotImplementedError(
-            f"Backbone '{name}' not implemented yet — see RQ1_PLAN.md step 1.1."
+            f"Backbone '{name}' not implemented yet — RQ1 first run uses 'rad_dino'."
         )
 
     # ------------------------------------------------------------------
     def freeze(self) -> None:
-        """Disable gradients and keep BN/stat layers in eval mode."""
         for p in self.backbone.parameters():
             p.requires_grad = False
         self.backbone.eval()
 
     def train(self, mode: bool = True):  # noqa: D401
-        """Override so the frozen backbone never leaves eval mode."""
+        """Keep the frozen backbone in eval mode regardless of module.train()."""
         super().train(mode)
         self.backbone.eval()
         return self
 
     # ------------------------------------------------------------------
-    @torch.no_grad()
+    def _prep(self, img: torch.Tensor) -> torch.Tensor:
+        """[B,1|3,H,W] in [0,1] -> [B,3,518,518] normalized for RAD-DINO."""
+        if img.shape[1] == 1:
+            img = img.repeat(1, 3, 1, 1)
+        if img.shape[-1] != self.backbone_img_size or img.shape[-2] != self.backbone_img_size:
+            img = F.interpolate(
+                img, size=(self.backbone_img_size, self.backbone_img_size),
+                mode="bilinear", align_corners=False,
+            )
+        return (img - self._mean) / self._std
+
     def forward(self, img: torch.Tensor) -> dict:
-        """Extract frozen CheXFound features from a single CXR.
+        """Extract frozen patch tokens + [CLS] from a single CXR.
 
         Args:
-            img: [B, 1, 512, 512] normalized CXR tensor.
+            img: [B, 1, H, W] CXR in [0, 1].
         Returns:
-            dict with:
-                patch_tokens: [B, N, D]  (N=1024 last-4-layer concat tokens, D=1024)
-                cls_token:    [B, D]     global [CLS] representation
+            patch_tokens: [B, NUM_PATCH_TOKENS, BACKBONE_DIM * last_n_layers]
+            cls_token:    [B, BACKBONE_DIM]
         """
-        return self.backbone(img)
+        x = self._prep(img)
+        need_hidden = self.last_n_layers > 1
+        out = self.backbone(pixel_values=x, output_hidden_states=need_hidden)
+
+        n = self.num_patch_tokens
+        if need_hidden:
+            # Concat patch tokens from the last N transformer layers (ablation C).
+            layers = out.hidden_states[-self.last_n_layers:]
+            patch = torch.cat([h[:, -n:, :] for h in layers], dim=-1)
+            cls = out.hidden_states[-1][:, 0, :]
+        else:
+            hs = out.last_hidden_state          # [B, 1(+regs)+N, D]
+            patch = hs[:, -n:, :]               # last N tokens = patches (robust to registers)
+            cls = hs[:, 0, :]                   # token 0 = [CLS]
+        return {"patch_tokens": patch, "cls_token": cls}
