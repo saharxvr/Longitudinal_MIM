@@ -24,6 +24,9 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # reduces CUDA OOM
 
 # sanity: GPU present?
 python -c "import torch; p=torch.cuda.get_device_properties(0); print(p.name, round(p.total_memory/1024**3,1),'GiB'); print('cuda:', torch.cuda.is_available())"
+
+# RQ1 training only (not needed for generation): install the RAD-DINO backbone deps once
+pip install -r foundation_contrastive_diff/requirements.txt   # adds transformers
 ```
 
 ---

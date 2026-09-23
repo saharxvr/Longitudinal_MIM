@@ -1,0 +1,12 @@
+# Prerequisites for the foundation_contrastive_diff study (RQ1+).
+#
+# Install into the university venv you use for generation/training, e.g.:
+#     source /cs/usr/sahar_aharon/Desktop/sahar_aharon/venv_new/bin/activate
+#     pip install -r foundation_contrastive_diff/requirements.txt
+#
+# The base DRR-generation venv already provides:
+#   torch, numpy, nibabel, matplotlib, scipy, scikit-image, kornia, gryds, psutil
+# so the only NEW dependency for RQ1 is the HuggingFace stack for the RAD-DINO backbone.
+
+transformers>=4.40        # frozen RAD-DINO backbone (microsoft/rad-dino)
+# safetensors and huggingface_hub are pulled in automatically by transformers.
