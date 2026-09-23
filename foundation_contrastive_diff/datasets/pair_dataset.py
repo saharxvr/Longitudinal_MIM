@@ -160,12 +160,16 @@ class CachedPairDataset(Dataset):
         recs = _read_manifest(dataset_root)
         if split is not None:
             recs = [r for r in recs if r.get("split") == split]
+        types = list(C.ANOMALY_TYPES)
         self.paths = []
+        self.labels = []  # effective anomaly index per sample (for class-balanced sampling)
         for r in recs:
             pid = r.get("pair_id", "")
             p = os.path.join(cache_dir, pid.replace("/", os.sep), "feat.pt")
             if pid and os.path.isfile(p):
                 self.paths.append(p)
+                a = r.get("effective_anomaly_type", r.get("anomaly_type", "none"))
+                self.labels.append(types.index(a) if a in types else 0)
         if not self.paths:
             raise FileNotFoundError(
                 f"No cached feat.pt found under {cache_dir} for split={split!r}. "
