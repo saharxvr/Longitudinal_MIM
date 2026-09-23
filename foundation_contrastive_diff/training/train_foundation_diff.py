@@ -15,6 +15,7 @@ Run (cached path):
 """
 
 import argparse
+import csv
 import math
 import os
 import sys
@@ -155,6 +156,44 @@ def save_sample_plots(head, backbone, loader, device, out_path, n=6):
 
 
 # ---------------------------------------------------------------------------
+# Mid-training tracking
+# ---------------------------------------------------------------------------
+def log_metrics_row(csv_path, row):
+    """Append one epoch's metrics to a CSV (writing the header on first call)."""
+    new = not os.path.isfile(csv_path)
+    with open(csv_path, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if new:
+            w.writeheader()
+        w.writerow(row)
+
+
+def plot_curves(csv_path, out_path):
+    """Redraw training curves from metrics.csv (loss + val Dice/IoU vs epoch)."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+    epochs, tl, vd, vi = [], [], [], []
+    with open(csv_path) as f:
+        for r in csv.DictReader(f):
+            epochs.append(int(r["epoch"])); tl.append(float(r["train_total"]))
+            vd.append(float(r["val_dice"])); vi.append(float(r["val_iou"]))
+    if not epochs:
+        return
+    fig, ax1 = plt.subplots(figsize=(7, 4))
+    ax1.plot(epochs, tl, "tab:red", label="train loss")
+    ax1.set_xlabel("epoch"); ax1.set_ylabel("train loss", color="tab:red")
+    ax2 = ax1.twinx()
+    ax2.plot(epochs, vd, "tab:blue", label="val Dice")
+    ax2.plot(epochs, vi, "tab:cyan", label="val IoU")
+    ax2.set_ylabel("val Dice / IoU", color="tab:blue"); ax2.set_ylim(0, 1)
+    fig.tight_layout(); fig.savefig(out_path, dpi=110); plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
 def make_loaders(args, device):
@@ -236,6 +275,7 @@ def main():
     scheduler = cosine_warmup(optimizer, warmup_steps, total_steps)
 
     best_dice = -1.0
+    metrics_csv = os.path.join(args.save_folder, "metrics.csv")
     for epoch in range(1, args.epochs + 1):
         tr = train_one_epoch(head, backbone, train_loader, optimizer, scheduler, device, args)
         va = evaluate(head, backbone, val_loader, device, threshold=args.eval_threshold)
@@ -245,6 +285,16 @@ def main():
               f"val dice {va['dice']:.4f} iou {va['iou']:.4f} "
               f"sens+ {va['sens_pos']:.3f} sens- {va['sens_neg']:.3f}",
               flush=True)
+
+        # Mid-training tracking: append a CSV row + redraw curves every epoch.
+        log_metrics_row(metrics_csv, {
+            "epoch": epoch, "lr": lr_now,
+            "train_total": tr["total"], "train_l1": tr["l1"],
+            "train_dice": tr["dice"], "train_sign": tr["sign"],
+            "val_dice": va["dice"], "val_iou": va["iou"],
+            "val_sens_pos": va["sens_pos"], "val_sens_neg": va["sens_neg"],
+        })
+        plot_curves(metrics_csv, os.path.join(args.plots_folder, "train_curves.png"))
 
         torch.save({"head": head.state_dict(), "epoch": epoch, "val": va},
                    os.path.join(args.save_folder, "last.pt"))
