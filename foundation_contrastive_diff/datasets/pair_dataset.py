@@ -145,3 +145,47 @@ class LongitudinalPairDataset(Dataset):
             "change_group_id": rec.get("change_group_id", ""),
             "pair_id": rec.get("pair_id", ""),
         }
+
+
+class CachedPairDataset(Dataset):
+    """Reads precomputed backbone features (training/cache_features.py) for head training.
+
+    Serves the same keys as LongitudinalPairDataset plus the cached tokens, so the head
+    trains without the backbone or NIfTIs:
+        p_prior/p_curr [N, D], cls_prior/cls_curr [D], gt_diff [1,H,W], + labels.
+    """
+
+    def __init__(self, dataset_root: str, cache_dir: str, split: Optional[str] = None):
+        super().__init__()
+        recs = _read_manifest(dataset_root)
+        if split is not None:
+            recs = [r for r in recs if r.get("split") == split]
+        self.paths = []
+        for r in recs:
+            pid = r.get("pair_id", "")
+            p = os.path.join(cache_dir, pid.replace("/", os.sep), "feat.pt")
+            if pid and os.path.isfile(p):
+                self.paths.append(p)
+        if not self.paths:
+            raise FileNotFoundError(
+                f"No cached feat.pt found under {cache_dir} for split={split!r}. "
+                f"Run training/cache_features.py first."
+            )
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        d = torch.load(self.paths[idx], map_location="cpu")
+        return {
+            "p_prior": d["p_prior"].float(),
+            "cls_prior": d["cls_prior"].float(),
+            "p_curr": d["p_curr"].float(),
+            "cls_curr": d["cls_curr"].float(),
+            "gt_diff": d["gt_diff"].float(),
+            "anomaly_type": d["anomaly_type"],
+            "direction": d["direction"],
+            "is_pathology": d["is_pathology"],
+            "change_group_id": d["change_group_id"],
+            "pair_id": d["pair_id"],
+        }
