@@ -25,8 +25,12 @@ source /cs/usr/sahar_aharon/Desktop/sahar_aharon/venv_new/bin/activate
 export LD_LIBRARY_PATH=/cs/usr/sahar_aharon/Desktop/sahar_aharon/venv_new/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib:$LD_LIBRARY_PATH
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# RAD-DINO backbone deps (transformers). Needed for caching / --no_cache training.
-pip install -r foundation_contrastive_diff/requirements.txt
+# RAD-DINO backbone deps (transformers >= 4.40). It is usually ALREADY in the shared
+# venv, so check first and only install if missing/old:
+python -c "import transformers; print('transformers', transformers.__version__)" || \
+    PIP_USER=0 pip install -r foundation_contrastive_diff/requirements.txt
+# NOTE: if pip errors "Will not install to the user site ...", transformers is already
+# present — either skip, or force a venv install with the PIP_USER=0 prefix shown above.
 
 # sanity: GPU present?
 python -c "import torch;p=torch.cuda.get_device_properties(0);print(p.name,round(p.total_memory/1024**3,1),'GiB');print('cuda:',torch.cuda.is_available())"
