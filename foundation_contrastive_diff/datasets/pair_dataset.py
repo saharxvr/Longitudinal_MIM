@@ -1,52 +1,147 @@
 """
-Longitudinal pair dataset with change-type supervision.
+Longitudinal pair dataset with change-type supervision (RQ1/RQ2/RQ3).
 
-Loads (prior, current) CXR pairs plus the ground-truth signed difference map and the
-change-type labels emitted by the synthetic DRR pipeline:
+Reads the manifest produced by data_generation/build_manifest.py (+ split_dataset.py)
+and serves (prior, current) CXR pairs, the ground-truth signed difference map, and the
+labels emitted by the synthetic DRR pipeline:
 
     sample = {
-        'img_prior':    [1, H, W],
-        'img_curr':     [1, H, W],
-        'gt_diff':      [1, H, W]   signed change map in [-1, +1],
-        'anomaly_type': int         index into constants.ANOMALY_TYPES,
-        'direction':    int         index into constants.DIRECTION_TYPES,
-        'is_pathology': int         0 = nuisance, 1 = pathology,
+        'img_prior':    [1, H, W]  float in [0, 1],
+        'img_curr':     [1, H, W]  float in [0, 1],
+        'gt_diff':      [1, H, W]  signed change map, clipped to [-1, +1],
+        'anomaly_type': int        index into constants.ANOMALY_TYPES (effective),
+        'direction':    int        index into constants.DIRECTION_TYPES,
+        'is_pathology': int        0 = nuisance / no realized change, 1 = pathology change,
+        'change_group_id': str     shared across variants of the same change (RQ2 positives),
+        'pair_id':      str,
     }
 
-Reuses NIfTI loading + normalization conventions from python_files/datasets.py
-(LongitudinalMIMDataset). The DRR generator must be extended to log which entity was
-added/removed and the change direction (see RESEARCH_PLAN.md section 4).
+Uses the enriched-manifest records (schema >= 3) so labels reflect the *realized*
+change (effective_anomaly_type / realized_change), not merely the applied entity.
 """
 
-import os
-from glob import glob
+from __future__ import annotations
 
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-# NOTE: when wired up, import shared helpers from the parent project, e.g.
-#   import sys; sys.path.append('../python_files')
-#   from datasets import LongitudinalMIMDataset  # for reference / reuse
+# Make the study's constants importable regardless of CWD.
+_FCD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _FCD_ROOT not in sys.path:
+    sys.path.insert(0, _FCD_ROOT)
+import constants as C  # noqa: E402
+
+
+def _read_manifest(root: str) -> List[Dict[str, Any]]:
+    """Prefer the split manifest (has a 'split' field); fall back to the plain one."""
+    for name in ("manifest_split.jsonl", "manifest.jsonl"):
+        path = os.path.join(root, name)
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                recs = [json.loads(line) for line in f if line.strip()]
+            if recs:
+                return recs
+    raise FileNotFoundError(
+        f"No manifest found in {root}. Run build_manifest.py (and split_dataset.py) first."
+    )
+
+
+def _load_nii_2d(path: str) -> np.ndarray:
+    import nibabel as nib  # local import: heavy, only needed at load time
+    arr = np.asarray(nib.load(path).dataobj, dtype=np.float32)
+    return np.squeeze(arr)
+
+
+def _to_chw(arr: np.ndarray, size: int) -> torch.Tensor:
+    t = torch.from_numpy(np.ascontiguousarray(arr)).float()
+    if t.ndim != 2:
+        t = t.reshape(t.shape[-2], t.shape[-1])
+    t = t[None, None, ...]  # [1,1,H,W]
+    if t.shape[-1] != size or t.shape[-2] != size:
+        t = F.interpolate(t, size=(size, size), mode="bilinear", align_corners=False)
+    return t[0]  # [1,H,W]
+
+
+def _norm01(t: torch.Tensor) -> torch.Tensor:
+    mn, mx = t.amin(), t.amax()
+    return (t - mn) / (mx - mn + 1e-8)
 
 
 class LongitudinalPairDataset(Dataset):
-    """Synthetic longitudinal pairs with per-pair change-type labels."""
+    """Synthetic longitudinal pairs with per-pair change-type labels, from the manifest."""
 
-    def __init__(self, pairs_dir: str, img_size: int = 512, with_labels: bool = True):
+    def __init__(
+        self,
+        dataset_root: str,
+        split: Optional[str] = None,
+        img_size: int = C.IMG_SIZE,
+        clip_gt: float = 1.0,
+        only_realized: bool = False,
+    ):
+        """
+        dataset_root: folder containing manifest[_split].jsonl and the pair tree.
+        split: 'train' | 'val' | 'test' | None (None = all records).
+        only_realized: keep only pairs with a realized change (drops progress=0 no-change).
+        """
         super().__init__()
-        self.pairs_dir = pairs_dir
-        self.img_size = img_size
-        self.with_labels = with_labels
+        self.root = dataset_root
+        self.img_size = int(img_size)
+        self.clip_gt = float(clip_gt)
 
-        # TODO(Phase 1): index pair folders/files produced by DRR_generator.py.
-        self.samples = sorted(glob(os.path.join(pairs_dir, "**", "*.nii.gz"), recursive=True))
+        records = _read_manifest(dataset_root)
+        if split is not None:
+            records = [r for r in records if r.get("split") == split]
+            if not records:
+                raise ValueError(f"No records for split={split!r}. Did you run split_dataset.py?")
+        if only_realized:
+            records = [r for r in records if r.get("realized_change", True)]
+
+        self.records = records
+        self.anomaly_types = list(C.ANOMALY_TYPES)
+        self.direction_types = list(C.DIRECTION_TYPES)
 
     def __len__(self) -> int:
-        return len(self.samples)
+        return len(self.records)
 
-    def __getitem__(self, idx: int) -> dict:
-        # TODO(Phase 1): load prior/current NIfTI, GT diff map, and the JSON/CSV
-        # change-type metadata emitted alongside each synthetic pair.
-        raise NotImplementedError(
-            "Wire up loading of synthetic pairs + change-type labels — see RESEARCH_PLAN.md."
-        )
+    def _anomaly_index(self, rec: Dict[str, Any]) -> int:
+        a = rec.get("effective_anomaly_type", rec.get("anomaly_type", "none"))
+        return self.anomaly_types.index(a) if a in self.anomaly_types else 0
+
+    def _direction_index(self, rec: Dict[str, Any]) -> int:
+        d = rec.get("direction", "none")
+        # 'mixed' isn't in DIRECTION_TYPES -> treat as 'none' for the categorical label.
+        return self.direction_types.index(d) if d in self.direction_types else 0
+
+    def _abspath(self, rec: Dict[str, Any], key: str, fallback: str) -> str:
+        p = rec.get(key)
+        if p and os.path.isabs(p) and os.path.isfile(p):
+            return p
+        # Reconstruct from pair_id if the stored abs path isn't valid on this machine.
+        return os.path.join(self.root, rec["pair_id"].replace("/", os.sep), fallback)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        rec = self.records[idx]
+        size = self.img_size
+
+        prior = _norm01(_to_chw(_load_nii_2d(self._abspath(rec, "prior_path", "prior.nii.gz")), size))
+        curr = _norm01(_to_chw(_load_nii_2d(self._abspath(rec, "current_path", "current.nii.gz")), size))
+        gt = _to_chw(_load_nii_2d(self._abspath(rec, "diff_map_path", "diff_map.nii.gz")), size)
+        gt = gt.clamp(-self.clip_gt, self.clip_gt)
+
+        return {
+            "img_prior": prior,
+            "img_curr": curr,
+            "gt_diff": gt,
+            "anomaly_type": self._anomaly_index(rec),
+            "direction": self._direction_index(rec),
+            "is_pathology": int(bool(rec.get("realized_change", rec.get("effective_anomaly_type", "none") != "none"))),
+            "change_group_id": rec.get("change_group_id", ""),
+            "pair_id": rec.get("pair_id", ""),
+        }
