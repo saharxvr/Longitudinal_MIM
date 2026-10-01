@@ -28,28 +28,31 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class _ContiguousGrad(torch.autograd.Function):
-    """Identity forward; forces the incoming gradient contiguous in backward.
+class GroupNormCG(nn.Module):
+    """Group normalization computed with plain tensor ops.
 
-    GroupNorm's CUDA backward asserts X and dY share a memory format, but downstream
-    cuDNN conv-backward can emit channels_last gradients -> mismatch. Forcing dY
-    contiguous here (and X contiguous in GroupNormCG) keeps both in standard format.
+    Native GroupNorm's CUDA backward asserts its input and gradient share a memory
+    format, which breaks when downstream cuDNN conv-backward emits channels_last
+    gradients. Computing group-norm manually (view/mean/var) avoids that assertion
+    entirely while being numerically identical.
     """
 
-    @staticmethod
-    def forward(ctx, x):
-        return x
-
-    @staticmethod
-    def backward(ctx, g):
-        return g.contiguous()
-
-
-class GroupNormCG(nn.GroupNorm):
-    """GroupNorm that keeps both its input and its gradient in contiguous memory format."""
+    def __init__(self, num_groups: int, num_channels: int, eps: float = 1e-5):
+        super().__init__()
+        self.num_groups = num_groups
+        self.num_channels = num_channels
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(num_channels))
+        self.bias = nn.Parameter(torch.zeros(num_channels))
 
     def forward(self, x):
-        return _ContiguousGrad.apply(super().forward(x.contiguous()))
+        b, c, h, w = x.shape
+        xg = x.contiguous().view(b, self.num_groups, -1)
+        mean = xg.mean(dim=-1, keepdim=True)
+        var = xg.var(dim=-1, keepdim=True, unbiased=False)
+        xg = (xg - mean) / torch.sqrt(var + self.eps)
+        x = xg.view(b, c, h, w)
+        return x * self.weight.view(1, c, 1, 1) + self.bias.view(1, c, 1, 1)
 
 
 class AdaptiveTemperatureAttention(nn.Module):
