@@ -28,6 +28,30 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class _ContiguousGrad(torch.autograd.Function):
+    """Identity forward; forces the incoming gradient contiguous in backward.
+
+    GroupNorm's CUDA backward asserts X and dY share a memory format, but downstream
+    cuDNN conv-backward can emit channels_last gradients -> mismatch. Forcing dY
+    contiguous here (and X contiguous in GroupNormCG) keeps both in standard format.
+    """
+
+    @staticmethod
+    def forward(ctx, x):
+        return x
+
+    @staticmethod
+    def backward(ctx, g):
+        return g.contiguous()
+
+
+class GroupNormCG(nn.GroupNorm):
+    """GroupNorm that keeps both its input and its gradient in contiguous memory format."""
+
+    def forward(self, x):
+        return _ContiguousGrad.apply(super().forward(x.contiguous()))
+
+
 class AdaptiveTemperatureAttention(nn.Module):
     """Change-query cross-attention with per-query adaptive temperature (GLoRI).
 
@@ -75,12 +99,12 @@ class PyramidContext(nn.Module):
             nn.Sequential(
                 nn.AdaptiveAvgPool2d(s),
                 nn.Conv2d(dim, branch, 1, bias=False),
-                nn.GroupNorm(8, branch), nn.GELU(),
+                GroupNormCG(8, branch), nn.GELU(),
             ) for s in scales
         ])
         self.project = nn.Sequential(
             nn.Conv2d(dim + branch * len(scales), dim, 1, bias=False),
-            nn.GroupNorm(8, dim), nn.GELU(),
+            GroupNormCG(8, dim), nn.GELU(),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -103,7 +127,7 @@ class UPerNetDecoder(nn.Module):
         self.convs = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(cin, cout, 3, padding=1, bias=False),
-                nn.GroupNorm(8, cout), nn.GELU(),
+                GroupNormCG(8, cout), nn.GELU(),
             ) for cin, cout in zip(chans[:-1], chans[1:])
         ])
         self.final = nn.Conv2d(chans[-1], 1, 1)
