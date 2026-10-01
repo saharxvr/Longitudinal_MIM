@@ -1,0 +1,226 @@
+{
+  "pairs": 100,
+  "evaluation_support_definition": "all pixels with signed prediction != 0, matching existing observer comparison",
+  "visible_support_definition": "all pixels with abs(signed prediction) >= 0.1",
+  "pathologist_definition": "mean individual annotated union area per pair",
+  "observers": {
+    "Pathologists": {
+      "evaluation_support_fraction": {
+        "mean": 0.05321555343773024,
+        "median": 0.04444105360243056,
+        "q1": 0.03277895630407538,
+        "q3": 0.06484103732638889,
+        "maximum": 0.170062255859375
+      },
+      "visible_support_fraction": {
+        "mean": 0.05321555343773024,
+        "median": 0.04444105360243056,
+        "q1": 0.03277895630407538,
+        "q3": 0.06484103732638889,
+        "maximum": 0.170062255859375
+      },
+      "fraction_of_support_outside_any_human_annotation": {
+        "mean": 0.0,
+        "median": 0.0,
+        "q1": 0.0,
+        "q3": 0.0,
+        "maximum": 0.0
+      }
+    },
+    "ICU Model": {
+      "evaluation_support_fraction": {
+        "mean": 0.09740912432097294,
+        "median": 0.0965669420030382,
+        "q1": 0.03143480088975695,
+        "q3": 0.14265187581380206,
+        "maximum": 0.3086751302083333
+      },
+      "visible_support_fraction": {
+        "mean": 0.09740912432097294,
+        "median": 0.0965669420030382,
+        "q1": 0.03143480088975695,
+        "q3": 0.14265187581380206,
+        "maximum": 0.3086751302083333
+      },
+      "fraction_of_support_outside_any_human_annotation": {
+        "mean": 0.37264691170894315,
+        "median": 0.3623107657882978,
+        "q1": 0.06978094761649035,
+        "q3": 0.5931399516913263,
+        "maximum": 1.0
+      }
+    },
+    "Claude Ellipses": {
+      "evaluation_support_fraction": {
+        "mean": 0.07474949657722921,
+        "median": 0.0,
+        "q1": 0.0,
+        "q3": 0.1357023451063368,
+        "maximum": 0.314727783203125
+      },
+      "visible_support_fraction": {
+        "mean": 0.07474949657722921,
+        "median": 0.0,
+        "q1": 0.0,
+        "q3": 0.1357023451063368,
+        "maximum": 0.314727783203125
+      },
+      "fraction_of_support_outside_any_human_annotation": {
+        "mean": 0.26959209948542723,
+        "median": 0.0,
+        "q1": 0.0,
+        "q3": 0.5653527298963115,
+        "maximum": 1.0
+      }
+    },
+    "Claude Direct": {
+      "evaluation_support_fraction": {
+        "mean": 0.46,
+        "median": 0.0,
+        "q1": 0.0,
+        "q3": 1.0,
+        "maximum": 1.0
+      },
+      "visible_support_fraction": {
+        "mean": 0.15105630528543304,
+        "median": 0.0,
+        "q1": 0.0,
+        "q3": 0.29314549763997394,
+        "maximum": 0.6939069959852431
+      },
+      "fraction_of_support_outside_any_human_annotation": {
+        "mean": 0.3846541163653342,
+        "median": 0.0,
+        "q1": 0.0,
+        "q3": 0.8390740288628472,
+        "maximum": 0.9665730794270834
+      }
+    },
+    "Claude Precision": {
+      "evaluation_support_fraction": {
+        "mean": 0.4602092458991562,
+        "median": 0.3225114610460069,
+        "q1": 0.0,
+        "q3": 0.9694345262315538,
+        "maximum": 1.0
+      },
+      "visible_support_fraction": {
+        "mean": 0.049662626225982186,
+        "median": 0.018278333875868056,
+        "q1": 0.0,
+        "q3": 0.08840052286783855,
+        "maximum": 0.2198418511284722
+      },
+      "fraction_of_support_outside_any_human_annotation": {
+        "mean": 0.4079616032984319,
+        "median": 0.3073103162977431,
+        "q1": 0.0,
+        "q3": 0.8195121806656935,
+        "maximum": 0.9316739883113342
+      }
+    },
+    "GPT-5.4 Ellipses": {
+      "evaluation_support_fraction": {
+        "mean": 0.12614051752263125,
+        "median": 0.10776180691189235,
+        "q1": 0.04805035061306424,
+        "q3": 0.2049780951605903,
+        "maximum": 0.4123518202039931
+      },
+      "visible_support_fraction": {
+        "mean": 0.12614051752263125,
+        "median": 0.10776180691189235,
+        "q1": 0.04805035061306424,
+        "q3": 0.2049780951605903,
+        "maximum": 0.4123518202039931
+      },
+      "fraction_of_support_outside_any_human_annotation": {
+        "mean": 0.5238379735129496,
+        "median": 0.5816600777463329,
+        "q1": 0.23977176993361238,
+        "q3": 0.8257496989450277,
+        "maximum": 1.0
+      }
+    },
+    "GPT-5.4 Direct": {
+      "evaluation_support_fraction": {
+        "mean": 0.7690957980685763,
+        "median": 1.0,
+        "q1": 0.9827690124511719,
+        "q3": 1.0,
+        "maximum": 1.0
+      },
+      "visible_support_fraction": {
+        "mean": 0.2246524592254627,
+        "median": 0.20241207546657985,
+        "q1": 0.07087877061631945,
+        "q3": 0.3621860080295139,
+        "maximum": 0.6728736029730903
+      },
+      "fraction_of_support_outside_any_human_annotation": {
+        "mean": 0.6461768612490886,
+        "median": 0.8212093777126737,
+        "q1": 0.6739285786946615,
+        "q3": 0.8821851942274306,
+        "maximum": 0.9751654730902778
+      }
+    },
+    "GPT-5.4 Precision": {
+      "evaluation_support_fraction": {
+        "mean": 0.7484655253092447,
+        "median": 0.959032694498698,
+        "q1": 0.7858551873101128,
+        "q3": 1.0,
+        "maximum": 1.0
+      },
+      "visible_support_fraction": {
+        "mean": 0.10646815224583296,
+        "median": 0.1004977756076389,
+        "q1": 0.05435350206163195,
+        "q3": 0.1720578580128117,
+        "maximum": 0.29150390625
+      },
+      "fraction_of_support_outside_any_human_annotation": {
+        "mean": 0.6526753719462741,
+        "median": 0.8160044352213541,
+        "q1": 0.6443588545687448,
+        "q3": 0.8748914930555556,
+        "maximum": 0.9718491214381394
+      }
+    }
+  },
+  "median_coverage_ratios": {
+    "Pathologists": {
+      "vs_pathologist": 1.0,
+      "vs_icu_model": 0.4602098055567748
+    },
+    "ICU Model": {
+      "vs_pathologist": 2.172921975858754,
+      "vs_icu_model": 1.0
+    },
+    "Claude Ellipses": {
+      "vs_pathologist": 0.0,
+      "vs_icu_model": 0.0
+    },
+    "Claude Direct": {
+      "vs_pathologist": 0.0,
+      "vs_icu_model": 0.0
+    },
+    "Claude Precision": {
+      "vs_pathologist": 7.257061543391676,
+      "vs_icu_model": 3.3397708817978313
+    },
+    "GPT-5.4 Ellipses": {
+      "vs_pathologist": 2.4248256550334952,
+      "vs_icu_model": 1.115928543212044
+    },
+    "GPT-5.4 Direct": {
+      "vs_pathologist": 22.50171674474676,
+      "vs_icu_model": 10.35551068779353
+    },
+    "GPT-5.4 Precision": {
+      "vs_pathologist": 21.579882040560957,
+      "vs_icu_model": 9.931273317824694
+    }
+  }
+}

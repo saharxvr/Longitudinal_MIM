@@ -1,0 +1,337 @@
+{
+  "study": "GPT-5.4 precision heatmap repeatability",
+  "created_utc": "2026-10-01T09:13:21.743984+00:00",
+  "sampling": {
+    "algorithm": "Python random.Random(seed).sample(range(1, 99), 10), plus pairs 99 and 100",
+    "seed": 20261001,
+    "sample_size": 12,
+    "pair_numbers": [
+      16,
+      31,
+      42,
+      47,
+      51,
+      68,
+      75,
+      77,
+      81,
+      92,
+      99,
+      100
+    ],
+    "forced_coordinate_stress_cases": [
+      99,
+      100
+    ]
+  },
+  "design": {
+    "fresh_runs": 5,
+    "original_output_role": "secondary frozen baseline; excluded from primary fresh-run repeatability",
+    "blinding": "each run sees only its prompt snapshot and the 12 snapshotted input sheets",
+    "cache_mitigation": "fresh isolated session per run plus a unique non-semantic nonce; provider-side cache state cannot be directly inspected or disabled by this runtime"
+  },
+  "model": "gpt-5.4",
+  "prompt_snapshot": {
+    "path": "precision_heatmap_annotator.txt",
+    "sha256": "bf1e922e08d5d1535992929f385bf0a372542acf2d8aeff30218b231c2a2273d"
+  },
+  "runs": [
+    {
+      "run_id": "run_01",
+      "model": "gpt-5.4",
+      "model_delivery": "Copilot SDK isolated general-purpose agent",
+      "fresh_session_required": true,
+      "prior_outputs_visible": false,
+      "cache_busting_nonce": "2fb53a54b6d0d1a625888f2b",
+      "prompt_path": "runs\\run_01\\prompt.txt",
+      "prompt_sha256": "65f96f31f70a3dfe881a38cbeed2e0875fdca6d9bde58588ffd1bf58f3efbf2d",
+      "pair_numbers": [
+        16,
+        31,
+        42,
+        47,
+        51,
+        68,
+        75,
+        77,
+        81,
+        92,
+        99,
+        100
+      ],
+      "response_directory": "runs\\run_01\\responses",
+      "generation_parameters": {
+        "temperature": "not exposed by the agent runtime",
+        "seed": "not exposed by the agent runtime"
+      }
+    },
+    {
+      "run_id": "run_02",
+      "model": "gpt-5.4",
+      "model_delivery": "Copilot SDK isolated general-purpose agent",
+      "fresh_session_required": true,
+      "prior_outputs_visible": false,
+      "cache_busting_nonce": "2582262c26c5bc8f7412a2db",
+      "prompt_path": "runs\\run_02\\prompt.txt",
+      "prompt_sha256": "7b0145139916edafba34f0cc2af214b730b413d8bbfbcc38cace74cc73c116b5",
+      "pair_numbers": [
+        16,
+        31,
+        42,
+        47,
+        51,
+        68,
+        75,
+        77,
+        81,
+        92,
+        99,
+        100
+      ],
+      "response_directory": "runs\\run_02\\responses",
+      "generation_parameters": {
+        "temperature": "not exposed by the agent runtime",
+        "seed": "not exposed by the agent runtime"
+      }
+    },
+    {
+      "run_id": "run_03",
+      "model": "gpt-5.4",
+      "model_delivery": "Copilot SDK isolated general-purpose agent",
+      "fresh_session_required": true,
+      "prior_outputs_visible": false,
+      "cache_busting_nonce": "fbd25df44e49743777dcc306",
+      "prompt_path": "runs\\run_03\\prompt.txt",
+      "prompt_sha256": "11b442b8e1bf871dcecb310b410d7d9d8380168bdd68dc95c77bf73d6dd95929",
+      "pair_numbers": [
+        16,
+        31,
+        42,
+        47,
+        51,
+        68,
+        75,
+        77,
+        81,
+        92,
+        99,
+        100
+      ],
+      "response_directory": "runs\\run_03\\responses",
+      "generation_parameters": {
+        "temperature": "not exposed by the agent runtime",
+        "seed": "not exposed by the agent runtime"
+      }
+    },
+    {
+      "run_id": "run_04",
+      "model": "gpt-5.4",
+      "model_delivery": "Copilot SDK isolated general-purpose agent",
+      "fresh_session_required": true,
+      "prior_outputs_visible": false,
+      "cache_busting_nonce": "3ecb21d0dcbb2cbf0ea400ce",
+      "prompt_path": "runs\\run_04\\prompt.txt",
+      "prompt_sha256": "d5980654482f7fa0f4fa8ab49a88171f9f195a4bf733feddc0c215485b9e0815",
+      "pair_numbers": [
+        16,
+        31,
+        42,
+        47,
+        51,
+        68,
+        75,
+        77,
+        81,
+        92,
+        99,
+        100
+      ],
+      "response_directory": "runs\\run_04\\responses",
+      "generation_parameters": {
+        "temperature": "not exposed by the agent runtime",
+        "seed": "not exposed by the agent runtime"
+      }
+    },
+    {
+      "run_id": "run_05",
+      "model": "gpt-5.4",
+      "model_delivery": "Copilot SDK isolated general-purpose agent",
+      "fresh_session_required": true,
+      "prior_outputs_visible": false,
+      "cache_busting_nonce": "e2eae16f8837db09d5049814",
+      "prompt_path": "runs\\run_05\\prompt.txt",
+      "prompt_sha256": "d63ef85aa8c01a01d8c5066233adfb9089ce8242c35e9ef6e84039c935016b12",
+      "pair_numbers": [
+        16,
+        31,
+        42,
+        47,
+        51,
+        68,
+        75,
+        77,
+        81,
+        92,
+        99,
+        100
+      ],
+      "response_directory": "runs\\run_05\\responses",
+      "generation_parameters": {
+        "temperature": "not exposed by the agent runtime",
+        "seed": "not exposed by the agent runtime"
+      }
+    }
+  ],
+  "files": [
+    {
+      "role": "input_image",
+      "pair_id": "pair16",
+      "path": "inputs\\pair16\\prior_current.png",
+      "sha256": "b245546da4c1eb5b1c21a37f123859337d887f34b133821eeaf3d115460cd85d"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair16",
+      "path": "baseline_original\\responses\\pair16.json",
+      "sha256": "30b038644c3a32d892abaa86e9ec6fd6f7a900b26ee2c655013344588e83b5eb"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair31",
+      "path": "inputs\\pair31\\prior_current.png",
+      "sha256": "133b4e63725fa4a07a649645f3b3016eecabc9e8451626a54c3f64c8fec5163a"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair31",
+      "path": "baseline_original\\responses\\pair31.json",
+      "sha256": "cdb49795da35fb3b93c783e97088fa5cb01980afd057c40dcfcf47d5f2d46bba"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair42",
+      "path": "inputs\\pair42\\prior_current.png",
+      "sha256": "3857ba1b7ff642c62e0930c95f7c06eaae9549966534d25ac8f4d9f6ebbe32da"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair42",
+      "path": "baseline_original\\responses\\pair42.json",
+      "sha256": "76f5074bceefb6538b2810fb81de1600826719fc489ae7032705c4109e103583"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair47",
+      "path": "inputs\\pair47\\prior_current.png",
+      "sha256": "0dd0d929ba5ac2088f18249c5749bb6d302db9677c0e223acc24c558bb697e7b"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair47",
+      "path": "baseline_original\\responses\\pair47.json",
+      "sha256": "d6f5a167f5626d0982f52fa05141bba215ee2f2cfa86344ede6325de2614f164"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair51",
+      "path": "inputs\\pair51\\prior_current.png",
+      "sha256": "0738b8fbc1474a5b38ce2e717a9de2b3114525b0805fb56153d953edcef9d04f"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair51",
+      "path": "baseline_original\\responses\\pair51.json",
+      "sha256": "677961946a3797ea8bf9a6aa0d56bba1006ec27b9ab4899be69c0706f4242a63"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair68",
+      "path": "inputs\\pair68\\prior_current.png",
+      "sha256": "5fdff6e818fa3fb03f2a3d23faebfc9358adada5dfe9b0219f90ca9f807bbb4c"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair68",
+      "path": "baseline_original\\responses\\pair68.json",
+      "sha256": "b2bc4d56f37cfe542f5b7dfecb65b7c82cc448a55161e23be146bda453f9f005"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair75",
+      "path": "inputs\\pair75\\prior_current.png",
+      "sha256": "c82477b170d424aef63d1ee8e6108876f325b2eb900f4209ee4aa14255996d99"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair75",
+      "path": "baseline_original\\responses\\pair75.json",
+      "sha256": "4b2f4225b93b88c4373318e54daf346042af2a3e98905924c35db6b769b825ec"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair77",
+      "path": "inputs\\pair77\\prior_current.png",
+      "sha256": "ea7d5ed0c7647ec52f1a67fcd1c843730b66bcc84e6f7cbfec7c53e56650c86c"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair77",
+      "path": "baseline_original\\responses\\pair77.json",
+      "sha256": "72323fb789c6f0057f6d9fa376b7ee6caa0c407410308f783473d61079f9fa9e"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair81",
+      "path": "inputs\\pair81\\prior_current.png",
+      "sha256": "0455cfcf3a1a88616dcf3a7dd8e987a56c9698bdd9c4a0a8e588791a38ad837e"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair81",
+      "path": "baseline_original\\responses\\pair81.json",
+      "sha256": "bd55e5ad2be5b84a4833c18a26ebed57c1570b4a0049c2d370a5d22e2b74c425"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair92",
+      "path": "inputs\\pair92\\prior_current.png",
+      "sha256": "c60984a01f98225d7b754bee348f193b02793a3d718179374e6a6a75a64d054a"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair92",
+      "path": "baseline_original\\responses\\pair92.json",
+      "sha256": "5ee6ba6d7b6b9d24364a330e7f3e2b5a20cb9e085d156d85b520d375be012c47"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair99",
+      "path": "inputs\\pair99\\prior_current.png",
+      "sha256": "d6643cbbc27578e5a6e00914c6d117edecd001bd6bdf6553c3f2663d69b7ee5d"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair99",
+      "path": "baseline_original\\responses\\pair99.json",
+      "sha256": "7c5d3bc852c136f2fa68f902560d69d4a0e4b2fd2bc8547c084660fcb69cc7b1"
+    },
+    {
+      "role": "input_image",
+      "pair_id": "pair100",
+      "path": "inputs\\pair100\\prior_current.png",
+      "sha256": "342587b03cb7dc31a1d22d0d721642f603f5b934b9522772d6912c8ba8904e5e"
+    },
+    {
+      "role": "original_baseline_response",
+      "pair_id": "pair100",
+      "path": "baseline_original\\responses\\pair100.json",
+      "sha256": "891a70f828eda567bcf9c1b343d94d3c99a37d7b69b773c8105c7c79fc79f7e6"
+    }
+  ],
+  "environment": {
+    "python": "3.13.14 (tags/v3.13.14:fd17997, Jun 10 2026, 13:03:48) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "git_commit": "07b645ac57a8266d1fec37e85c2df315224503ec",
+    "git_status_short": "?? python_files/Sahar_work/build_gpt_claude_comparison_presentation.py\n?? python_files/Sahar_work/build_model_vs_llm_quick_presentation.py\n?? python_files/Sahar_work/compare_claude_gpt_experiments.py\n?? python_files/Sahar_work/compare_llm_annotator_experiment.py\n?? python_files/Sahar_work/make_llm_experiment_collages.py\n?? python_files/Sahar_work/setup_llm_repeatability_study.py\n?? \"python_files/annotation tool/LLM_Pathology_Heatmaps/\"\n?? \"python_files/annotation tool/llm_prompts/\"\n?? \"python_files/annotation tool/llm_semantic_diff_experiment.py\""
+  }
+}

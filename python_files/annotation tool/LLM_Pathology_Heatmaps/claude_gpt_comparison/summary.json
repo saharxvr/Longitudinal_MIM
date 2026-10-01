@@ -1,0 +1,59 @@
+{
+  "pairs_processed": 100,
+  "corresponding_arm_agreement": {
+    "ellipses": {
+      "mean_positive_detection_pai": 0.4699999999999999,
+      "mean_negative_detection_pai": 0.61,
+      "positive_presence_agreement": 0.51,
+      "negative_presence_agreement": 0.62
+    },
+    "heatmap": {
+      "mean_positive_detection_pai": 0.85,
+      "mean_negative_detection_pai": 0.84,
+      "positive_presence_agreement": 0.5,
+      "negative_presence_agreement": 0.69
+    },
+    "precision": {
+      "mean_positive_detection_pai": 0.62,
+      "mean_negative_detection_pai": 0.68,
+      "positive_presence_agreement": 0.48,
+      "negative_presence_agreement": 0.65
+    }
+  },
+  "coordinate_audits": {
+    "claude": {
+      "pairs_audited": 100,
+      "pairs_passed": 100,
+      "pairs_failed": 0,
+      "non_square_pairs": [
+        "pair99",
+        "pair100"
+      ],
+      "coordinate_contract": {
+        "response_coordinates": "normalized to each current image independently",
+        "display_maps": "native current image transposed exactly as the annotation tool displays it",
+        "canvas_annotations": "792x792 annotation-tool coordinates",
+        "native_annotations": "native NIfTI coordinates with transpose-aware angle conversion",
+        "signed_colors": "red=positive/worsening, green=negative/improving"
+      },
+      "failures": []
+    },
+    "gpt": {
+      "pairs_audited": 100,
+      "pairs_passed": 100,
+      "pairs_failed": 0,
+      "non_square_pairs": [
+        "pair99",
+        "pair100"
+      ],
+      "coordinate_contract": {
+        "response_coordinates": "normalized to each current image independently",
+        "display_maps": "native current image transposed exactly as the annotation tool displays it",
+        "canvas_annotations": "792x792 annotation-tool coordinates",
+        "native_annotations": "native NIfTI coordinates with transpose-aware angle conversion",
+        "signed_colors": "red=positive/worsening, green=negative/improving"
+      },
+      "failures": []
+    }
+  }
+}

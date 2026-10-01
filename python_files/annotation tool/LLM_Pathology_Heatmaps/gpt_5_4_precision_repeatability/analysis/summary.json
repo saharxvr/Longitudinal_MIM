@@ -1,0 +1,82 @@
+{
+  "study": "GPT-5.4 precision heatmap repeatability",
+  "analysis_created_utc": "2026-10-01T12:26:47.605592+00:00",
+  "pairs": [
+    16,
+    31,
+    42,
+    47,
+    51,
+    68,
+    75,
+    77,
+    81,
+    92,
+    99,
+    100
+  ],
+  "fresh_runs": 5,
+  "fresh_run_pairwise_comparisons": 120,
+  "support_threshold": 0.1,
+  "primary_fresh_run_metrics": {
+    "exact_json_agreement": 0.041666666666666664,
+    "semantic_signature_agreement": 0.20833333333333334,
+    "any_change_agreement": 0.8166666666666667,
+    "positive_presence_agreement": 0.6,
+    "negative_presence_agreement": 0.5833333333333334,
+    "pathology_jaccard": 0.3875,
+    "positive_dice": 0.45523591238053007,
+    "negative_dice": 0.51369103024841,
+    "positive_soft_dice": 0.4253154370933771,
+    "negative_soft_dice": 0.5095084030821454,
+    "signed_map_correlation": 0.20186088006126965
+  },
+  "standard_agreement": {
+    "statistic": "Krippendorff's alpha",
+    "measurement_level": "nominal",
+    "unit_definition": "image pair",
+    "rating_definition": "sorted set of (pathology, change_type) annotations; the empty set denotes no clear semantic change",
+    "raters": [
+      "run_01",
+      "run_02",
+      "run_03",
+      "run_04",
+      "run_05"
+    ],
+    "alpha": 0.12257357545397629,
+    "observed_disagreement": 0.7916666666666666,
+    "expected_disagreement": 0.9022598870056497,
+    "unit_count": 12,
+    "rating_count": 60,
+    "category_count": 14
+  },
+  "secondary_original_baseline_metrics": {
+    "exact_json_agreement": 0.0,
+    "semantic_signature_agreement": 0.11666666666666667,
+    "any_change_agreement": 0.7833333333333333,
+    "positive_presence_agreement": 0.5166666666666667,
+    "negative_presence_agreement": 0.6333333333333333,
+    "pathology_jaccard": 0.3,
+    "positive_dice": 0.325266219037125,
+    "negative_dice": 0.6148472620072724,
+    "positive_soft_dice": 0.2918098300695419,
+    "negative_soft_dice": 0.6101440812150637,
+    "signed_map_correlation": 0.14258927791481205
+  },
+  "pair_level": {
+    "pairs_with_one_semantic_signature": 1,
+    "pairs_with_exact_json_identity_across_all_runs": 0,
+    "mean_unique_semantic_signatures": 3.6666666666666665
+  },
+  "validation": {
+    "responses_expected": 72,
+    "responses_validated": 72,
+    "nifti_roundtrips_exact": true,
+    "snapshot_hashes_verified": true
+  },
+  "interpretation_constraints": {
+    "provider_cache_disabled_verified": false,
+    "cache_mitigation": "fresh isolated session per run plus a unique non-semantic nonce; provider-side cache state cannot be directly inspected or disabled by this runtime",
+    "temperature_and_seed": "not exposed by the agent runtime"
+  }
+}
