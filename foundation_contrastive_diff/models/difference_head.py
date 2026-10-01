@@ -87,8 +87,9 @@ class PyramidContext(nn.Module):
         h, w = x.shape[-2:]
         feats = [x]
         for st in self.stages:
-            feats.append(F.interpolate(st(x), size=(h, w), mode="bilinear", align_corners=False))
-        return self.project(torch.cat(feats, dim=1))
+            up = F.interpolate(st(x), size=(h, w), mode="bilinear", align_corners=False)
+            feats.append(up.contiguous())  # keep contiguous so cuDNN conv-backward matches
+        return self.project(torch.cat(feats, dim=1).contiguous())
 
 
 class UPerNetDecoder(nn.Module):
@@ -99,20 +100,22 @@ class UPerNetDecoder(nn.Module):
         self.out_size = out_size
         self.lo, self.hi = out_range
         chans = [in_dim, 384, 192, 96, 48]
-        blocks = []
-        for cin, cout in zip(chans[:-1], chans[1:]):
-            blocks.append(nn.Sequential(
-                nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+        self.convs = nn.ModuleList([
+            nn.Sequential(
                 nn.Conv2d(cin, cout, 3, padding=1, bias=False),
                 nn.GroupNorm(8, cout), nn.GELU(),
-            ))
-        self.blocks = nn.Sequential(*blocks)
+            ) for cin, cout in zip(chans[:-1], chans[1:])
+        ])
         self.final = nn.Conv2d(chans[-1], 1, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.blocks(x)
+        # Interpolate then conv, forcing contiguous memory after each upsample so cuDNN
+        # conv-backward sees matching memory formats for input and gradient (GPU-only bug).
+        for conv in self.convs:
+            x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+            x = conv(x.contiguous())
         x = F.interpolate(x, size=(self.out_size, self.out_size), mode="bilinear", align_corners=False)
-        x = torch.tanh(self.final(x))                       # [-1, 1]
+        x = torch.tanh(self.final(x.contiguous()))          # [-1, 1]
         if (self.lo, self.hi) != (-1.0, 1.0):
             x = self.lo + (x + 1.0) * 0.5 * (self.hi - self.lo)
         return x
