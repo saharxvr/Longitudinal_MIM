@@ -37,7 +37,8 @@ from evaluation.change_detection_metrics import dice_score, iou_score, direction
 
 def build_head(device):
     return DifferenceHead(
-        backbone_dim=C.BACKBONE_DIM, d_glori=C.D_GLORI,
+        backbone_dim=C.BACKBONE_DIM, patch_dim=C.BACKBONE_DIM * C.LAST_N_LAYERS, cls_dim=C.BACKBONE_DIM,
+        d_glori=C.D_GLORI,
         num_change_queries=C.NUM_CHANGE_QUERIES, num_heads=C.GLORI_NUM_HEADS,
         grid=C.FEATURE_GRID, embed_dim=C.EMBED_DIM, fusion_mode=C.FUSION_MODE,
         use_adaptive_temperature=C.USE_ADAPTIVE_TEMPERATURE,

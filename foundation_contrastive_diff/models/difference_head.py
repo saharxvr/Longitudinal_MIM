@@ -165,18 +165,25 @@ class DifferenceHead(nn.Module):
         integrate_global_cls: bool = True,
         out_size: int = 512,
         out_range=(-1.0, 1.0),
+        patch_dim: int = None,
+        cls_dim: int = None,
     ):
         super().__init__()
         self.fusion_mode = fusion_mode
         self.grid = grid
         self.integrate_global_cls = integrate_global_cls
 
-        in_dim = backbone_dim * 2 if fusion_mode == "concat" else backbone_dim
+        # patch_dim may exceed cls_dim when concatenating last-N backbone layers (ablation C):
+        # patches = backbone_dim * last_n_layers, CLS stays backbone_dim.
+        patch_dim = backbone_dim if patch_dim is None else patch_dim
+        cls_dim = backbone_dim if cls_dim is None else cls_dim
+
+        in_dim = patch_dim * 2 if fusion_mode == "concat" else patch_dim
         self.embed_tokens = nn.Sequential(nn.Linear(in_dim, d_glori), nn.GELU())
         if fusion_mode == "cross_attention":
-            self.cross = nn.MultiheadAttention(backbone_dim, num_heads, batch_first=True)
+            self.cross = nn.MultiheadAttention(patch_dim, num_heads, batch_first=True)
 
-        self.cls_proj = nn.Linear(backbone_dim, d_glori) if integrate_global_cls else None
+        self.cls_proj = nn.Linear(cls_dim, d_glori) if integrate_global_cls else None
         self.pyramid = PyramidContext(d_glori) if use_pyramid_patch_merging else None
 
         self.queries = nn.Parameter(torch.randn(num_change_queries, d_glori) * 0.02)
