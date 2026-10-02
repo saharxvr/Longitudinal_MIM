@@ -111,25 +111,31 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
 @torch.no_grad()
 def evaluate(head, backbone, loader, device, threshold=0.1):
     head.eval()
-    dices, ious, spos, sneg = [], [], [], []
+    dices, ious, spos, sneg, nuis_fp = [], [], [], [], []
     for batch in loader:
         p_prior, p_curr, cls_prior, cls_curr = _tokens_from_batch(batch, backbone, device)
         gt = batch["gt_diff"].to(device)
+        is_path = batch["is_pathology"]
         pred, _ = head(p_prior, p_curr, cls_prior, cls_curr)
 
         pm = (pred.abs() > threshold).float()
         gm = (gt.abs() > threshold).float()
         for b in range(pred.shape[0]):
+            # Split change vs no-change: empty-GT pairs score Dice=1.0 and would inflate
+            # the mean, so Dice/IoU/sens are change-only; no-change -> false-positive area.
+            if int(is_path[b]) == 0:
+                nuis_fp.append(float(pm[b].mean()))
+                continue
             dices.append(dice_score(pm[b], gm[b]))
             ious.append(iou_score(pm[b], gm[b]))
-        d = directional_sensitivity(pred, gt, threshold)
-        spos.append(d["sensitivity_positive"])
-        sneg.append(d["sensitivity_negative"])
+            d = directional_sensitivity(pred[b:b + 1], gt[b:b + 1], threshold)
+            spos.append(d["sensitivity_positive"])
+            sneg.append(d["sensitivity_negative"])
 
     def mean(x):
         return sum(x) / max(1, len(x))
     return {"dice": mean(dices), "iou": mean(ious),
-            "sens_pos": mean(spos), "sens_neg": mean(sneg)}
+            "sens_pos": mean(spos), "sens_neg": mean(sneg), "nuis_fp": mean(nuis_fp)}
 
 
 @torch.no_grad()
@@ -145,14 +151,21 @@ def save_sample_plots(head, backbone, loader, device, out_path, n=6):
     p_prior, p_curr, cls_prior, cls_curr = _tokens_from_batch(batch, backbone, device)
     pred, _ = head(p_prior, p_curr, cls_prior, cls_curr)
     gt = batch["gt_diff"]
-    n = min(n, pred.shape[0])
+    # Prefer change pairs so the panel isn't dominated by empty (no-change) GT.
+    is_path = batch.get("is_pathology")
+    if is_path is not None:
+        idx = [i for i in range(pred.shape[0]) if int(is_path[i]) == 1]
+        idx = (idx + [i for i in range(pred.shape[0]) if int(is_path[i]) == 0])[:n]
+    else:
+        idx = list(range(min(n, pred.shape[0])))
+    n = len(idx)
     fig, ax = plt.subplots(2, n, figsize=(3 * n, 6))
     ax = ax.reshape(2, n)
-    for i in range(n):
-        ax[0, i].imshow(gt[i, 0].cpu(), cmap="bwr", vmin=-1, vmax=1)
-        ax[0, i].set_title("GT"); ax[0, i].axis("off")
-        ax[1, i].imshow(pred[i, 0].cpu(), cmap="bwr", vmin=-1, vmax=1)
-        ax[1, i].set_title("pred"); ax[1, i].axis("off")
+    for col, i in enumerate(idx):
+        ax[0, col].imshow(gt[i, 0].cpu(), cmap="bwr", vmin=-1, vmax=1)
+        ax[0, col].set_title("GT"); ax[0, col].axis("off")
+        ax[1, col].imshow(pred[i, 0].cpu(), cmap="bwr", vmin=-1, vmax=1)
+        ax[1, col].set_title("pred"); ax[1, col].axis("off")
     fig.tight_layout()
     fig.savefig(out_path, dpi=110)
     plt.close(fig)
@@ -294,7 +307,7 @@ def main():
         print(f"epoch {epoch:03d}/{args.epochs} | lr {lr_now:.2e} | w_dice {w_dice_eff:.2f} | "
               f"train total {tr['total']:.4f} (l1 {tr['l1']:.4f} dice {tr['dice']:.4f} sign {tr['sign']:.4f}) | "
               f"val dice {va['dice']:.4f} iou {va['iou']:.4f} "
-              f"sens+ {va['sens_pos']:.3f} sens- {va['sens_neg']:.3f}",
+              f"sens+ {va['sens_pos']:.3f} sens- {va['sens_neg']:.3f} fp {va['nuis_fp']:.4f}",
               flush=True)
 
         # Mid-training tracking: append a CSV row + redraw curves every epoch.
@@ -304,6 +317,7 @@ def main():
             "train_dice": tr["dice"], "train_sign": tr["sign"],
             "val_dice": va["dice"], "val_iou": va["iou"],
             "val_sens_pos": va["sens_pos"], "val_sens_neg": va["sens_neg"],
+            "val_nuis_fp": va["nuis_fp"],
         })
         plot_curves(metrics_csv, os.path.join(args.plots_folder, "train_curves.png"))
 
