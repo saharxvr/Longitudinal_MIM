@@ -80,8 +80,9 @@ def cosine_warmup(optimizer, warmup_steps, total_steps):
 # ---------------------------------------------------------------------------
 # Train / eval
 # ---------------------------------------------------------------------------
-def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args):
+def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, w_dice=None):
     head.train()
+    w_dice = args.w_dice if w_dice is None else w_dice
     totals = {"total": 0.0, "l1": 0.0, "dice": 0.0, "sign": 0.0}
     optimizer.zero_grad()
     for step, batch in enumerate(loader):
@@ -90,7 +91,7 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args):
 
         pred, _ = head(p_prior, p_curr, cls_prior, cls_curr)
         loss, comp = change_map_loss(
-            pred, gt, tau=args.tau, w_l1=args.w_l1, w_dice=args.w_dice,
+            pred, gt, tau=args.tau, w_l1=args.w_l1, w_dice=w_dice,
             w_sign=args.w_sign, pos_weight=args.pos_weight,
         )
         (loss / args.accum).backward()
@@ -252,6 +253,8 @@ def parse_args():
     p.add_argument("--w_dice", type=float, default=1.0)
     p.add_argument("--w_sign", type=float, default=0.5)
     p.add_argument("--pos_weight", type=float, default=10.0)
+    p.add_argument("--dice_warmup_epochs", type=int, default=0,
+                   help="ramp w_dice linearly 0 -> w_dice over the first N epochs (0 = off; L1 learns magnitude first)")
     p.add_argument("--eval_threshold", type=float, default=0.1, help="|map| threshold for Dice/IoU")
     return p.parse_args()
 
@@ -277,10 +280,16 @@ def main():
     best_dice = -1.0
     metrics_csv = os.path.join(args.save_folder, "metrics.csv")
     for epoch in range(1, args.epochs + 1):
-        tr = train_one_epoch(head, backbone, train_loader, optimizer, scheduler, device, args)
+        # w_dice warm-up: let L1 fix magnitude first, then ramp Dice in for localization.
+        if args.dice_warmup_epochs > 0:
+            w_dice_eff = args.w_dice * min(1.0, epoch / args.dice_warmup_epochs)
+        else:
+            w_dice_eff = args.w_dice
+        tr = train_one_epoch(head, backbone, train_loader, optimizer, scheduler, device, args,
+                             w_dice=w_dice_eff)
         va = evaluate(head, backbone, val_loader, device, threshold=args.eval_threshold)
         lr_now = optimizer.param_groups[0]["lr"]
-        print(f"epoch {epoch:03d}/{args.epochs} | lr {lr_now:.2e} | "
+        print(f"epoch {epoch:03d}/{args.epochs} | lr {lr_now:.2e} | w_dice {w_dice_eff:.2f} | "
               f"train total {tr['total']:.4f} (l1 {tr['l1']:.4f} dice {tr['dice']:.4f} sign {tr['sign']:.4f}) | "
               f"val dice {va['dice']:.4f} iou {va['iou']:.4f} "
               f"sens+ {va['sens_pos']:.3f} sens- {va['sens_neg']:.3f}",
