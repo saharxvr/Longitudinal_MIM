@@ -223,7 +223,7 @@ def make_loaders(args, device):
         backbone.eval()
         train_ds = LongitudinalPairDataset(args.dataset_root, split="train", img_size=C.IMG_SIZE)
         val_ds = LongitudinalPairDataset(args.dataset_root, split="val", img_size=C.IMG_SIZE)
-        labels = None
+        labels = [train_ds._anomaly_index(r) for r in train_ds.records]  # enables --balanced
     else:
         backbone = None
         train_ds = CachedPairDataset(args.dataset_root, args.cache_dir, split="train")
