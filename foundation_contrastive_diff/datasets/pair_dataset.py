@@ -180,7 +180,7 @@ class CachedPairDataset(Dataset):
         return len(self.paths)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        d = torch.load(self.paths[idx], map_location="cpu")
+        d = torch.load(self.paths[idx], map_location="cpu", weights_only=False)
         return {
             "p_prior": d["p_prior"].float(),
             "cls_prior": d["cls_prior"].float(),
