@@ -86,6 +86,7 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
     head.train()
     w_dice = args.w_dice if w_dice is None else w_dice
     totals = {"total": 0.0, "l1": 0.0, "dice": 0.0, "sign": 0.0}
+    n_ok, n_bad = 0, 0
     optimizer.zero_grad()
     for step, batch in enumerate(loader):
         p_prior, p_curr, cls_prior, cls_curr = _tokens_from_batch(batch, backbone, device)
@@ -96,15 +97,25 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
             pred, gt, tau=args.tau, w_l1=args.w_l1, w_dice=w_dice,
             w_sign=args.w_sign, pos_weight=args.pos_weight,
         )
+        # NaN guard: skip corrupt/exploding batches instead of poisoning the whole run.
+        if not torch.isfinite(loss):
+            optimizer.zero_grad(set_to_none=True)
+            n_bad += 1
+            continue
         (loss / args.accum).backward()
         if (step + 1) % args.accum == 0:
+            if args.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(head.parameters(), args.grad_clip)
             optimizer.step()
             optimizer.zero_grad()
             scheduler.step()
 
+        n_ok += 1
         for k in totals:
             totals[k] += comp[k]
-    n = max(1, len(loader))
+    if n_bad:
+        print(f"  [warn] skipped {n_bad} non-finite batches this epoch", flush=True)
+    n = max(1, n_ok)
     return {k: v / n for k, v in totals.items()}
 
 
@@ -260,6 +271,7 @@ def parse_args():
     p.add_argument("--lr", type=float, default=C.MAX_LR)
     p.add_argument("--weight_decay", type=float, default=C.WEIGHT_DECAY)
     p.add_argument("--warmup_epochs", type=float, default=2.0)
+    p.add_argument("--grad_clip", type=float, default=1.0, help="max grad norm (0 = off); prevents NaN blow-ups")
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--device", default=C.DEVICE)
     # loss hyperparameters
