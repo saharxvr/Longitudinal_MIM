@@ -283,6 +283,9 @@ def parse_args():
     p.add_argument("--dice_warmup_epochs", type=int, default=0,
                    help="ramp w_dice linearly 0 -> w_dice over the first N epochs (0 = off; L1 learns magnitude first)")
     p.add_argument("--eval_threshold", type=float, default=0.1, help="|map| threshold for Dice/IoU")
+    p.add_argument("--resume", action="store_true",
+                   help="resume from <save_folder>/last.pt (restores head/optimizer/scheduler/epoch)")
+    p.add_argument("--resume_from", default="", help="explicit checkpoint path to resume from (overrides --resume)")
     return p.parse_args()
 
 
@@ -305,8 +308,26 @@ def main():
     scheduler = cosine_warmup(optimizer, warmup_steps, total_steps)
 
     best_dice = -1.0
+    start_epoch = 0
     metrics_csv = os.path.join(args.save_folder, "metrics.csv")
-    for epoch in range(1, args.epochs + 1):
+
+    # Resume: restore head + optimizer + scheduler + epoch + best score so a reboot
+    # costs at most the current epoch.
+    ckpt_path = args.resume_from or (os.path.join(args.save_folder, "last.pt") if args.resume else "")
+    if ckpt_path and os.path.isfile(ckpt_path):
+        ck = torch.load(ckpt_path, map_location=device)
+        head.load_state_dict(ck["head"])
+        if "optimizer" in ck:
+            optimizer.load_state_dict(ck["optimizer"])
+        if "scheduler" in ck:
+            scheduler.load_state_dict(ck["scheduler"])
+        start_epoch = int(ck.get("epoch", 0))
+        best_dice = float(ck.get("best_dice", -1.0))
+        print(f"[resume] {ckpt_path} -> start at epoch {start_epoch + 1}, best_dice {best_dice:.4f}", flush=True)
+    elif ckpt_path:
+        print(f"[resume] no checkpoint at {ckpt_path}; starting fresh", flush=True)
+
+    for epoch in range(start_epoch + 1, args.epochs + 1):
         # w_dice warm-up: let L1 fix magnitude first, then ramp Dice in for localization.
         if args.dice_warmup_epochs > 0:
             w_dice_eff = args.w_dice * min(1.0, epoch / args.dice_warmup_epochs)
@@ -333,12 +354,14 @@ def main():
         })
         plot_curves(metrics_csv, os.path.join(args.plots_folder, "train_curves.png"))
 
-        torch.save({"head": head.state_dict(), "epoch": epoch, "val": va},
-                   os.path.join(args.save_folder, "last.pt"))
+        ckpt = {"head": head.state_dict(), "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(), "epoch": epoch,
+                "best_dice": best_dice, "val": va}
+        torch.save(ckpt, os.path.join(args.save_folder, "last.pt"))
         if va["dice"] > best_dice:
             best_dice = va["dice"]
-            torch.save({"head": head.state_dict(), "epoch": epoch, "val": va},
-                       os.path.join(args.save_folder, "best.pt"))
+            ckpt["best_dice"] = best_dice
+            torch.save(ckpt, os.path.join(args.save_folder, "best.pt"))
             save_sample_plots(head, backbone, val_loader, device,
                               os.path.join(args.plots_folder, "val_best_samples.png"))
 
