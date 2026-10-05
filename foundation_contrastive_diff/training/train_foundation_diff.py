@@ -241,6 +241,21 @@ def make_loaders(args, device):
         val_ds = CachedPairDataset(args.dataset_root, args.cache_dir, split="val")
         labels = train_ds.labels
 
+    # Overfit sanity test: train AND eval on the same N change pairs (is_pathology==1).
+    # If val(=train) Dice -> ~0.9 the head can represent the task; if it stalls the
+    # bottleneck is representational (decoder resolution / features), not data/optim.
+    if args.overfit > 0:
+        from torch.utils.data import Subset
+        idx = [i for i, l in enumerate(labels) if l != 0][:args.overfit] if labels is not None \
+            else list(range(args.overfit))
+        sub = Subset(train_ds, idx)
+        print(f"[overfit] training + evaluating on {len(idx)} change pairs", flush=True)
+        train_loader = DataLoader(sub, batch_size=min(args.batch_size, len(idx)), shuffle=True,
+                                  num_workers=args.num_workers, drop_last=False)
+        val_loader = DataLoader(sub, batch_size=min(args.batch_size, len(idx)), shuffle=False,
+                                num_workers=args.num_workers)
+        return backbone, train_loader, val_loader
+
     sampler, shuffle = None, True
     if args.balanced and labels is not None:
         counts = torch.bincount(torch.tensor(labels), minlength=len(C.ANOMALY_TYPES)).float()
@@ -286,6 +301,8 @@ def parse_args():
     p.add_argument("--resume", action="store_true",
                    help="resume from <save_folder>/last.pt (restores head/optimizer/scheduler/epoch)")
     p.add_argument("--resume_from", default="", help="explicit checkpoint path to resume from (overrides --resume)")
+    p.add_argument("--overfit", type=int, default=0,
+                   help="sanity test: train+eval on the same N change pairs (0 = off). Use with high --epochs, no --balanced.")
     return p.parse_args()
 
 
