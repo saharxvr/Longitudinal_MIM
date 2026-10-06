@@ -271,6 +271,15 @@ def make_loaders(args, device):
                                 num_workers=args.num_workers)
         return backbone, train_loader, val_loader
 
+    # --only_change: drop all-zero no-change pairs from TRAINING so the head isn't diluted
+    # by ~36% blank targets (val keeps all pairs for the nuisance-FP metric).
+    if args.only_change and labels is not None:
+        from torch.utils.data import Subset
+        idx = [i for i, l in enumerate(labels) if l != 0]
+        train_ds = Subset(train_ds, idx)
+        labels = [labels[i] for i in idx]
+        print(f"[RQ1] only_change: training on {len(idx)} change pairs (dropped no-change)", flush=True)
+
     sampler, shuffle = None, True
     if args.balanced and labels is not None:
         counts = torch.bincount(torch.tensor(labels), minlength=len(C.ANOMALY_TYPES)).float()
@@ -322,6 +331,8 @@ def parse_args():
                    help="sanity test: train+eval on the same N change pairs (0 = off). Use with high --epochs, no --balanced.")
     p.add_argument("--feat_last_k", type=int, default=0,
                    help="use only the last K backbone layers from the cache (0 = all cached). last-1 from a last-4 cache = 1.")
+    p.add_argument("--only_change", action="store_true",
+                   help="train only on change pairs (drop all-zero no-change) so the head isn't diluted by blank targets")
 
     # Config file: pre-scan for --config, load it, and make its keys the arg defaults.
     import sys as _sys
