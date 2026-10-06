@@ -126,9 +126,10 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
 
 
 @torch.no_grad()
-def evaluate(head, backbone, loader, device, threshold=0.1):
+def evaluate(head, backbone, loader, device, threshold=0.1, tau=0.02, pos_weight=10.0):
     head.eval()
     dices, ious, spos, sneg, nuis_fp = [], [], [], [], []
+    l1s, l2s = [], []
     for batch in loader:
         p_prior, p_curr, cls_prior, cls_curr = _tokens_from_batch(batch, backbone, device)
         gt = batch["gt_diff"].to(device)
@@ -137,6 +138,8 @@ def evaluate(head, backbone, loader, device, threshold=0.1):
 
         pm = (pred.abs() > threshold).float()
         gm = (gt.abs() > threshold).float()
+        _, comp = change_map_loss(pred, gt, tau=tau, pos_weight=pos_weight)  # same-weighted recon error
+        l1s.append(comp["l1"]); l2s.append(comp["l2"])
         for b in range(pred.shape[0]):
             # Split change vs no-change: empty-GT pairs score Dice=1.0 and would inflate
             # the mean, so Dice/IoU/sens are change-only; no-change -> false-positive area.
@@ -152,7 +155,8 @@ def evaluate(head, backbone, loader, device, threshold=0.1):
     def mean(x):
         return sum(x) / max(1, len(x))
     return {"dice": mean(dices), "iou": mean(ious),
-            "sens_pos": mean(spos), "sens_neg": mean(sneg), "nuis_fp": mean(nuis_fp)}
+            "sens_pos": mean(spos), "sens_neg": mean(sneg), "nuis_fp": mean(nuis_fp),
+            "l1": mean(l1s), "l2": mean(l2s)}
 
 
 @torch.no_grad()
@@ -391,11 +395,12 @@ def main():
             w_dice_eff = args.w_dice
         tr = train_one_epoch(head, backbone, train_loader, optimizer, scheduler, device, args,
                              w_dice=w_dice_eff)
-        va = evaluate(head, backbone, val_loader, device, threshold=args.eval_threshold)
+        va = evaluate(head, backbone, val_loader, device, threshold=args.eval_threshold,
+                      tau=args.tau, pos_weight=args.pos_weight)
         lr_now = optimizer.param_groups[0]["lr"]
         print(f"epoch {epoch:03d}/{args.epochs} | lr {lr_now:.2e} | w_dice {w_dice_eff:.2f} | "
               f"train total {tr['total']:.4f} (l1 {tr['l1']:.4f} l2 {tr['l2']:.4f} dice {tr['dice']:.4f} sign {tr['sign']:.4f}) | "
-              f"val dice {va['dice']:.4f} iou {va['iou']:.4f} "
+              f"val dice {va['dice']:.4f} iou {va['iou']:.4f} l1 {va['l1']:.4f} l2 {va['l2']:.4f} "
               f"sens+ {va['sens_pos']:.3f} sens- {va['sens_neg']:.3f} fp {va['nuis_fp']:.4f}",
               flush=True)
 
@@ -405,6 +410,7 @@ def main():
             "train_total": tr["total"], "train_l1": tr["l1"], "train_l2": tr["l2"],
             "train_dice": tr["dice"], "train_sign": tr["sign"],
             "val_dice": va["dice"], "val_iou": va["iou"],
+            "val_l1": va["l1"], "val_l2": va["l2"],
             "val_sens_pos": va["sens_pos"], "val_sens_neg": va["sens_neg"],
             "val_nuis_fp": va["nuis_fp"],
         })
