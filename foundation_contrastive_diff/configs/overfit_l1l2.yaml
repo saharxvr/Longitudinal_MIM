@@ -1,0 +1,25 @@
+# Overfit sanity test: train+eval on the same N change pairs.
+# L1+L2 reconstruction reached ~0.94 here (vs ~0.71 with Dice) -> Dice loss hurts.
+dataset_root: /cs/labs/josko/sahar_aharon/fcd_train
+cache_dir: /cs/labs/josko/sahar_aharon/fcd_cache_last4
+save_folder: /cs/labs/josko/sahar_aharon/fcd_runs/overfit16_l1l2/checkpoints
+plots_folder: /cs/labs/josko/sahar_aharon/fcd_runs/overfit16_l1l2/plots
+
+feat_last_k: 4
+overfit: 16
+epochs: 400
+batch_size: 8
+accum: 1
+lr: 0.0005
+grad_clip: 1.0
+num_workers: 12
+balanced: false
+
+w_l1: 1.0
+w_l2: 1.0
+w_dice: 0.0
+w_sign: 0.0
+dice_warmup_epochs: 0
+pos_weight: 10.0
+tau: 0.02
+eval_threshold: 0.05

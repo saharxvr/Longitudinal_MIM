@@ -1,0 +1,31 @@
+# Base paths (same every run)
+dataset_root: /cs/labs/josko/sahar_aharon/fcd_train
+cache_dir: /cs/labs/josko/sahar_aharon/fcd_cache_last1   # 90 GB, fits 128 GB RAM -> fast
+
+# Run outputs (change per experiment)
+save_folder: /cs/labs/josko/sahar_aharon/fcd_runs/run_last1_l1l2/checkpoints
+plots_folder: /cs/labs/josko/sahar_aharon/fcd_runs/run_last1_l1l2/plots
+
+# Features: cache is already last-1, no slicing needed
+feat_last_k: 0
+
+# Optimization
+epochs: 60
+batch_size: 8
+accum: 4
+lr: 0.0003
+weight_decay: 0.01
+warmup_epochs: 2.0
+grad_clip: 1.0
+num_workers: 12
+balanced: true
+
+# Loss: Itamar-style L1 + L2 reconstruction (no Dice/sign — Dice hurt on faint GT)
+w_l1: 1.0
+w_l2: 1.0
+w_dice: 0.0
+w_sign: 0.0
+dice_warmup_epochs: 0
+pos_weight: 10.0
+tau: 0.02
+eval_threshold: 0.05
