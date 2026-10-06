@@ -86,8 +86,11 @@ def run_eval(head, backbone, loader, device, thr):
             per_type[name]["dice"].append(dice_score(pm[b], gm[b]))
             per_type[name]["iou"].append(iou_score(pm[b], gm[b]))
             d = directional_sensitivity(pred[b:b + 1], gt[b:b + 1], thr)
-            per_type[name]["sens_pos"].append(d["sensitivity_positive"])
-            per_type[name]["sens_neg"].append(d["sensitivity_negative"])
+            # Only count a direction's recall on pairs that contain that direction.
+            if (gt[b] > thr).any():
+                per_type[name]["sens_pos"].append(d["sensitivity_positive"])
+            if (gt[b] < -thr).any():
+                per_type[name]["sens_neg"].append(d["sensitivity_negative"])
             if name not in examples:
                 examples[name] = (gt[b, 0].cpu(), pred[b, 0].cpu())
 
