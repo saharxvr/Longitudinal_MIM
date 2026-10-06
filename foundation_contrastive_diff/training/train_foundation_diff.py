@@ -35,10 +35,16 @@ from evaluation.change_detection_metrics import dice_score, iou_score, direction
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
-def build_head(device):
+# Optional: slice cached features to the last K backbone layers (last K*768 dims).
+# The last-4 cache stores layers concatenated oldest->newest, so the final 768 dims
+# are the last layer. This lets last-1 / last-2 reuse the last-4 cache (no re-caching).
+_FEAT_DIM = None  # set in main() from --feat_last_k
+
+
+def build_head(device, patch_dim=None):
     head = DifferenceHead(
         backbone_dim=C.BACKBONE_DIM,
-        patch_dim=C.BACKBONE_DIM * C.LAST_N_LAYERS,
+        patch_dim=patch_dim or (C.BACKBONE_DIM * C.LAST_N_LAYERS),
         cls_dim=C.BACKBONE_DIM,
         d_glori=C.D_GLORI,
         num_change_queries=C.NUM_CHANGE_QUERIES,
@@ -58,10 +64,10 @@ def build_head(device):
 def _tokens_from_batch(batch, backbone, device):
     """Return (p_prior, p_curr, cls_prior, cls_curr) from cached feats or the backbone."""
     if backbone is None:  # cached-feature path
-        return (
-            batch["p_prior"].to(device), batch["p_curr"].to(device),
-            batch["cls_prior"].to(device), batch["cls_curr"].to(device),
-        )
+        pp, pc = batch["p_prior"].to(device), batch["p_curr"].to(device)
+        if _FEAT_DIM is not None:                 # slice to last-K layers
+            pp, pc = pp[..., -_FEAT_DIM:], pc[..., -_FEAT_DIM:]
+        return pp, pc, batch["cls_prior"].to(device), batch["cls_curr"].to(device)
     fp = backbone(batch["img_prior"].to(device))
     fc = backbone(batch["img_curr"].to(device))
     return fp["patch_tokens"], fc["patch_tokens"], fp["cls_token"], fc["cls_token"]
@@ -304,6 +310,8 @@ def parse_args():
     p.add_argument("--resume_from", default="", help="explicit checkpoint path to resume from (overrides --resume)")
     p.add_argument("--overfit", type=int, default=0,
                    help="sanity test: train+eval on the same N change pairs (0 = off). Use with high --epochs, no --balanced.")
+    p.add_argument("--feat_last_k", type=int, default=0,
+                   help="use only the last K backbone layers from the cache (0 = all cached). last-1 from a last-4 cache = 1.")
     return p.parse_args()
 
 
@@ -313,8 +321,16 @@ def main():
     os.makedirs(args.save_folder, exist_ok=True)
     os.makedirs(args.plots_folder, exist_ok=True)
 
+    # --feat_last_k: slice cached features to the last K layers (reuse a last-4 cache).
+    global _FEAT_DIM
+    patch_dim = None
+    if args.feat_last_k > 0:
+        _FEAT_DIM = args.feat_last_k * C.BACKBONE_DIM
+        patch_dim = _FEAT_DIM
+        print(f"[RQ1] using last {args.feat_last_k} layer(s) -> patch_dim {patch_dim}", flush=True)
+
     backbone, train_loader, val_loader = make_loaders(args, device)
-    head = build_head(device)
+    head = build_head(device, patch_dim=patch_dim)
     n_trainable = sum(p.numel() for p in head.parameters() if p.requires_grad)
     print(f"[RQ1] trainable head params: {n_trainable/1e6:.2f}M | "
           f"train batches: {len(train_loader)} | val batches: {len(val_loader)}")
