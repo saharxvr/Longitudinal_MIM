@@ -26,15 +26,22 @@ def change_map_loss(
     w_l1: float = 1.0,
     w_dice: float = 1.0,
     w_sign: float = 0.5,
+    w_l2: float = 0.0,
     pos_weight: float = 10.0,
     eps: float = 1e-6,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
-    """Return (total_loss, components dict)."""
+    """Return (total_loss, components dict).
+
+    Set w_dice=w_sign=0, w_l2=1 for an Itamar-style pure L1+L2 reconstruction loss.
+    """
     change_mask = (gt.abs() > tau).float()                       # [B,1,H,W]
 
     # 1) Weighted L1 on magnitude — change pixels count much more than background.
     weight = 1.0 + pos_weight * change_mask
     l1 = (weight * (pred - gt).abs()).mean()
+
+    # 1b) Weighted L2 (MSE) — reconstruction term (Itamar-style).
+    l2 = (weight * (pred - gt) ** 2).mean()
 
     # 2) Soft Dice between |pred| and the change mask (per-sample, then averaged).
     pmag = pred.abs()
@@ -47,9 +54,10 @@ def change_map_loss(
     # 3) Direction penalty: on change pixels, penalize sign(pred) != sign(gt).
     sign_pen = (F.relu(-pred * gt) * change_mask).sum() / (change_mask.sum() + eps)
 
-    total = w_l1 * l1 + w_dice * dice + w_sign * sign_pen
+    total = w_l1 * l1 + w_l2 * l2 + w_dice * dice + w_sign * sign_pen
     return total, {
         "l1": float(l1.detach()),
+        "l2": float(l2.detach()),
         "dice": float(dice.detach()),
         "sign": float(sign_pen.detach()),
         "total": float(total.detach()),

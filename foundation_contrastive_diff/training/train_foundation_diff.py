@@ -85,7 +85,7 @@ def cosine_warmup(optimizer, warmup_steps, total_steps):
 def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, w_dice=None):
     head.train()
     w_dice = args.w_dice if w_dice is None else w_dice
-    totals = {"total": 0.0, "l1": 0.0, "dice": 0.0, "sign": 0.0}
+    totals = {"total": 0.0, "l1": 0.0, "l2": 0.0, "dice": 0.0, "sign": 0.0}
     n_ok, n_bad = 0, 0
     optimizer.zero_grad()
     for step, batch in enumerate(loader):
@@ -95,7 +95,7 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
         pred, _ = head(p_prior, p_curr, cls_prior, cls_curr)
         loss, comp = change_map_loss(
             pred, gt, tau=args.tau, w_l1=args.w_l1, w_dice=w_dice,
-            w_sign=args.w_sign, pos_weight=args.pos_weight,
+            w_sign=args.w_sign, w_l2=args.w_l2, pos_weight=args.pos_weight,
         )
         # NaN guard: skip corrupt/exploding batches instead of poisoning the whole run.
         if not torch.isfinite(loss):
@@ -294,6 +294,7 @@ def parse_args():
     p.add_argument("--w_l1", type=float, default=1.0)
     p.add_argument("--w_dice", type=float, default=1.0)
     p.add_argument("--w_sign", type=float, default=0.5)
+    p.add_argument("--w_l2", type=float, default=0.0, help="L2/MSE weight (set w_dice=w_sign=0, w_l2=1 for Itamar-style reconstruction)")
     p.add_argument("--pos_weight", type=float, default=10.0)
     p.add_argument("--dice_warmup_epochs", type=int, default=0,
                    help="ramp w_dice linearly 0 -> w_dice over the first N epochs (0 = off; L1 learns magnitude first)")
@@ -355,7 +356,7 @@ def main():
         va = evaluate(head, backbone, val_loader, device, threshold=args.eval_threshold)
         lr_now = optimizer.param_groups[0]["lr"]
         print(f"epoch {epoch:03d}/{args.epochs} | lr {lr_now:.2e} | w_dice {w_dice_eff:.2f} | "
-              f"train total {tr['total']:.4f} (l1 {tr['l1']:.4f} dice {tr['dice']:.4f} sign {tr['sign']:.4f}) | "
+              f"train total {tr['total']:.4f} (l1 {tr['l1']:.4f} l2 {tr['l2']:.4f} dice {tr['dice']:.4f} sign {tr['sign']:.4f}) | "
               f"val dice {va['dice']:.4f} iou {va['iou']:.4f} "
               f"sens+ {va['sens_pos']:.3f} sens- {va['sens_neg']:.3f} fp {va['nuis_fp']:.4f}",
               flush=True)
@@ -363,7 +364,7 @@ def main():
         # Mid-training tracking: append a CSV row + redraw curves every epoch.
         log_metrics_row(metrics_csv, {
             "epoch": epoch, "lr": lr_now,
-            "train_total": tr["total"], "train_l1": tr["l1"],
+            "train_total": tr["total"], "train_l1": tr["l1"], "train_l2": tr["l2"],
             "train_dice": tr["dice"], "train_sign": tr["sign"],
             "val_dice": va["dice"], "val_iou": va["iou"],
             "val_sens_pos": va["sens_pos"], "val_sens_neg": va["sens_neg"],
