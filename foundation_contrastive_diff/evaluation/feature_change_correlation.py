@@ -79,14 +79,16 @@ def main():
     ap.add_argument("--cache_dir", required=True)
     ap.add_argument("--split", default="val")
     ap.add_argument("--feat_last_k", type=int, default=1,
-                    help="use the last K backbone layers from a last-4 cache (1=last layer only)")
+                    help="use the last K backbone layers from a last-4 cache (1=last layer only; 0=full cached dim)")
+    ap.add_argument("--grid", type=int, default=C.FEATURE_GRID,
+                    help="token grid side (37 RAD-DINO, 32 itamar_ae, 7 xrv, ...)")
     ap.add_argument("--tau", type=float, default=0.05, help="|gt| patch threshold for a change patch")
     ap.add_argument("--limit", type=int, default=0, help="cap #pairs (0 = all)")
     args = ap.parse_args()
 
     ds = CachedPairDataset(args.dataset_root, args.cache_dir, split=args.split)
     loader = DataLoader(ds, batch_size=1, shuffle=False, num_workers=2)
-    grid = C.FEATURE_GRID
+    grid = args.grid
     feat_dim = args.feat_last_k * C.BACKBONE_DIM if args.feat_last_k > 0 else None
 
     cos_all, l2_all, gt_all, lbl_all = [], [], [], []

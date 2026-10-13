@@ -92,7 +92,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--dataset_root", required=True)
     ap.add_argument("--cache_dir", required=True)
-    ap.add_argument("--feat_last_k", type=int, default=1)
+    ap.add_argument("--feat_last_k", type=int, default=1,
+                    help="slice last K layers from a last-4 RAD cache (0 = use full cached dim)")
+    ap.add_argument("--grid", type=int, default=C.FEATURE_GRID,
+                    help="token grid side (37 RAD-DINO, 32 itamar_ae, 7 xrv, ...)")
     ap.add_argument("--epochs", type=int, default=15)
     ap.add_argument("--batch_size", type=int, default=16)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -104,14 +107,17 @@ def main():
 
     device = C.DEVICE
     feat_dim = args.feat_last_k * C.BACKBONE_DIM if args.feat_last_k > 0 else None
-    in_dim = feat_dim if feat_dim is not None else C.BACKBONE_DIM * C.LAST_N_LAYERS
 
     tr = CachedPairDataset(args.dataset_root, args.cache_dir, split="train")
     va = CachedPairDataset(args.dataset_root, args.cache_dir, split="val")
     tl = DataLoader(tr, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
     vl = DataLoader(va, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
-    model = LinearProbe(in_dim, C.FEATURE_GRID, C.IMG_SIZE).to(device)
+    # Infer input dim from the cache (robust to any backbone), after the optional last-K slice.
+    sample_dp = _slice(tr[0]["p_prior"], feat_dim)
+    in_dim = sample_dp.shape[-1]
+
+    model = LinearProbe(in_dim, args.grid, C.IMG_SIZE).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     print(f"[linear probe] in_dim {in_dim}  params {sum(p.numel() for p in model.parameters())}  "
           f"train {len(tr)}  val {len(va)}", flush=True)
