@@ -82,3 +82,6 @@ Screen results (fill as they land):
 
 See `AGENT_CONTEXT.md` for the full per-session preamble. Key: `$CACHE1` (90 GB, fits RAM,
 fast) is now the default; `$CACHE4` (360 GB, NFS-bound) deprecated since last-1 ≈ last-4.
+
+- **2026-10-14 — Freed `fcd_cache_last4` (~360 GB).** Deprecated (last-1 ≈ last-4); deleted to
+  make room for the backbone-screen subset caches (`fcd_screen/*`). `fcd_cache_last1` kept.
