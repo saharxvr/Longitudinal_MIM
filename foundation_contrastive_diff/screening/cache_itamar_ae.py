@@ -30,14 +30,28 @@ import json
 import os
 import sys
 
-# Run this from python_files/ so Itamar's modules resolve. Python puts THIS script's dir
-# (screening/) on sys.path, not the CWD — so add the CWD explicitly, ahead of everything,
-# so `refactored_modules` / `constants` / `models` resolve to Itamar's project, not fcd's.
-sys.path.insert(0, os.getcwd())
-
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+
+def _add_code_root(code_root: str = "") -> str:
+    """Put Itamar's project (the dir CONTAINING refactored_modules) on sys.path, ahead of all
+    else, so `refactored_modules` / `constants` / `models` resolve to his code, not fcd's.
+    Tries --code_root, then repo-relative python_files, then CWD."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo = os.path.dirname(os.path.dirname(here))          # .../repos
+    candidates = [c for c in (code_root,
+                              os.path.join(repo, "python_files"),
+                              os.getcwd()) if c]
+    for c in candidates:
+        if os.path.isdir(os.path.join(c, "refactored_modules")):
+            sys.path.insert(0, c)
+            print(f"[itamar] code_root = {c}", flush=True)
+            return c
+    raise ModuleNotFoundError(
+        "Cannot find 'refactored_modules'. Tried:\n  " + "\n  ".join(candidates) +
+        "\nPass --code_root /path/to/dir_containing_refactored_modules")
 
 # Must match foundation_contrastive_diff/constants.py ordering so labels line up downstream.
 ANOMALY_TYPES = ['none', 'consolidation', 'pleural_effusion', 'pneumothorax', 'fluid_overload']
@@ -157,8 +171,11 @@ def main():
     ap.add_argument("--n_train", type=int, default=2500)
     ap.add_argument("--n_val", type=int, default=1500)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--code_root", default="",
+                    help="dir containing Itamar's refactored_modules (default: repo python_files/)")
     args = ap.parse_args()
 
+    _add_code_root(args.code_root)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = build_itamar(args.ckpt, device)
     recs = _read_manifest(args.dataset_root)
