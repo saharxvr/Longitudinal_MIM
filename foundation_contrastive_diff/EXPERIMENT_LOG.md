@@ -39,10 +39,16 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
   real (0.614) — and HIGHER on real (it's trained on real XR; DRRs were mildly OOD for it).
   torchxrayvision COLLAPSED 0.647→0.522 (vindicates the grid-7 AUROC-inflation caveat).
   BiomedCLIP stable (0.579≈0.580) = genuine 2nd. General models (dinov2/sam/clip) ≈ chance on real.
-  ⇒ RQ1 ANSWER: among off-the-shelf FROZEN foundation models, RAD-DINO is the best longitudinal-
-  change feature extractor, confirmed on synthetic AND real clinical data — but only ~0.61 AUROC,
-  motivating the lightweight adapter head. (Itamar oracle not yet run on real pairs — expect it to
-  DROP toward chance since it's DRR-trained / OOD on real XR, which would quantify its confound.)
+- **2026-10-15 — ITAMAR on real pairs (confound quantified, nuanced result): 0.660.**
+  Synthetic 0.731 → real **0.660** (−0.071 drop = the leakage+DRR-domain confound, real & measured).
+  BUT a GENUINE advantage survives: on leakage-free real CXRs where Itamar is OUT-of-domain
+  (DRR-trained), he STILL beats RAD-DINO **0.660 vs 0.614 (+0.046)**. Fair comparison (chg% 17.4
+  @grid32 ≈ 16.8 @grid37, not a grid artifact). ⇒ Reconstruction objective has a REAL, transferable
+  advantage for longitudinal change over DINO invariance — not just a confounded oracle.
+  ⇒ RQ1 ANSWER (off-the-shelf FROZEN foundation models): RAD-DINO is the best AVAILABLE foundation
+  model (Itamar isn't one — small, in-house, CT-cohort-specific). But ~0.61 AUROC → motivates the
+  adapter head. FUTURE DIRECTION: a reconstruction-pretrained FOUNDATION model (large external CXR)
+  could beat RAD-DINO here.
 - **2026-10-15 — HYPOTHESIS CONFIRMED: Itamar's reconstruction encoder beats RAD-DINO.**
   On the fair 2.5k subset (grid-comparable), itamar_ae cos AUROC **0.731** vs RAD-DINO **0.586**
   (+0.145), probe **0.281** vs 0.261. The decisive per-class signal: **pneumothorax corr +0.04
