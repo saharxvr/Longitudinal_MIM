@@ -134,7 +134,7 @@ def main():
             loss, _ = change_map_loss(pred, gt, w_l1=args.w_l1, w_dice=0.0, w_sign=0.0,
                                       w_l2=args.w_l2, pos_weight=args.pos_weight)
             opt.zero_grad(); loss.backward(); opt.step()
-            tot += float(loss)
+            tot += float(loss.detach())
         dice, iou, sp, sn, fp = evaluate(model, vl, device, feat_dim, args.threshold)
         best = max(best, dice)
         print(f"epoch {ep:02d}/{args.epochs} | train {tot/len(tl):.4f} | "

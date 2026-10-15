@@ -75,7 +75,12 @@ Screen results (fill as they land):
 | rad_dino (2.5k subset) | 0.586 | 0.261 | fair baseline; subset ≈ full (0.27→0.261) → screen trustworthy. L2 AUROC 0.633 > cos |
 | dinov2_imagenet (2.5k) | 0.569 | ~0.20 (ep4) | **worse than RAD-DINO on both**; CXR pretraining helps. Nuisance FP high (0.19–0.47) |
 | itamar_ae (2.5k) | | | reconstruction objective — the hypothesis test |
-| torchxrayvision (2.5k) | | | TODO (needs `pip install torchxrayvision`); grid 7 handicaps Dice |
+| torchxrayvision (2.5k, grid 7) | 0.647 (L2 0.697) | 0.204 | highest raw AUROC BUT grid-7: AUROC inflated by coarse pooling, Dice crippled by low res. effusion +0.248 (supervised) |
+
+**Grid caveat (2026-10-15):** cos/L2 AUROC is only cleanly comparable at the SAME grid. xrv
+(grid 7) pools ~5x more area per patch → AUROC inflates while Dice is resolution-capped. Clean
+within-grid ranking (grid 37): rad_dino > dinov2. Supervised xrv features are change-sensitive
+(esp. effusion) but resolution-limited — reinforces that the pretraining OBJECTIVE matters.
 
 **Methodology note (2026-10-14):** probe column must use a FIXED subset size across backbones.
 cos AUROC is training-free so comparable as-is. RAD-DINO subset probe 0.261 ≈ full-data 0.27,
