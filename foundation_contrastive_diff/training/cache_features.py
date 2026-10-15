@@ -39,13 +39,13 @@ from models.backbone import FrozenCXRBackbone  # noqa: E402
 from datasets.pair_dataset import LongitudinalPairDataset  # noqa: E402
 
 
-def _build_backbone(device: str) -> FrozenCXRBackbone:
+def _build_backbone(device: str, last_n_layers: int) -> FrozenCXRBackbone:
     return FrozenCXRBackbone(
         name=C.BACKBONE,
         model_id=getattr(C, "RAD_DINO_MODEL", "microsoft/rad-dino"),
         backbone_img_size=C.BACKBONE_IMG_SIZE,
         num_patch_tokens=C.NUM_PATCH_TOKENS,
-        last_n_layers=C.LAST_N_LAYERS,
+        last_n_layers=last_n_layers,
         freeze=True,
     ).to(device).eval()
 
@@ -58,6 +58,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--device", default=C.DEVICE)
+    p.add_argument("--last_n_layers", type=int, default=C.LAST_N_LAYERS,
+                   help="concat the last N backbone layers (4 for the DPT/multi-scale cache)")
     p.add_argument("--limit", type=int, default=0, help="Cache at most N pairs (0 = all); for smoke tests.")
     return p.parse_args()
 
@@ -69,9 +71,9 @@ def main() -> int:
 
     ds = LongitudinalPairDataset(args.dataset_root, split=args.split, img_size=C.IMG_SIZE)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-    backbone = _build_backbone(args.device)
+    backbone = _build_backbone(args.device, args.last_n_layers)
 
-    print(f"[cache] {len(ds)} pairs -> {cache_dir} on {args.device}", flush=True)
+    print(f"[cache] {len(ds)} pairs -> {cache_dir} on {args.device} (last_n_layers={args.last_n_layers})", flush=True)
     done = 0
     for batch in loader:
         pair_ids = batch["pair_id"]
