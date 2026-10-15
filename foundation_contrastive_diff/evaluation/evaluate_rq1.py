@@ -30,7 +30,7 @@ from torch.utils.data import DataLoader
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import constants as C
-from models import DifferenceHead
+from models import DifferenceHead, build_change_head
 from datasets import CachedPairDataset, LongitudinalPairDataset
 from evaluation.change_detection_metrics import dice_score, iou_score, directional_sensitivity
 
@@ -48,9 +48,12 @@ def build_head(device):
     ).to(device)
 
 
-def _tokens(batch, backbone, device):
+def _tokens(batch, backbone, device, feat_dim=None):
     if backbone is None:
-        return (batch["p_prior"].to(device), batch["p_curr"].to(device),
+        prior, current = batch["p_prior"].to(device), batch["p_curr"].to(device)
+        if feat_dim is not None:
+            prior, current = prior[..., -feat_dim:], current[..., -feat_dim:]
+        return (prior, current,
                 batch["cls_prior"].to(device), batch["cls_curr"].to(device))
     fp = backbone(batch["img_prior"].to(device)); fc = backbone(batch["img_curr"].to(device))
     return fp["patch_tokens"], fc["patch_tokens"], fp["cls_token"], fc["cls_token"]
@@ -61,14 +64,14 @@ def _mean(x):
 
 
 @torch.no_grad()
-def run_eval(head, backbone, loader, device, thr):
+def run_eval(head, backbone, loader, device, thr, feat_dim=None):
     head.eval()
     per_type = defaultdict(lambda: {"dice": [], "iou": [], "sens_pos": [], "sens_neg": []})
     nuis_fp = []                        # predicted-change area on nuisance-only pairs
     examples = {}                       # one (gt, pred) per anomaly type for the panel
 
     for batch in loader:
-        p_prior, p_curr, cls_prior, cls_curr = _tokens(batch, backbone, device)
+        p_prior, p_curr, cls_prior, cls_curr = _tokens(batch, backbone, device, feat_dim)
         gt = batch["gt_diff"].to(device)
         pred, _ = head(p_prior, p_curr, cls_prior, cls_curr)
 
@@ -172,13 +175,17 @@ def main():
     args = parse_args()
     device = args.device
     os.makedirs(args.out_dir, exist_ok=True)
+    state = torch.load(args.ckpt, map_location=device)
+    spec = state.get("head_spec")
+    feat_dim = spec["kwargs"]["patch_dim"] if spec else None
 
     if args.no_cache:
         from models import FrozenCXRBackbone
         backbone = FrozenCXRBackbone(
             name=C.BACKBONE, model_id=C.RAD_DINO_MODEL,
             backbone_img_size=C.BACKBONE_IMG_SIZE, num_patch_tokens=C.NUM_PATCH_TOKENS,
-            last_n_layers=C.LAST_N_LAYERS, freeze=C.FREEZE_BACKBONE,
+            last_n_layers=(feat_dim // spec["kwargs"]["backbone_dim"] if spec else C.LAST_N_LAYERS),
+            freeze=C.FREEZE_BACKBONE,
         ).to(device).eval()
         ds = LongitudinalPairDataset(args.dataset_root, split=args.split, img_size=C.IMG_SIZE)
     else:
@@ -186,12 +193,12 @@ def main():
         ds = CachedPairDataset(args.dataset_root, args.cache_dir, split=args.split)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
-    head = build_head(device)
-    state = torch.load(args.ckpt, map_location=device)
+    head = build_change_head(spec, device) if spec else build_head(device)
     head.load_state_dict(state["head"])
     print(f"[eval] loaded {args.ckpt} (epoch {state.get('epoch', '?')}) | split={args.split} | n={len(ds)}")
 
-    report, examples = run_eval(head, backbone, loader, device, args.threshold)
+    report, examples = run_eval(head, backbone, loader, device, args.threshold, feat_dim)
+    report["head_spec"] = spec
 
     json_path = os.path.join(args.out_dir, f"report_{args.split}.json")
     with open(json_path, "w") as f:

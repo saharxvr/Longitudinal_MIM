@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import constants as C
-from models import DifferenceHead
+from models import build_change_head
 from losses import change_map_loss
 from datasets import LongitudinalPairDataset, CachedPairDataset
 from evaluation.change_detection_metrics import dice_score, iou_score, directional_sensitivity
@@ -41,24 +41,31 @@ from evaluation.change_detection_metrics import dice_score, iou_score, direction
 _FEAT_DIM = None  # set in main() from --feat_last_k
 
 
-def build_head(device, patch_dim=None):
-    head = DifferenceHead(
+def head_spec(patch_dim=None, head_type="dglori", dpt_channels=96):
+    common = dict(
         backbone_dim=C.BACKBONE_DIM,
         patch_dim=patch_dim or (C.BACKBONE_DIM * C.LAST_N_LAYERS),
         cls_dim=C.BACKBONE_DIM,
+        grid=C.FEATURE_GRID,
+        embed_dim=C.EMBED_DIM,
+        out_size=C.IMG_SIZE,
+        out_range=C.DECODER_OUT_RANGE,
+    )
+    if head_type == "dpt":
+        return {"type": head_type, "kwargs": dict(common, channels=dpt_channels)}
+    return {"type": head_type, "kwargs": dict(common,
         d_glori=C.D_GLORI,
         num_change_queries=C.NUM_CHANGE_QUERIES,
         num_heads=C.GLORI_NUM_HEADS,
-        grid=C.FEATURE_GRID,
-        embed_dim=C.EMBED_DIM,
         fusion_mode=C.FUSION_MODE,
         use_adaptive_temperature=C.USE_ADAPTIVE_TEMPERATURE,
         use_pyramid_patch_merging=C.USE_PYRAMID_PATCH_MERGING,
         integrate_global_cls=C.INTEGRATE_GLOBAL_CLS,
-        out_size=C.IMG_SIZE,
-        out_range=C.DECODER_OUT_RANGE,
-    ).to(device)
-    return head
+    )}
+
+
+def build_head(device, patch_dim=None, head_type="dglori", dpt_channels=96):
+    return build_change_head(head_spec(patch_dim, head_type, dpt_channels), device)
 
 
 def _tokens_from_batch(batch, backbone, device):
@@ -248,7 +255,7 @@ def make_loaders(args, device):
         backbone = FrozenCXRBackbone(
             name=C.BACKBONE, model_id=C.RAD_DINO_MODEL,
             backbone_img_size=C.BACKBONE_IMG_SIZE, num_patch_tokens=C.NUM_PATCH_TOKENS,
-            last_n_layers=C.LAST_N_LAYERS, freeze=C.FREEZE_BACKBONE,
+            last_n_layers=args.feat_last_k or C.LAST_N_LAYERS, freeze=C.FREEZE_BACKBONE,
         ).to(device)
         backbone.eval()
         train_ds = LongitudinalPairDataset(args.dataset_root, split="train", img_size=C.IMG_SIZE)
@@ -326,6 +333,8 @@ def parse_args():
                    help="sanity test: train+eval on the same N change pairs (0 = off). Use with high --epochs, no --balanced.")
     p.add_argument("--feat_last_k", type=int, default=0,
                    help="use only the last K backbone layers from the cache (0 = all cached). last-1 from a last-4 cache = 1.")
+    p.add_argument("--head", choices=["dglori", "dpt"], default="dglori")
+    p.add_argument("--dpt_channels", type=int, default=96)
 
     # Config file: pre-scan for --config, load it, and make its keys the arg defaults.
     import sys as _sys
@@ -348,6 +357,8 @@ def main():
     device = args.device
     if not args.dataset_root:
         raise SystemExit("--dataset_root is required (pass -o ... or set dataset_root in --config)")
+    if args.head == "dpt" and args.feat_last_k != 4:
+        raise SystemExit("DPT requires --feat_last_k 4 and a last-four cache")
     os.makedirs(args.save_folder, exist_ok=True)
     os.makedirs(args.plots_folder, exist_ok=True)
 
@@ -358,6 +369,7 @@ def main():
 
     # --feat_last_k: slice cached features to the last K layers (reuse a last-4 cache).
     global _FEAT_DIM
+    _FEAT_DIM = None
     patch_dim = None
     if args.feat_last_k > 0:
         _FEAT_DIM = args.feat_last_k * C.BACKBONE_DIM
@@ -365,7 +377,8 @@ def main():
         print(f"[RQ1] using last {args.feat_last_k} layer(s) -> patch_dim {patch_dim}", flush=True)
 
     backbone, train_loader, val_loader = make_loaders(args, device)
-    head = build_head(device, patch_dim=patch_dim)
+    spec = head_spec(patch_dim, args.head, args.dpt_channels)
+    head = build_change_head(spec, device)
     n_trainable = sum(p.numel() for p in head.parameters() if p.requires_grad)
     print(f"[RQ1] trainable head params: {n_trainable/1e6:.2f}M | "
           f"train batches: {len(train_loader)} | val batches: {len(val_loader)}")
@@ -385,6 +398,8 @@ def main():
     ckpt_path = args.resume_from or (os.path.join(args.save_folder, "last.pt") if args.resume else "")
     if ckpt_path and os.path.isfile(ckpt_path):
         ck = torch.load(ckpt_path, map_location=device)
+        if "head_spec" in ck and ck["head_spec"] != spec:
+            raise ValueError("Resume checkpoint architecture does not match this run")
         head.load_state_dict(ck["head"])
         if "optimizer" in ck:
             optimizer.load_state_dict(ck["optimizer"])
@@ -426,13 +441,15 @@ def main():
         })
         plot_curves(metrics_csv, os.path.join(args.plots_folder, "train_curves.png"))
 
-        ckpt = {"head": head.state_dict(), "optimizer": optimizer.state_dict(),
+        is_best = va["dice"] > best_dice
+        if is_best:
+            best_dice = va["dice"]
+        ckpt = {"head": head.state_dict(), "head_spec": spec, "run_config": vars(args),
+            "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(), "epoch": epoch,
                 "best_dice": best_dice, "val": va}
         torch.save(ckpt, os.path.join(args.save_folder, "last.pt"))
-        if va["dice"] > best_dice:
-            best_dice = va["dice"]
-            ckpt["best_dice"] = best_dice
+        if is_best:
             torch.save(ckpt, os.path.join(args.save_folder, "best.pt"))
             save_sample_plots(head, backbone, val_loader, device,
                               os.path.join(args.plots_folder, "val_best_samples.png"))

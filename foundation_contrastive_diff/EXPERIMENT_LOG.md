@@ -32,6 +32,32 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — Last-four cache rebuilt; DPT-style decoder comparison prepared.**
+  User reports cache completion after checking 720 GB free. Cluster contents are not yet
+  independently verified; the launcher checks manifest split disjointness and full file
+  coverage, samples feature shapes, and records the manifest SHA256 before training.
+  New `DPTDifferenceHead`: four separate signed token-difference streams (768 channels
+  each), learned reassembly to 148/74/37/18 grids, 96-channel residual top-down fusion,
+  final CLS-difference conditioning, Tanh signed 512x512 output and 256-d embedding.
+  Trainable parameters: **2,057,825**. These are adjacent final four ViT blocks, not the
+  widely spaced taps of canonical DPT. Reassembly adds no new image samples.
+  `configs/last4_dpt.yaml` matches last4 L1+L2: 60 epochs, batch8/accum4, AdamW lr3e-4,
+  balanced sampling, threshold .05, same existing patient splits. Separate `run_last4_dpt`
+  outputs; D-GLoRI remains default. Checkpoints include architecture metadata for resume/eval.
+  CPU full-size forward/backward and checkpoint reload passed; five persistent tests
+  cover decoder gradients, config/default-head compatibility, evaluator slicing, and
+  cached trainer save/resume. The resume test exposed and fixed stale `best_dice` in
+  `last.pt` (best score is now updated before saving). Bash syntax and synthetic preflight
+  acceptance/leak rejection passed; preflight CUDA calls were mocked for that local check.
+  Local project venv: torch 2.10.0+cpu (system Python's torch import has a missing DLL).
+  GPU memory/runtime and
+  validation performance remain unmeasured; no improvement is assumed. Test split remains
+  held out from training/model selection (launcher only checks metadata/cache integrity).
+  Interpretation correction for older entries below: pooled cosine/probe rankings do not
+  establish universal SOTA, clinical blindness, or a causal pretraining-objective effect.
+  Synthetic-to-real score differences do not quantify leakage; external pretraining overlap
+  is unverified. Patch-averaged-GT reconstruction is a reference, not an information ceiling.
+
 - **2026-10-15 — REAL-PAIRS TEST (clean arbiter, leakage-free): RAD-DINO wins again.**
   135 real radiologist-annotated pairs (ICU + PNIMIT), GT = union of doctors' change ellipses,
   cos AUROC: **rad_dino 0.614** > biomedclip 0.580 > torchxrayvision 0.522 > pubmedclip 0.505 >
