@@ -28,9 +28,10 @@ export SCREEN="${SCREEN:-/cs/labs/josko/sahar_aharon/fcd_screen}"
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # foundation_contrastive_diff
 
 python -c "import torchxrayvision" 2>/dev/null || pip install -q torchxrayvision
+python -c "import open_clip" 2>/dev/null || pip install -q open_clip_torch
 
-# spec = "name:grid"; add more as they get wired.
-BACKBONES="${BACKBONES:-rad_dino:37 torchxrayvision:7}"
+# spec = "name:grid". Full frozen-foundation-model sweep (correlation + probe) on the 2.5k subset.
+BACKBONES="${BACKBONES:-rad_dino:37 clip_vitb16:14 pubmedclip:7 biomedclip:14 sam_vitb:64 medsam:64}"
 for spec in $BACKBONES; do
   bb="${spec%%:*}"; grid="${spec##*:}"
   echo "================ screening ${bb} (grid ${grid}) ================"

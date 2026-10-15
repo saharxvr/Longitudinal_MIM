@@ -52,12 +52,21 @@ python -m evaluation.linear_probe -o $DATA --cache_dir $SCREEN/itamar_ae \
 ```
 
 ## Grids
-| backbone | grid | dim |
-|---|---|---|
-| rad_dino | 37 | 768 |
-| dinov2_imagenet | 37 | 768 |
-| torchxrayvision | 7 | 1024 |
-| itamar_ae | 32 | 640 |
+| backbone | grid | dim | source (frozen, no fine-tune) |
+|---|---|---|---|
+| rad_dino | 37 | 768 | `microsoft/rad-dino` (HF) |
+| dinov2_imagenet | 37 | 768 | torch.hub (control) |
+| torchxrayvision | 7 | 1024 | `densenet121-res224-all` |
+| clip_vitb16 | 14 | 768 | `openai/clip-vit-base-patch16` (control) |
+| pubmedclip | 7 | 768 | `flaviagiammarino/pubmed-clip-vit-base-patch32` |
+| biomedclip | 14 | 768 | `microsoft/BiomedCLIP…` (open_clip) |
+| sam_vitb | 64 | 256 | `facebook/sam-vit-base` |
+| medsam | 64 | 256 | `flaviagiammarino/medsam` (medical SAM) |
+| itamar_ae | 32 | 640 | ORACLE only (in-domain, not a foundation model) |
+
+Grid caveat: cos/L2 AUROC is only cleanly comparable at the SAME grid (coarse grids inflate it,
+fine grids deflate it). Compare within similar grids; use the probe Dice (all upsample to 512)
+as the grid-fairer final signal.
 
 ## Interpreting
 - **Higher probe Dice than RAD-DINO's 0.27** → that backbone exposes our change signal better.
