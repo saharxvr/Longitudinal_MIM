@@ -105,7 +105,7 @@ def _subset(recs, n, seed=0):
 def build_itamar(ckpt_path, device):
     from refactored_modules.longitudinal_v2 import LongitudinalMIMDeformV2
     model = LongitudinalMIMDeformV2()
-    ck = torch.load(ckpt_path, map_location="cpu")
+    ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)  # trusted: Itamar's own ckpt
     state = ck["model_dict"] if isinstance(ck, dict) and "model_dict" in ck else ck
     missing, unexpected = model.load_state_dict(state, strict=False)
     print(f"[itamar] loaded ckpt (missing {len(missing)}, unexpected {len(unexpected)})", flush=True)
