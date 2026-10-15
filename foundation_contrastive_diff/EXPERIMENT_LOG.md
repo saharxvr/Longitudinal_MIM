@@ -32,6 +32,17 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-15 — REAL-PAIRS TEST (clean arbiter, leakage-free): RAD-DINO wins again.**
+  135 real radiologist-annotated pairs (ICU + PNIMIT), GT = union of doctors' change ellipses,
+  cos AUROC: **rad_dino 0.614** > biomedclip 0.580 > torchxrayvision 0.522 > pubmedclip 0.505 >
+  dinov2 0.497 > sam 0.483 > clip 0.466. Robust: RAD-DINO is #1 on BOTH synthetic (0.586) AND
+  real (0.614) — and HIGHER on real (it's trained on real XR; DRRs were mildly OOD for it).
+  torchxrayvision COLLAPSED 0.647→0.522 (vindicates the grid-7 AUROC-inflation caveat).
+  BiomedCLIP stable (0.579≈0.580) = genuine 2nd. General models (dinov2/sam/clip) ≈ chance on real.
+  ⇒ RQ1 ANSWER: among off-the-shelf FROZEN foundation models, RAD-DINO is the best longitudinal-
+  change feature extractor, confirmed on synthetic AND real clinical data — but only ~0.61 AUROC,
+  motivating the lightweight adapter head. (Itamar oracle not yet run on real pairs — expect it to
+  DROP toward chance since it's DRR-trained / OOD on real XR, which would quantify its confound.)
 - **2026-10-15 — HYPOTHESIS CONFIRMED: Itamar's reconstruction encoder beats RAD-DINO.**
   On the fair 2.5k subset (grid-comparable), itamar_ae cos AUROC **0.731** vs RAD-DINO **0.586**
   (+0.145), probe **0.281** vs 0.261. The decisive per-class signal: **pneumothorax corr +0.04
