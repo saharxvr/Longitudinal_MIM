@@ -107,8 +107,15 @@ def build_itamar(ckpt_path, device):
     model = LongitudinalMIMDeformV2()
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)  # trusted: Itamar's own ckpt
     state = ck["model_dict"] if isinstance(ck, dict) and "model_dict" in ck else ck
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    print(f"[itamar] loaded ckpt (missing {len(missing)}, unexpected {len(unexpected)})", flush=True)
+    # ckpt is the base LongitudinalMIMModelBig (bare `encoder.*` keys) -> load into model.backbone.
+    # Strip a leading `backbone.` in case it was saved from the DeformV2 wrapper instead.
+    bb_state = {(k[len("backbone."):] if k.startswith("backbone.") else k): v for k, v in state.items()}
+    missing, unexpected = model.backbone.load_state_dict(bb_state, strict=False)
+    enc_missing = [k for k in missing if k.startswith(("encoder.", "encoded_bn."))]
+    print(f"[itamar] loaded backbone (missing {len(missing)}, unexpected {len(unexpected)}; "
+          f"encoder/bn missing {len(enc_missing)})", flush=True)
+    if enc_missing:
+        print(f"[itamar] WARNING encoder keys not loaded (first few): {enc_missing[:5]}", flush=True)
     model.eval().to(device)
     for p in model.parameters():
         p.requires_grad = False
@@ -118,7 +125,7 @@ def build_itamar(ckpt_path, device):
 @torch.no_grad()
 def encode(model, img):
     """img [B,1,512,512] -> tokens [B,1024,640], cls [B,640] (grid 32)."""
-    feats = model.encode_image(img)            # [B,640,32,32]
+    feats = model.encode(img)                  # [B,640,32,32] (backbone.encoder + encoded_bn)
     b, d, h, w = feats.shape
     patch = feats.flatten(2).transpose(1, 2)   # [B, h*w, d]
     cls = feats.mean(dim=(2, 3))               # pseudo-CLS
