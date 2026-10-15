@@ -37,9 +37,15 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
   (+0.145), probe **0.281** vs 0.261. The decisive per-class signal: **pneumothorax corr +0.04
   (RAD-DINO, blind) → +0.257 (itamar)**, effusion +0.377. A reconstruction (L1+L2) objective
   preserves the subtle intensity deltas that RAD-DINO's DINO invariance objective discards.
-  Ranking by cos AUROC (grid-comparable): itamar_ae 0.731 > rad_dino 0.586 > dinov2 0.569.
-  NEXT: full-train the D-GLoRI head on Itamar's backbone (full-data cache, grid 32, dim 640);
-  expect to beat RAD-DINO full-head 0.46 (probe understates the gain — head is nonlinear).
+  ** ROLE: Itamar's model is an ORACLE / upper-bound reference, NOT an RQ1 answer** — it was
+  trained ON this synthetic DRR family, so it is in-domain, not an off-the-shelf frozen foundation
+  model. It only tells us WHAT to look for: prefer reconstruction/intensity-sensitive pretraining
+  over DINO-style invariance.
+- **2026-10-15 — GOAL (restated): find a SOTA *frozen* CXR/medical foundation model (NO
+  fine-tune, NO retrain) whose features expose change best.** Screen off-the-shelf candidates via
+  cos+probe. Candidates: BiomedCLIP, RadImageNet, MedSAM/SAM-Med2D, CheXFound (needs ckpt),
+  MedImageInsight (auth), Google CXR-Foundation/ELIXR (gated). Ranked bets: RadImageNet, MedSAM,
+  CheXFound (intensity-sensitive / CXR-specific, non-DINO).
 - **2026-10-13 — Plateau diagnosed as faint/entangled features, not head capacity or bad data.**
   All four loss×feature cells land 0.43–0.46. Overfit-16 = 0.95 (capacity fine), res_ceiling
   = 0.79 (data learnable). So the limit is how well the frozen features expose the change.
