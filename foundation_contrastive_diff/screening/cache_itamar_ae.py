@@ -28,6 +28,12 @@ still holds. Validate on a handful of pairs first.
 import argparse
 import json
 import os
+import sys
+
+# Run this from python_files/ so Itamar's modules resolve. Python puts THIS script's dir
+# (screening/) on sys.path, not the CWD — so add the CWD explicitly, ahead of everything,
+# so `refactored_modules` / `constants` / `models` resolve to Itamar's project, not fcd's.
+sys.path.insert(0, os.getcwd())
 
 import numpy as np
 import torch
