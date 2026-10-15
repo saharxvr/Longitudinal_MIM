@@ -41,6 +41,17 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
   trained ON this synthetic DRR family, so it is in-domain, not an off-the-shelf frozen foundation
   model. It only tells us WHAT to look for: prefer reconstruction/intensity-sensitive pretraining
   over DINO-style invariance.
+- **2026-10-15 — CONFOUND on the Itamar oracle (two mechanisms), raised by user.**
+  (1) **CT-level leakage:** fcd DRRs come from Itamar's CT cohort; if he trained on the CTs behind
+  our VAL split (our val is held out from OUR head training, NOT from HIS encoder training), his
+  features have seen that anatomy → inflates his change-sensitivity on our val.
+  (2) **Domain match:** he trained on the SAME DRR rendering pipeline → in-domain; all sweep
+  foundation models trained on REAL CXR → out-of-domain on synthetic DRRs, handicapping them.
+  ⇒ Itamar's +0.145 is CONFOUNDED (objective + domain + possible leakage); do NOT use it as
+  evidence that "reconstruction > DINO". The CLEAN test is whether EXTERNAL intensity-sensitive
+  models (MedSAM/SAM) beat RAD-DINO in the sweep. The foundation-model sweep itself is leakage-free
+  (none saw these CTs). TODO: check split_dataset.py provenance (CT-disjoint?) to see if a
+  leakage-controlled re-probe of Itamar on unseen CTs is possible.
 - **2026-10-15 — GOAL (restated): find a SOTA *frozen* CXR/medical foundation model (NO
   fine-tune, NO retrain) whose features expose change best.** Screen off-the-shelf candidates via
   cos+probe. Candidates: BiomedCLIP, RadImageNet, MedSAM/SAM-Med2D, CheXFound (needs ckpt),
