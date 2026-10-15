@@ -174,6 +174,9 @@ def main():
     for pp, cp, dmask in pairs:
         pimg = torch.from_numpy(_load_img(pp))[None, None].to(device)
         cimg = torch.from_numpy(_load_img(cp))[None, None].to(device)
+        # Itamar's CNN encoder scales with input -> stretch to 512x512 (grid 32), as in training.
+        pimg = F.interpolate(pimg, size=(512, 512), mode="bilinear", align_corners=False)
+        cimg = F.interpolate(cimg, size=(512, 512), mode="bilinear", align_corners=False)
         fp = model.encode(pimg).flatten(2).transpose(1, 2)[0]     # [1024,640]
         fc = model.encode(cimg).flatten(2).transpose(1, 2)[0]
         cos = 1.0 - F.cosine_similarity(fp, fc, dim=-1)
