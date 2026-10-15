@@ -99,8 +99,20 @@ Screen results (fill as they land):
 | rad_dino (full data) | 0.624 | 0.27 | full-data probe (16,464 train); full-head 0.449 |
 | rad_dino (2.5k subset) | 0.586 | 0.261 | fair baseline; subset ≈ full (0.27→0.261) → screen trustworthy. L2 AUROC 0.633 > cos |
 | dinov2_imagenet (2.5k) | 0.569 | ~0.20 (ep4) | **worse than RAD-DINO on both**; CXR pretraining helps. Nuisance FP high (0.19–0.47) |
-| itamar_ae (2.5k, grid 32) | **0.731** (L2 0.653) | **0.281** | **WINNER.** recon encoder; pneumothorax +0.257 (vs rad 0.04!), effusion +0.377, fluid +0.257 |
+| clip_vitb16 (2.5k, grid 14) | 0.510 | 0.152 | general CLIP ≈ chance; worst |
+| pubmedclip (2.5k, grid 7) | 0.554 | 0.188 | biomedical CLIP; below RAD-DINO |
+| biomedclip (2.5k, grid 14) | 0.579 | 0.174 | biomedical CLIP; biomedical > general CLIP (cos 0.51→0.58) but < RAD-DINO |
+| sam_vitb (2.5k, grid 64) | 0.564 | **0.045** | SAM segmentation features USELESS for change (probe ≈ 0) |
+| medsam (2.5k) | FAILED | — | HF `flaviagiammarino/medsam` 404 (repo moved); needs valid source |
+| itamar_ae (2.5k, grid 32) | **0.731** (L2 0.653) | **0.281** | ORACLE (confounded, see above). recon encoder; pneumothorax +0.257 (vs rad 0.04!) |
 | torchxrayvision (2.5k, grid 7) | 0.647 (L2 0.697) | 0.204 | highest raw AUROC BUT grid-7: AUROC inflated by coarse pooling, Dice crippled by low res. effusion +0.248 (supervised) |
+
+**SYNTHETIC SWEEP VERDICT (2026-10-15):** among REAL frozen foundation models, **RAD-DINO wins**
+(probe 0.264, cos 0.586). No general VLM (CLIP 0.152), biomedical VLM (PubMedCLIP 0.188, BiomedCLIP
+0.174), or SAM (0.045, useless) beats it. Biomedical pretraining > general (CLIP cos 0.51 →
+BiomedCLIP 0.58) but < CXR-specific RAD-DINO. → RAD-DINO is the best off-the-shelf choice on
+synthetic. CAVEAT: all are out-of-domain on synthetic DRRs → the REAL-PAIRS test (radiologist
+annotations, ~170 pairs) is the clean arbiter and may re-rank.
 
 **Grid caveat (2026-10-15):** cos/L2 AUROC is only cleanly comparable at the SAME grid. xrv
 (grid 7) pools ~5x more area per patch → AUROC inflates while Dice is resolution-capped. Clean
