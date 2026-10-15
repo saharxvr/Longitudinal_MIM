@@ -32,6 +32,14 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-15 — HYPOTHESIS CONFIRMED: Itamar's reconstruction encoder beats RAD-DINO.**
+  On the fair 2.5k subset (grid-comparable), itamar_ae cos AUROC **0.731** vs RAD-DINO **0.586**
+  (+0.145), probe **0.281** vs 0.261. The decisive per-class signal: **pneumothorax corr +0.04
+  (RAD-DINO, blind) → +0.257 (itamar)**, effusion +0.377. A reconstruction (L1+L2) objective
+  preserves the subtle intensity deltas that RAD-DINO's DINO invariance objective discards.
+  Ranking by cos AUROC (grid-comparable): itamar_ae 0.731 > rad_dino 0.586 > dinov2 0.569.
+  NEXT: full-train the D-GLoRI head on Itamar's backbone (full-data cache, grid 32, dim 640);
+  expect to beat RAD-DINO full-head 0.46 (probe understates the gain — head is nonlinear).
 - **2026-10-13 — Plateau diagnosed as faint/entangled features, not head capacity or bad data.**
   All four loss×feature cells land 0.43–0.46. Overfit-16 = 0.95 (capacity fine), res_ceiling
   = 0.79 (data learnable). So the limit is how well the frozen features expose the change.
@@ -74,7 +82,7 @@ Screen results (fill as they land):
 | rad_dino (full data) | 0.624 | 0.27 | full-data probe (16,464 train); full-head 0.449 |
 | rad_dino (2.5k subset) | 0.586 | 0.261 | fair baseline; subset ≈ full (0.27→0.261) → screen trustworthy. L2 AUROC 0.633 > cos |
 | dinov2_imagenet (2.5k) | 0.569 | ~0.20 (ep4) | **worse than RAD-DINO on both**; CXR pretraining helps. Nuisance FP high (0.19–0.47) |
-| itamar_ae (2.5k) | | | reconstruction objective — the hypothesis test |
+| itamar_ae (2.5k, grid 32) | **0.731** (L2 0.653) | **0.281** | **WINNER.** recon encoder; pneumothorax +0.257 (vs rad 0.04!), effusion +0.377, fluid +0.257 |
 | torchxrayvision (2.5k, grid 7) | 0.647 (L2 0.697) | 0.204 | highest raw AUROC BUT grid-7: AUROC inflated by coarse pooling, Dice crippled by low res. effusion +0.248 (supervised) |
 
 **Grid caveat (2026-10-15):** cos/L2 AUROC is only cleanly comparable at the SAME grid. xrv
