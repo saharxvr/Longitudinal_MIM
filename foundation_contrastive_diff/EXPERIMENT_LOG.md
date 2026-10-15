@@ -72,18 +72,18 @@ Screen results (fill as they land):
 | Backbone | cos AUROC | probe Dice | notes |
 |---|---|---|---|
 | rad_dino (full data) | 0.624 | 0.27 | full-data probe (16,464 train); full-head 0.449 |
-| rad_dino (2.5k subset) | — | — | TODO: fair subset baseline for the probe column |
-| dinov2_imagenet (2.5k) | 0.569 | ~0.20 (ep4) | **worse than RAD-DINO**; CXR pretraining helps. Nuisance FP high (0.19–0.47) |
+| rad_dino (2.5k subset) | 0.586 | 0.261 | fair baseline; subset ≈ full (0.27→0.261) → screen trustworthy. L2 AUROC 0.633 > cos |
+| dinov2_imagenet (2.5k) | 0.569 | ~0.20 (ep4) | **worse than RAD-DINO on both**; CXR pretraining helps. Nuisance FP high (0.19–0.47) |
 | itamar_ae (2.5k) | | | reconstruction objective — the hypothesis test |
-| torchxrayvision (2.5k) | | | grid 7 handicaps Dice; read as feature-quality |
+| torchxrayvision (2.5k) | | | TODO (needs `pip install torchxrayvision`); grid 7 handicaps Dice |
 
 **Methodology note (2026-10-14):** probe column must use a FIXED subset size across backbones.
-RAD-DINO's 0.27 was full-data; screen backbones use a 2,500/1,500 subset. cos AUROC is
-training-free so comparable as-is; for the probe, run rad_dino through the SAME screen subset.
+cos AUROC is training-free so comparable as-is. RAD-DINO subset probe 0.261 ≈ full-data 0.27,
+so the 2.5k screen predicts full-data well.
 
-**Control finding (2026-10-14):** generic DINOv2-ImageNet cos AUROC 0.569 < RAD-DINO 0.624 →
-RAD-DINO's CXR pretraining genuinely helps; but both DINO-objective backbones are weak (0.57–0.62),
-motivating the reconstruction-trained Itamar AE.
+**Control finding (2026-10-15):** on equal 2.5k footing RAD-DINO beats generic DINOv2-ImageNet
+(cos 0.586 vs 0.569, probe 0.261 vs ~0.20) → RAD-DINO's CXR pretraining genuinely helps; but both
+DINO-objective backbones are weak (cos 0.57–0.63), motivating the reconstruction-trained Itamar AE.
 
 ---
 
