@@ -33,6 +33,52 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — Literature discussion: frozen features plus learned change heads.**
+  User asks for precedents for training a comparison/difference head on pretrained latent
+  features, preferably without changing the encoder. Primary sources checked:
+  - Lin et al., *Robust Scene Change Detection Using Visual Foundation Models and
+    Cross-Attention Mechanisms* (2024 preprint; v2 February 2025): frozen DINOv2
+    ViT-S/14, two directional full-image cross-attention comparators, concatenation,
+    3x3/1x1 convolutional prediction head and upsampling. Binary changed/unchanged
+    segmentation on street scenes, including viewpoint variation. Closest verified
+    pure downstream-head precedent: https://arxiv.org/html/2409.16850v2
+  - Ding et al., *Adapting Segment Anything Model for Change Detection in HR Remote
+    Sensing Images* (2023 preprint; TGRS 2024): SAM-CD uses frozen FastSAM, external
+    feature adaptors, multiscale U-Net-like decoding and a temporal semantic-consistency
+    auxiliary branch. Reports 2.49M trainable downstream parameters. Binary remote-sensing
+    output, not clinical signed change: https://arxiv.org/html/2309.01429v4
+  - Li et al., *A New Learning Paradigm for Foundation Model-based Remote Sensing
+    Change Detection* (2023 preprint; TGRS 2024): BAN keeps its foundation model
+    (default CLIP ViT-L/14) unchanged but also trains a separate image-processing
+    Bi-TAB branch and bridging modules. Not a head receiving cached features alone:
+    https://arxiv.org/html/2312.01163v2
+  - Cheng and Hsu, *ChangeDINO* (ISPRS Annals 2026): frozen DINOv3 plus a lightweight
+    trainable image stream, multiscale absolute-difference priors, differential
+    transformer decoding and morphology refinement. Hybrid, not latent-only:
+    https://isprs-annals.copernicus.org/articles/XI-3-2026/523/2026/
+  - Karwande et al., *CheXRelNet* (MICCAI 2022): pretrained ResNet101-autoencoder
+    local/global features plus anatomical graph attention for CXR change-relation
+    classification. Relevant clinical precedent, not dense signed-map supervision.
+    Paper does not unambiguously establish a strictly frozen encoder; public encoder
+    code exposes a configurable `cnn_freeze` flag. Do not claim it is frozen by default:
+    https://arxiv.org/html/2208.03873v2
+  - Zheng et al., *Segment Any Change* (NeurIPS 2024): AnyChange uses SAM latent
+    matching without training. Useful comparator, not a learned-head precedent:
+    https://arxiv.org/abs/2402.01188
+  AdaDINO (https://arxiv.org/html/2608.07982v1) keeps original weights frozen but
+  trains modules inside the backbone; representations therefore change during training
+  and cannot reuse our unchanged single-image feature cache. DPT remains a single-image
+  dense-decoder reference, not evidence for frozen two-image clinical change detection.
+  These sources support the general methodology, not a novelty claim or transfer of
+  satellite/street-scene scores to CXR. No architecture or training settings changed.
+
+- **2026-10-16 — Runtime-aware training advice supersedes the 60-epoch advice below.**
+  User reports approximately 45 minutes per DPT epoch. Recommendation: continue the
+  existing run unchanged to epoch 20, then reassess validation progress and compute cost.
+  From epoch 12 this is about 6 hours, versus 36 hours to epoch 60. This is a suggested
+  reassessment point, not a configured early-stopping rule or evidence of overfitting.
+  Preserve the best validation checkpoint; cluster progress after epoch 12 is unknown.
+
 - **2026-10-16 — DPT training update: user-reported epochs 3-12 of 60.**
   Best in the supplied excerpt: epoch 11, Dice **0.4647**, IoU **0.3668**,
   masked-change L1 **0.0314**, L2 **0.0018**, sens+ **0.501**, sens- **0.448**,
