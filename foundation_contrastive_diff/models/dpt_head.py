@@ -1,4 +1,4 @@
-"""DPT-style change decoder for concatenated, adjacent last-four ViT layers."""
+"""DPT-style change decoding from one or four frozen ViT feature layers."""
 
 import torch
 from torch import nn
@@ -26,22 +26,23 @@ class DPTDifferenceHead(nn.Module):
 
     def __init__(self, backbone_dim=768, patch_dim=3072, cls_dim=768,
                  grid=37, channels=96, embed_dim=256, out_size=512,
-                 out_range=(-1.0, 1.0)):
+                 out_range=(-1.0, 1.0), num_layers=4):
         super().__init__()
-        if patch_dim != 4 * backbone_dim:
-            raise ValueError("DPT head requires exactly four concatenated backbone layers")
+        if num_layers not in (1, 4) or patch_dim != num_layers * backbone_dim:
+            raise ValueError("DPT patch dimension must match one or four backbone layers")
         if channels < 8 or channels % 8:
             raise ValueError("DPT channels must be a positive multiple of eight")
         if grid < 2:
             raise ValueError("DPT grid must be at least two")
         self.backbone_dim = backbone_dim
+        self.num_layers = num_layers
         self.patch_dim = patch_dim
         self.grid = grid
         self.out_size = out_size
         self.out_range = out_range
         self.sizes = (grid * 4, grid * 2, grid, grid // 2)
         self.projections = nn.ModuleList([
-            nn.Conv2d(backbone_dim, channels, 1) for _ in range(4)
+            nn.Conv2d(backbone_dim, channels, 1) for _ in range(num_layers)
         ])
         self.reassembly = nn.ModuleList([
             nn.ConvTranspose2d(channels, channels, 4, stride=4),
@@ -71,8 +72,11 @@ class DPTDifferenceHead(nn.Module):
             raise ValueError(f"Expected matching [batch, {expected[0]}, {expected[1]}] tokens")
         batch_size = p_prior.shape[0]
         pyramid = []
+        projected = self._project_streams(p_prior, p_curr)
+        if self.num_layers == 1:
+            projected = projected * 4
         for features, reassemble, size in zip(
-                self._project_streams(p_prior, p_curr), self.reassembly, self.sizes):
+            projected, self.reassembly, self.sizes):
             features = reassemble(features)
             features = F.interpolate(features, size=(size, size), mode="bilinear",
                                      align_corners=False).contiguous()
@@ -133,7 +137,7 @@ class DPTCrossAttentionHead(DPTDifferenceHead):
             raise ValueError("Attention depth must be positive")
         self.temporal_blocks = nn.ModuleList([
             nn.ModuleList([BidirectionalCrossAttention(channels, num_heads)
-                           for _ in range(attention_depth)]) for _ in range(4)
+                           for _ in range(attention_depth)]) for _ in range(self.num_layers)
         ])
 
     def _project_streams(self, p_prior, p_curr):

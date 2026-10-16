@@ -55,6 +55,8 @@ def head_spec(patch_dim=None, head_type="dglori", dpt_channels=96):
         kwargs = dict(common, channels=dpt_channels)
         if head_type == "dpt_cross_attention":
             kwargs.update(num_heads=4, attention_depth=2)
+            if common["patch_dim"] == C.BACKBONE_DIM:
+                kwargs["num_layers"] = 1
         return {"type": head_type, "kwargs": kwargs}
     return {"type": head_type, "kwargs": dict(common,
         d_glori=C.D_GLORI,
@@ -360,8 +362,10 @@ def main():
     device = args.device
     if not args.dataset_root:
         raise SystemExit("--dataset_root is required (pass -o ... or set dataset_root in --config)")
-    if args.head in ("dpt", "dpt_cross_attention") and args.feat_last_k != 4:
+    if args.head == "dpt" and args.feat_last_k != 4:
         raise SystemExit("DPT requires --feat_last_k 4 and a last-four cache")
+    if args.head == "dpt_cross_attention" and args.feat_last_k not in (1, 4):
+        raise SystemExit("Cross-attention DPT requires --feat_last_k 1 or 4")
     os.makedirs(args.save_folder, exist_ok=True)
     os.makedirs(args.plots_folder, exist_ok=True)
 

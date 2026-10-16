@@ -33,6 +33,32 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — User selects single-layer temporal cross-attention.**
+  New config `configs/last1_dpt_cross_attention.yaml`: one 768-dimensional stream,
+  shared projection to 96 channels, two bidirectional four-head attention blocks,
+  signed fusion, existing decoder. Four decoder scales are derived from one stream;
+  they are not four backbone layers. **2,060,033** trainable parameters. Metadata
+  records `num_layers=1`; old four-layer checkpoint specs/defaults remain compatible.
+  Batch 8/accumulation 4 and loss/optimizer settings unchanged; workers set to zero
+  to avoid worker replication/prefetch overhead. Separate checkpoint/run directory.
+  Existing cache CLI gains `--slice_last_layer_from`: CPU-only final-768 extraction
+  from completed last-four files into `fcd_cache_last1_from_last4`. No encoder pass,
+  source modification, or split regeneration. Compact cloned tensor storage, original
+  dtype/CLS/GT/labels retained, per-file source provenance, atomic writes, and exact
+  existing-file verification on resume. Missing source/mismatched target files fail.
+  This is the final last-four stream, not a claim of normalization equivalence with a
+  natively generated last-one cache. A distinct cache path prevents accidental mixing.
+  Launcher now selects/audits one- or four-layer physical cache and reports disk bytes.
+  RAM use is OS page caching of compact files, NOT explicit preload; cache residency,
+  GPU batch-8 memory, and speed are unmeasured. Token bytes shrink fourfold, but GT
+  and metadata do not. Cache conversion still needs additional disk space and reads
+  the full source cache once (again when verifying files on a restarted conversion).
+  Twenty-one CPU tests pass, including single-layer train/resume/eval/reload,
+  attention/order gradients, exact compact cache conversion/resume/failure cases,
+  and real launcher preflight for both dimensions with CUDA mocked. Full-size
+  [1,1369,768] -> [1,1,512,512] plus [1,256] backward is finite. No cluster job launched
+  or stopped; scientific performance and actual cache size remain unverified.
+
 - **2026-10-16 — Optional temporal cross-attention DPT ablation implemented.**
   User proposes adding cross-attention after reading Lin et al. Hypothesis: comparing
   separate prior/current features before signed fusion may improve correspondence and

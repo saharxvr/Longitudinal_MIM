@@ -26,6 +26,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -36,7 +38,56 @@ if _FCD_ROOT not in sys.path:
 
 import constants as C  # noqa: E402
 from models.backbone import FrozenCXRBackbone  # noqa: E402
-from datasets.pair_dataset import LongitudinalPairDataset  # noqa: E402
+from datasets.pair_dataset import LongitudinalPairDataset, _read_manifest  # noqa: E402
+
+
+def slice_last_layer_cache(dataset_root, source_dir, cache_dir, split=None, limit=0):
+    """Write compact final-layer slices without rerunning or modifying the encoder cache."""
+    source_dir, cache_dir = Path(source_dir).resolve(), Path(cache_dir).resolve()
+    if source_dir == cache_dir:
+        raise ValueError("Source and destination cache directories must differ")
+    records = _read_manifest(dataset_root)
+    if split is not None:
+        records = [record for record in records if record.get("split") == split]
+    if not records:
+        raise ValueError("No manifest records selected")
+    if limit:
+        records = records[:limit]
+    written, skipped = 0, 0
+    for index, record in enumerate(records, 1):
+        source_path = source_dir / record["pair_id"] / "feat.pt"
+        cached = torch.load(source_path, map_location="cpu", weights_only=True)
+        for key in ("p_prior", "p_curr"):
+            tensor = cached[key]
+            if tuple(tensor.shape) != (C.NUM_PATCH_TOKENS, 4 * C.BACKBONE_DIM):
+                raise ValueError(f"Expected last-four {key} in {source_path}")
+            if not torch.isfinite(tensor).all():
+                raise ValueError(f"Non-finite {key} in {source_path}")
+            cached[key] = tensor[..., -C.BACKBONE_DIM:].clone().contiguous()
+        cached["_feature_source"] = dict(kind="last4_final_slice", path=str(source_path))
+        destination = cache_dir / record["pair_id"] / "feat.pt"
+        if destination.exists():
+            existing = torch.load(destination, map_location="cpu", weights_only=True)
+            for key, value in cached.items():
+                actual = existing.get(key)
+                matches = (isinstance(actual, torch.Tensor) and torch.equal(actual, value)
+                           if isinstance(value, torch.Tensor) else actual == value)
+                if not matches:
+                    raise ValueError(f"Existing cache differs at {key}: {destination}")
+            skipped += 1
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=destination.parent, suffix=".tmp", delete=False) as temporary:
+                temporary_path = Path(temporary.name)
+            try:
+                torch.save(cached, temporary_path)
+                os.replace(temporary_path, destination)
+            finally:
+                temporary_path.unlink(missing_ok=True)
+            written += 1
+        if index % 250 == 0 or index == len(records):
+            print(f"[cache slice] {index}/{len(records)} written={written} verified-existing={skipped}", flush=True)
+    return {"written": written, "skipped": skipped}
 
 
 def _build_backbone(device: str, last_n_layers: int) -> FrozenCXRBackbone:
@@ -60,12 +111,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default=C.DEVICE)
     p.add_argument("--last_n_layers", type=int, default=C.LAST_N_LAYERS,
                    help="concat the last N backbone layers (4 for the DPT/multi-scale cache)")
+    p.add_argument("--slice_last_layer_from", default="",
+                   help="CPU-only: copy final 768 dims from this last-four cache; requires --last_n_layers 1")
     p.add_argument("--limit", type=int, default=0, help="Cache at most N pairs (0 = all); for smoke tests.")
     return p.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.slice_last_layer_from:
+        if not args.cache_dir or args.last_n_layers != 1:
+            raise SystemExit("Cache slicing requires explicit --cache_dir and --last_n_layers 1")
+        slice_last_layer_cache(args.dataset_root, args.slice_last_layer_from,
+                               args.cache_dir, args.split, args.limit)
+        return 0
     cache_dir = os.path.abspath(args.cache_dir or C.FEATURE_CACHE_DIR)
     os.makedirs(cache_dir, exist_ok=True)
 
