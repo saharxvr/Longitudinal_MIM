@@ -33,6 +33,16 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — Native last-one GPU cache generation initializes on cas703.**
+  User reports successful pull through c80d0ecc and **24.8 / 25.3 GB free GPU memory**
+  before launch. Background shell job 2323798 prints
+  `[cache] 20755 pairs -> /cs/labs/josko/sahar_aharon/fcd_cache_last1_inference on cuda (last_n_layers=1)`.
+  This confirms CUDA/native last-one cache initialization, not a completed batch,
+  measured throughput, cache completion, or training startup. The slow-image-processor
+  message is a Transformers warning, not a reported failure; no processor setting changed.
+  Cache progress is expected every 200 pairs with batch size 8. Keep this job running;
+  the chained training command starts only after cache generation succeeds.
+
 - **2026-10-16 — Switch single-layer cache creation to frozen GPU inference.**
   User requests stopping last-four-to-last-one CPU conversion and generating native
   last-one features directly from images. Reuse the existing cache CLI with
