@@ -33,6 +33,19 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — Last-four DPT reaches epoch 15; recommend stopping to reallocate compute.**
+  User reports epoch-15 validation Dice **0.458**. Epochs 13-14 and other epoch-15
+  metrics are unavailable; best previously supplied is epoch 11 **0.4647**, not an
+  independently verified best over the entire run. Recommend stopping after confirming
+  a completed checkpoint save, rather than waiting for the earlier epoch-20 reassessment.
+  At the reported 45 minutes/epoch, five more epochs cost about 3 hours 45 minutes.
+  This is a compute-budget decision in favor of testing single-layer temporal attention,
+  not proof of overfitting, a plateau, or superiority of the new architecture.
+  Preserve best.pt, last.pt, metrics.csv, run config and logs. Preserve the last-four
+  cache at least until compact-cache conversion and verification have completed.
+  Identify the exact old training PID before sending SIGTERM; do not kill unrelated
+  Python processes. No cluster process has been inspected or stopped by the assistant.
+
 - **2026-10-16 — User selects single-layer temporal cross-attention.**
   New config `configs/last1_dpt_cross_attention.yaml`: one 768-dimensional stream,
   shared projection to 96 channels, two bidirectional four-head attention blocks,
