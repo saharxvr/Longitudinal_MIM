@@ -23,7 +23,7 @@ pneumothorax, fluid_overload) while ignoring nuisance (devices, projection angle
 | D-GLoRI head, last-4, L1+Dice (run5) | 0.464 | |
 | D-GLoRI head, last-4, L1+L2 | ~0.46 (in progress) | |
 | DPT-style head, last-4, L1+L2 | **0.4647** | best reported epochs 3-12: epoch 11; run ongoing |
-| Cross-attention + DPT, native last-1, L1+L2 | **~0.55** | user-reported best by epoch 55; best epoch and other metrics not supplied |
+| Cross-attention + DPT, native last-1, L1+L2 | **0.5505** | exported validation report; best checkpoint epoch 39, threshold 0.05 |
 | resolution ceiling (perfect 37² predictor) | 0.79 | from data_quality_check |
 | overfit-16 (L1+L2) | 0.948 | capacity is NOT the limit |
 
@@ -33,6 +33,23 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 ---
 
 ## Key findings / decisions
+
+- **2026-10-16 — Campus review push succeeded; artifacts and exact validation results verified locally.**
+  Campus first push successfully published 87a5dba2. Subsequent authentication failures
+  came from explicitly disabling the working credential helper; the later git -C ..
+  command ran from the repo root and incorrectly targeted its parent. Neither invalidates
+  the successful push; no regeneration/recommit needed. Local pull reports up to date
+  and the review folder last1_dpt_cross_attention_val_best_20261016_171153 is present.
+  Metadata: **epoch 39 best.pt**, threshold **0.05**, **2,108 validation pairs**, **338 panels**.
+  Report: change-only **Dice 0.5505348**, IoU **0.4633572** on 1,293 pathology pairs;
+  nuisance mean FP area **0.00239527** on 815 controls (0.2395% mean image area).
+  Per-pathology Dice: consolidation **0.4162**, pneumothorax **0.6366**,
+  pleural_effusion **0.6364**, fluid_overload **0.5000**. Consolidation sens+/sens-
+  **0.4150/0.3253**. Checkpoint SHA256 begins c3ef61f0722f6709; full value in metadata.
+  Opened two consolidation/negative source/GT/prediction panels: selected high-Dice
+  case 0.947 has broad signed overlap but smoother prediction; selected zero-Dice
+  case misses thresholded GT regions and adds opposite-sign off-target regions.
+  These illustrate possible errors, not a systematic review or causal diagnosis.
 
 - **2026-10-16 — Export a broad validation review into the repository for campus-to-local Git transfer.**
   User requests repo-local artifacts and enough examples to avoid repeated small exports.
