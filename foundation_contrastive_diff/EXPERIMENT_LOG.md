@@ -14,7 +14,7 @@ pneumothorax, fluid_overload) while ignoring nuisance (devices, projection angle
 
 ## Results ladder (val, change-only Dice unless noted)
 
-| Model (reads the SAME frozen RAD-DINO features) | Val Dice | Notes |
+| Model / feature setup | Val Dice | Notes |
 |---|---|---|
 | raw cosine of ΔP (unsupervised, no training) | AUROC 0.62 | barely above chance |
 | linear probe (769 params, last-1) | **0.27** | learned linear readout |
@@ -23,6 +23,7 @@ pneumothorax, fluid_overload) while ignoring nuisance (devices, projection angle
 | D-GLoRI head, last-4, L1+Dice (run5) | 0.464 | |
 | D-GLoRI head, last-4, L1+L2 | ~0.46 (in progress) | |
 | DPT-style head, last-4, L1+L2 | **0.4647** | best reported epochs 3-12: epoch 11; run ongoing |
+| Cross-attention + DPT, native last-1, L1+L2 | **~0.55** | user-reported best by epoch 55; best epoch and other metrics not supplied |
 | resolution ceiling (perfect 37² predictor) | 0.79 | from data_quality_check |
 | overfit-16 (L1+L2) | 0.948 | capacity is NOT the limit |
 
@@ -32,6 +33,20 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 ---
 
 ## Key findings / decisions
+
+- **2026-10-16 — By epoch 55, best reported validation Dice is approximately 0.55.**
+  User reports the native-last-one cross-attention run has reached epoch 55 with
+  best validation Dice **0.55**; this is not necessarily the epoch-55 score. Best
+  checkpoint epoch, exact metric values, sensitivities, nuisance FP and timing remain
+  unavailable. Next decision should follow qualitative validation-output review,
+  not an immediate architecture/loss change. Use best.pt at the existing threshold
+  0.05; keep test data untouched while making development decisions. Existing
+  evaluator provides per-pathology metrics, nuisance FP and one GT/prediction
+  example per pathology, but no source images or representative failure sampling.
+  Review source-image context and both change signs as well as nuisance controls
+  before attributing remaining errors to localization, amplitude, direction or
+  nuisance leakage. Documented a first-pass validation export; no cluster evaluation
+  or model-output inspection has been performed by the assistant.
 
 - **2026-10-16 — Single-layer cross-attention reaches approximately 0.49 by epoch 8.**
   User reports epoch 1: **0.28**, epoch 2: **0.34**, epoch 8: **0.49** for the current

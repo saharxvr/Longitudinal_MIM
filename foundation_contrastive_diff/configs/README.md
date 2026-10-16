@@ -115,6 +115,29 @@ if mkdir -p "$RUN" && touch "$RUN/train.log"; then
 fi
 ```
 
+## Validation Output Review
+Use the best checkpoint, not necessarily the last epoch, and the existing threshold
+0.05. Keep the test split untouched while choosing model/loss changes. Run after the
+current GPU training finishes to avoid competing for memory. This does not resume training:
+```bash
+cd /cs/labs/josko/sahar_aharon/repos && git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH=/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:$LD_LIBRARY_PATH
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export DATA=/cs/labs/josko/sahar_aharon/fcd_train
+export CACHE_DIR=/cs/labs/josko/sahar_aharon/fcd_cache_last1_inference
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_dpt_cross_attention_inference
+python -u -m evaluation.evaluate_rq1 --dataset_root "$DATA" --cache_dir "$CACHE_DIR" --ckpt "$RUN/checkpoints/best.pt" --split val --threshold 0.05 --device cuda --batch_size 8 --num_workers 0 --out_dir "$RUN/review_val_best"
+```
+Outputs are `report_val.json`, `per_type_val.png` and `examples_val.png`. The last
+contains continuous signed GT/prediction maps at a fixed [-1,1] color scale, one
+example per pathology. It is not a best/worst/random sample and contains neither
+source prior/current images nor nuisance examples; do not base the next experiment
+solely on this panel. Also inspect training curves and per-direction sensitivities.
+A fuller review should include source images, thresholded signed masks, each pathology,
+both appearance/resolution, and nuisance controls, with reproducible case selection.
+
 ## Cross-Attention Ablation
 The optional `dpt_cross_attention` head retains the frozen last-four cache and the
 DPT reassembly/decoder. At each layer, the same projection processes prior/current
