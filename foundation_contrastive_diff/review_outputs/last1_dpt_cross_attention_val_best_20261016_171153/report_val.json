@@ -1,0 +1,63 @@
+{
+  "overall": {
+    "n": 1293,
+    "dice": 0.5505348123303954,
+    "iou": 0.463357223534005
+  },
+  "per_anomaly_type": {
+    "consolidation": {
+      "n": 313,
+      "dice": 0.4162015038636924,
+      "iou": 0.32463428122567983,
+      "sens_pos": 0.4149673573381733,
+      "sens_neg": 0.32534411421149784
+    },
+    "pneumothorax": {
+      "n": 377,
+      "dice": 0.6365798911348922,
+      "iou": 0.5483428904672959,
+      "sens_pos": 0.5712700312575086,
+      "sens_neg": 0.5811592965140874
+    },
+    "pleural_effusion": {
+      "n": 294,
+      "dice": 0.6363670951591076,
+      "iou": 0.5461303795973055,
+      "sens_pos": 0.6207795795567786,
+      "sens_neg": 0.5935882148041856
+    },
+    "fluid_overload": {
+      "n": 309,
+      "dice": 0.49996083074185593,
+      "iou": 0.4214328760454767,
+      "sens_pos": 0.5282248230813461,
+      "sens_neg": 0.47147093429013565
+    }
+  },
+  "nuisance_false_positive_area": {
+    "n": 815,
+    "mean_fp_area": 0.0023952694758315757
+  },
+  "threshold": 0.05,
+  "head_spec": {
+    "type": "dpt_cross_attention",
+    "kwargs": {
+      "backbone_dim": 768,
+      "patch_dim": 768,
+      "cls_dim": 768,
+      "grid": 37,
+      "embed_dim": 256,
+      "out_size": 512,
+      "out_range": [
+        -1.0,
+        1.0
+      ],
+      "channels": 96,
+      "num_heads": 4,
+      "attention_depth": 2,
+      "num_layers": 1
+    }
+  },
+  "checkpoint_epoch": 39,
+  "review_selected": 338
+}
