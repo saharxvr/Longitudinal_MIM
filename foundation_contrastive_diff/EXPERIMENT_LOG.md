@@ -33,6 +33,17 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — Single-layer cross-attention reaches approximately 0.49 by epoch 8.**
+  User reports epoch 1: **0.28**, epoch 2: **0.34**, epoch 8: **0.49** for the current
+  native-last-one GPU-cache cross-attention run. Interpreted as validation change-only
+  Dice from the conversation; metric identity, exact values and full logs have not been
+  independently checked. Reported epoch-8 value exceeds the previous last-four DPT's
+  best supplied 0.4647 by approximately 0.0253 (2.53 percentage points). This does not
+  isolate cross-attention: feature-layer count and native versus sliced/hidden-state
+  representation differ as well. Epochs 3-7, other metrics, checkpoint status and
+  epoch timing are unavailable. Keep the current experiment unchanged while tracking
+  validation Dice, signed sensitivities and nuisance false positives; no test-set claim.
+
 - **2026-10-16 — Native last-one GPU cache generation initializes on cas703.**
   User reports successful pull through c80d0ecc and **24.8 / 25.3 GB free GPU memory**
   before launch. Background shell job 2323798 prints
