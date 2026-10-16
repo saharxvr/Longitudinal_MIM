@@ -33,6 +33,23 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — Switch single-layer cache creation to frozen GPU inference.**
+  User requests stopping last-four-to-last-one CPU conversion and generating native
+  last-one features directly from images. Reuse the existing cache CLI with
+  `--last_n_layers 1 --device cuda --batch_size 8 --num_workers 4`; no encoder
+  fine-tuning. Config and documented launch now use `fcd_cache_last1_inference` and
+  `run_last1_dpt_cross_attention_inference`, separate from partial sliced files and
+  previous checkpoints. Native extraction reads `last_hidden_state`, while slicing
+  used `hidden_states[-1]`; normalization equivalence is not established. Preserve
+  both old caches and logs. Documented exact-process SIGTERM targets only the earlier
+  conversion; its nonzero exit prevents the old `&&`-chained training from starting.
+  Already-started training requires separate identification. Direct inference's
+  existing-file skip and non-atomic saves require care if interrupted. CPU conversion
+  versus GPU inference throughput is unmeasured; this switch is the user's operational
+  choice, not a measured speedup. No remote process stopped or GPU job launched locally.
+  Local checks pass for native-cache CLI flags, isolated YAML/run paths, Bash syntax
+  for stop/launch blocks, and the conversion-only process-matching expression.
+
 - **2026-10-16 — Single-layer launch blocked before job execution by log redirection.**
   User's cluster pull succeeded through a1e2e6c2. GPU query reports **24.8 / 25.3 GB free**.
   Background job 2320567 exits 1 with zsh `no such file or directory` while opening
@@ -57,7 +74,6 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
   Identify the exact old training PID before sending SIGTERM; do not kill unrelated
   Python processes. No cluster process has been inspected or stopped by the assistant.
 
-- **2026-10-16 — User selects single-layer temporal cross-attention.**
   New config `configs/last1_dpt_cross_attention.yaml`: one 768-dimensional stream,
   shared projection to 96 channels, two bidirectional four-head attention blocks,
   signed fusion, existing decoder. Four decoder scales are derived from one stream;

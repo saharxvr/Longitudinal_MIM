@@ -18,7 +18,7 @@ python -u -m training.train_foundation_diff --config configs/last1_l1l2.yaml --e
 | `last4_l1l2.yaml` | last-4 (360 GB cache) | L1+L2 | NFS-bound ~20 min/epoch |
 | `last4_dpt.yaml` | last-4 | L1+L2 | 2.06M-parameter DPT-style head; separate per-layer fusion |
 | `last4_dpt_cross_attention.yaml` | last-4 | L1+L2 | 2.95M-parameter head; bidirectional attention before signed fusion |
-| `last1_dpt_cross_attention.yaml` | final stream sliced from last-4 | L1+L2 | 2.06M parameters; two bidirectional blocks, compact physical cache |
+| `last1_dpt_cross_attention.yaml` | native last-1 from frozen GPU inference | L1+L2 | 2.06M parameters; two bidirectional blocks, separate cache/run |
 | `overfit_l1l2.yaml` | last-4 | L1+L2 | capacity sanity test (16 pairs, 400 ep) |
 
 Loss default here is **L1+L2 (no Dice)** — the overfit test showed Dice hurts on the faint GT.
@@ -55,12 +55,32 @@ tail -f "$RUN/train.log"
 fusion. The decoder builds its four working scales from that one feature stream, not
 four distinct backbone layers. It contains 2,060,033 trainable parameters.
 
-The CPU-only cache conversion below copies the final 768 dimensions from the completed
-last-four cache. It does not rerun RAD-DINO, change the split, or modify the source.
-It preserves dtype, CLS, GT and labels, records source provenance, writes atomically,
-and verifies existing destination files on restart. Use the separate destination below:
-a sliced last-four stream is not proven identical to a natively generated last-one
-representation, due to possible final-normalization differences. Do not mix them.
+Generate this cache directly from the images with frozen RAD-DINO on the GPU, using
+`--last_n_layers 1 --device cuda`. No encoder training or split regeneration occurs.
+The wrapper reads `last_hidden_state` for native last-one extraction, rather than
+`hidden_states[-1]` used by last-four slicing; do not assume normalization equivalence.
+Use the new `fcd_cache_last1_inference` cache and
+`run_last1_dpt_cross_attention_inference` run. Do not copy sliced files or checkpoints
+into them: inference skips existing cache files and training resumes existing checkpoints.
+Preserve the old last-four cache, partial sliced cache and logs for now.
+
+To stop the earlier CPU conversion, first leave `tail -f` with Ctrl+C. On the cluster,
+list the exact conversion process before terminating it (this does not target the
+parent `bash -c` or unrelated Python jobs):
+```bash
+export DATA=/cs/labs/josko/sahar_aharon/fcd_train
+export CACHE4=/cs/labs/josko/sahar_aharon/fcd_cache_last4
+export SLICE_CACHE=/cs/labs/josko/sahar_aharon/fcd_cache_last1_from_last4
+export STOP_PATTERN="^python -u -m training[.]cache_features --dataset_root $DATA --cache_dir $SLICE_CACHE --last_n_layers 1 --slice_last_layer_from $CACHE4 --device cpu$"
+pgrep -a -u "$USER" -f "$STOP_PATTERN"
+pkill -TERM -u "$USER" -f "$STOP_PATTERN"
+pgrep -a -u "$USER" -f "$STOP_PATTERN"
+```
+Continue only when the final check shows no matching process. If none matched initially,
+inspect `ps -u "$USER" -o pid,ppid,etime,args` before assuming the old pipeline is stopped.
+SIGTERM makes the conversion exit unsuccessfully, preventing its `&&`-chained training
+command from starting. If training already started, identify and stop that exact job
+separately before launching GPU inference. No cluster process is stopped by this document.
 
 Only the token payload shrinks fourfold; GT and metadata stay unchanged. The launcher
 prints actual cache bytes. Training uses disk files and the OS page cache, not a forced
@@ -69,8 +89,11 @@ residency and epoch speed are not guaranteed on a shared node. `num_workers: 0` 
 worker replication/prefetch overhead. A separate float32 preload could double tensor RAM
 and is intentionally not enabled. The existing four-layer runs remain unchanged.
 
-This resumable sequence creates the compact cache first, then trains only if conversion
-succeeds. Allow additional disk space for the compact cache, and use a free GPU for training.
+This sequence generates the native last-one cache first, then trains only if inference
+succeeds. Use a free GPU for both stages. Batch size 8 and four data workers are starting
+settings, not a measured throughput optimum. If caching is interrupted, inspect the last
+written file before resuming: unlike slicing, direct extraction does not write atomically
+or validate existing files before skipping them.
 The explicit `touch` permits append redirection even when zsh has `APPEND_CREATE` disabled;
 it preserves existing log contents. If directory/log creation fails, resolve that error
 before launching the background job.
@@ -81,15 +104,15 @@ source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
 export LD_LIBRARY_PATH=/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:$LD_LIBRARY_PATH
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export DATA=/cs/labs/josko/sahar_aharon/fcd_train
-export CACHE4=/cs/labs/josko/sahar_aharon/fcd_cache_last4
-export CACHE1=/cs/labs/josko/sahar_aharon/fcd_cache_last1_from_last4
+export CACHE1=/cs/labs/josko/sahar_aharon/fcd_cache_last1_inference
 export CACHE_DIR="$CACHE1"
 export HEAD_CONFIG=configs/last1_dpt_cross_attention.yaml
-export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_dpt_cross_attention
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_dpt_cross_attention_inference
 python -c "import torch; f,t=torch.cuda.mem_get_info(); print(f'GPU free {f/1e9:.1f}GB / {t/1e9:.1f}GB')"
-mkdir -p "$RUN" && touch "$RUN/train.log"
-nohup bash -c 'python -u -m training.cache_features --dataset_root "$DATA" --cache_dir "$CACHE1" --last_n_layers 1 --slice_last_layer_from "$CACHE4" --device cpu && exec bash training/run_last4_dpt.sh' >> "$RUN/train.log" 2>&1 &
-tail -f "$RUN/train.log"
+if mkdir -p "$RUN" && touch "$RUN/train.log"; then
+	nohup bash -c 'python -u -m training.cache_features --dataset_root "$DATA" --cache_dir "$CACHE1" --last_n_layers 1 --device cuda --batch_size 8 --num_workers 4 && exec bash training/run_last4_dpt.sh' >> "$RUN/train.log" 2>&1 &
+	tail -f "$RUN/train.log"
+fi
 ```
 
 ## Cross-Attention Ablation
