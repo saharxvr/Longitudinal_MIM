@@ -12,15 +12,18 @@ import torch
 
 from evaluation.evaluate_rq1 import _tokens, run_eval
 from losses import change_map_loss
-from models import DPTDifferenceHead, DifferenceHead, build_change_head
+from models import DPTCrossAttentionHead, DPTDifferenceHead, DifferenceHead, build_change_head
 from training.train_foundation_diff import head_spec, parse_args
 from training import train_foundation_diff as trainer
 
 
 class DPTHeadTests(unittest.TestCase):
+    head_type = "dpt"
+    config_path = "configs/last4_dpt.yaml"
+
     def setUp(self):
         torch.manual_seed(0)
-        self.spec = {"type": "dpt", "kwargs": dict(
+        self.spec = {"type": self.head_type, "kwargs": dict(
             backbone_dim=16, patch_dim=64, cls_dim=16, grid=5,
             channels=8, out_size=32, embed_dim=12)}
         self.prior = torch.randn(2, 25, 64)
@@ -67,10 +70,11 @@ class DPTHeadTests(unittest.TestCase):
 
     def test_default_head_and_config_override(self):
         self.assertIsInstance(build_change_head(head_spec(768)), DifferenceHead)
-        with patch.object(sys, "argv", ["train", "--config", "configs/last4_dpt.yaml",
+        with patch.object(sys, "argv", ["train", "--config", self.config_path,
                                         "--batch_size", "2"]):
             args = parse_args()
-        self.assertEqual((args.head, args.feat_last_k, args.batch_size), ("dpt", 4, 2))
+        self.assertEqual((args.head, args.feat_last_k, args.batch_size), (self.head_type, 4, 2))
+        self.assertEqual(head_spec(3072, args.head)["type"], self.head_type)
         self.assertEqual((args.w_l1, args.w_l2, args.w_dice, args.w_sign), (1, 1, 0, 0))
 
     def test_evaluator_and_feature_slicing(self):
@@ -103,7 +107,7 @@ class DPTHeadTests(unittest.TestCase):
                                     change_group_id=pair_id, pair_id=pair_id), folder / "feat.pt")
             (root / "manifest_split.jsonl").write_text(
                 "\n".join(json.dumps(record) for record in records), encoding="utf-8")
-            arguments = ["train", "--config", "configs/last4_dpt.yaml",
+            arguments = ["train", "--config", self.config_path,
                          "--dataset_root", str(root), "--cache_dir", str(root / "cache"),
                          "--save_folder", str(root / "checkpoints"),
                          "--plots_folder", str(root / "plots"), "--batch_size", "2",
@@ -122,8 +126,40 @@ class DPTHeadTests(unittest.TestCase):
             checkpoint = torch.load(root / "checkpoints" / "last.pt", weights_only=True)
             self.assertEqual(checkpoint["epoch"], 2)
             self.assertEqual(checkpoint["best_dice"], max(first["best_dice"], checkpoint["val"]["dice"]))
-            self.assertEqual(checkpoint["head_spec"]["type"], "dpt")
+            self.assertEqual(checkpoint["head_spec"]["type"], self.head_type)
             self.assertEqual(len((root / "checkpoints" / "metrics.csv").read_text().splitlines()), 3)
+
+
+class DPTCrossAttentionTests(DPTHeadTests):
+    head_type = "dpt_cross_attention"
+    config_path = "configs/last4_dpt_cross_attention.yaml"
+
+    def test_temporal_attention_gradients_and_order(self):
+        head = build_change_head(self.spec)
+        prediction, _ = head(self.prior, self.current)
+        prediction.square().mean().backward()
+        for blocks in head.temporal_blocks:
+            for block in blocks:
+                gradient = block.attention.in_proj_weight.grad
+                self.assertIsNotNone(gradient)
+                self.assertTrue(torch.isfinite(gradient).all())
+                self.assertGreater(float(gradient.abs().sum()), 0)
+        with torch.no_grad():
+            forward = head._project_streams(self.prior, self.current)
+            reverse = head._project_streams(self.current, self.prior)
+            identical = head._project_streams(self.prior, self.prior)
+            offset = torch.randn_like(self.prior)
+            shifted = head._project_streams(self.prior + offset, self.current + offset)
+        for actual, swapped, unchanged in zip(forward, reverse, identical):
+            torch.testing.assert_close(actual, -swapped)
+            torch.testing.assert_close(unchanged, torch.zeros_like(unchanged))
+        self.assertTrue(any(not torch.allclose(actual, shifted_actual)
+                            for actual, shifted_actual in zip(forward, shifted)))
+
+    def test_reject_invalid_attention_settings(self):
+        for settings in ({"num_heads": 3}, {"num_heads": 0}, {"attention_depth": 0}):
+            with self.assertRaises(ValueError):
+                DPTCrossAttentionHead(**self.spec["kwargs"], **settings)
 
 
 if __name__ == "__main__":

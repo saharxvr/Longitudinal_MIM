@@ -6,7 +6,9 @@ export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nv
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export DATA="${DATA:-/cs/labs/josko/sahar_aharon/fcd_train}"
 export CACHE4="${CACHE4:-/cs/labs/josko/sahar_aharon/fcd_cache_last4}"
-export RUN="${RUN:-/cs/labs/josko/sahar_aharon/fcd_runs/run_last4_dpt}"
+export HEAD_CONFIG="${HEAD_CONFIG:-configs/last4_dpt.yaml}"
+default_run=$(python -c 'import pathlib,sys,yaml; print(pathlib.Path(yaml.safe_load(open(sys.argv[1]))["save_folder"]).parent)' "$HEAD_CONFIG")
+export RUN="${RUN:-$default_run}"
 mkdir -p "$RUN"
 exec 9>"$RUN/.train.lock"
 flock -n 9 || { echo "A DPT run already holds the lock in $RUN"; exit 1; }
@@ -72,6 +74,6 @@ if not torch.cuda.is_available():
 free, total = torch.cuda.mem_get_info()
 print(f'torch {torch.__version__}; GPU free {free/1e9:.1f} / {total/1e9:.1f} GB', flush=True)
 PY
-exec python -u -m training.train_foundation_diff --config configs/last4_dpt.yaml \
+exec python -u -m training.train_foundation_diff --config "$HEAD_CONFIG" \
     --dataset_root "$DATA" --cache_dir "$CACHE4" \
     --save_folder "$RUN/checkpoints" --plots_folder "$RUN/plots" --resume "$@"

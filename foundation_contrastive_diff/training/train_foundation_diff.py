@@ -51,8 +51,11 @@ def head_spec(patch_dim=None, head_type="dglori", dpt_channels=96):
         out_size=C.IMG_SIZE,
         out_range=C.DECODER_OUT_RANGE,
     )
-    if head_type == "dpt":
-        return {"type": head_type, "kwargs": dict(common, channels=dpt_channels)}
+    if head_type in ("dpt", "dpt_cross_attention"):
+        kwargs = dict(common, channels=dpt_channels)
+        if head_type == "dpt_cross_attention":
+            kwargs.update(num_heads=4, attention_depth=2)
+        return {"type": head_type, "kwargs": kwargs}
     return {"type": head_type, "kwargs": dict(common,
         d_glori=C.D_GLORI,
         num_change_queries=C.NUM_CHANGE_QUERIES,
@@ -333,7 +336,7 @@ def parse_args():
                    help="sanity test: train+eval on the same N change pairs (0 = off). Use with high --epochs, no --balanced.")
     p.add_argument("--feat_last_k", type=int, default=0,
                    help="use only the last K backbone layers from the cache (0 = all cached). last-1 from a last-4 cache = 1.")
-    p.add_argument("--head", choices=["dglori", "dpt"], default="dglori")
+    p.add_argument("--head", choices=["dglori", "dpt", "dpt_cross_attention"], default="dglori")
     p.add_argument("--dpt_channels", type=int, default=96)
 
     # Config file: pre-scan for --config, load it, and make its keys the arg defaults.
@@ -357,7 +360,7 @@ def main():
     device = args.device
     if not args.dataset_root:
         raise SystemExit("--dataset_root is required (pass -o ... or set dataset_root in --config)")
-    if args.head == "dpt" and args.feat_last_k != 4:
+    if args.head in ("dpt", "dpt_cross_attention") and args.feat_last_k != 4:
         raise SystemExit("DPT requires --feat_last_k 4 and a last-four cache")
     os.makedirs(args.save_folder, exist_ok=True)
     os.makedirs(args.plots_folder, exist_ok=True)

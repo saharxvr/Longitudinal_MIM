@@ -33,6 +33,29 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — Optional temporal cross-attention DPT ablation implemented.**
+  User proposes adding cross-attention after reading Lin et al. Hypothesis: comparing
+  separate prior/current features before signed fusion may improve correspondence and
+  nuisance rejection over subtract-first DPT. Not a demonstrated cause of the current
+  validation plateau, and not evidence that DPT decoding itself is inadequate.
+  `DPTCrossAttentionHead` projects each stream to 96 channels per cached layer, applies
+  two bidirectional full-grid cross-attention blocks (four heads, direction-shared
+  weights, residual paths and FFN), subtracts current-minus-prior, then reuses the DPT
+  reassembly and signed decoder. Attention runs before upsampling, at 1369 tokens.
+  Frozen RAD-DINO/cache unchanged. This differs from Lin's concatenation-based head.
+  The old D-GLoRI implementation already supports an optional temporal cross-attention
+  fusion mode; learned change-query attention alone is not the same operation.
+  New head: **2,952,545** parameters vs DPT **2,057,825**. Config
+  `configs/last4_dpt_cross_attention.yaml` matches DPT loss/optimizer/batch settings and
+  uses a separate run directory. `HEAD_CONFIG` selects it in the existing audited launcher.
+  Twelve CPU tests pass: both heads' training/resume, evaluation, shape/range,
+  backward/checkpoint reload plus temporal-order/identical-stream and attention-gradient
+  checks. Full [1,1369,3072] forward/backward yields [1,1,512,512] and [1,256], with
+  finite gradients and nonzero gradients in every attention block. Intermediate signed
+  features reverse under swapping, but final-output antisymmetry is not enforced.
+  GPU batch-8 memory/speed and scientific performance are unverified. No cluster run
+  started, no active experiment stopped, and no superiority claim is made.
+
 - **2026-10-16 — Literature discussion: frozen features plus learned change heads.**
   User asks for precedents for training a comparison/difference head on pretrained latent
   features, preferably without changing the encoder. Primary sources checked:
