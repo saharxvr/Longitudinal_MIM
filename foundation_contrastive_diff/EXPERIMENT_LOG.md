@@ -22,6 +22,7 @@ pneumothorax, fluid_overload) while ignoring nuisance (devices, projection angle
 | D-GLoRI head, last-1, L1+L2 (run_l1) | 0.449 | L1+L2 > Dice |
 | D-GLoRI head, last-4, L1+Dice (run5) | 0.464 | |
 | D-GLoRI head, last-4, L1+L2 | ~0.46 (in progress) | |
+| DPT-style head, last-4, L1+L2 | **0.4647** | best reported epochs 3-12: epoch 11; run ongoing |
 | resolution ceiling (perfect 37² predictor) | 0.79 | from data_quality_check |
 | overfit-16 (L1+L2) | 0.948 | capacity is NOT the limit |
 
@@ -31,6 +32,33 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 ---
 
 ## Key findings / decisions
+
+- **2026-10-16 — DPT training update: user-reported epochs 3-12 of 60.**
+  Best in the supplied excerpt: epoch 11, Dice **0.4647**, IoU **0.3668**,
+  masked-change L1 **0.0314**, L2 **0.0018**, sens+ **0.501**, sens- **0.448**,
+  nuisance FP area **0.0122**. Epoch 12 Dice **0.4536**, FP **0.0063**.
+  Training loss falls 0.0664 -> 0.0450 (epochs 3 -> 12); validation Dice improves
+  overall but fluctuates. The epoch-12 dip alone does not establish overfitting.
+  DPT is currently around the earlier last-four D-GLoRI range (~0.46), not a demonstrated
+  improvement. The prior last-four L1+L2 final best is still unavailable (previously
+  reported epoch-12 Dice 0.4604). Continue the planned 60 epochs unchanged, retain the
+  best validation checkpoint, and leave test evaluation until model selection is complete.
+  The printed training `dice` is an unweighted loss component, not a Dice score;
+  `w_dice=0` means it contributes nothing to the optimized L1+L2 objective.
+  Source: pasted cluster output, not independently read from cluster checkpoints/CSV.
+
+  | Epoch | Train total | Val Dice | Val IoU | L1 change | L2 change | Sens+ | Sens- | Nuisance FP |
+  |---|---|---|---|---|---|---|---|---|
+  | 3 | 0.0664 | 0.3793 | 0.2890 | 0.0359 | 0.0023 | 0.361 | 0.373 | 0.0139 |
+  | 4 | 0.0606 | 0.4127 | 0.3154 | 0.0342 | 0.0021 | 0.482 | 0.393 | 0.0177 |
+  | 5 | 0.0576 | 0.4138 | 0.3112 | 0.0350 | 0.0021 | 0.554 | 0.476 | 0.0410 |
+  | 6 | 0.0545 | 0.4285 | 0.3361 | 0.0338 | 0.0021 | 0.430 | 0.387 | 0.0098 |
+  | 7 | 0.0527 | 0.4326 | 0.3369 | 0.0327 | 0.0020 | 0.434 | 0.436 | 0.0159 |
+  | 8 | 0.0506 | 0.4323 | 0.3422 | 0.0335 | 0.0021 | 0.405 | 0.380 | 0.0080 |
+  | 9 | 0.0485 | 0.4399 | 0.3426 | 0.0328 | 0.0020 | 0.499 | 0.398 | 0.0161 |
+  | 10 | 0.0480 | 0.4482 | 0.3554 | 0.0325 | 0.0019 | 0.467 | 0.399 | 0.0067 |
+  | 11 | 0.0464 | 0.4647 | 0.3668 | 0.0314 | 0.0018 | 0.501 | 0.448 | 0.0122 |
+  | 12 | 0.0450 | 0.4536 | 0.3610 | 0.0321 | 0.0019 | 0.467 | 0.372 | 0.0063 |
 
 - **2026-10-16 — Last-four cache rebuilt; DPT-style decoder comparison prepared.**
   User reports cache completion after checking 720 GB free. Cluster contents are not yet
