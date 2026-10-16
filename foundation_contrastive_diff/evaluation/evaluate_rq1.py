@@ -19,13 +19,19 @@ Run:
 """
 
 import argparse
+import csv
+import hashlib
+import io
 import json
 import os
+import random
 import sys
 from collections import defaultdict
+from pathlib import Path
+import textwrap
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -64,7 +70,7 @@ def _mean(x):
 
 
 @torch.no_grad()
-def run_eval(head, backbone, loader, device, thr, feat_dim=None):
+def run_eval(head, backbone, loader, device, thr, feat_dim=None, review_rows=None):
     head.eval()
     per_type = defaultdict(lambda: {"dice": [], "iou": [], "sens_pos": [], "sens_neg": []})
     nuis_fp = []                        # predicted-change area on nuisance-only pairs
@@ -83,6 +89,28 @@ def run_eval(head, backbone, loader, device, thr, feat_dim=None):
         for b in range(pred.shape[0]):
             a = int(atype[b]); path = int(is_path[b])
             name = C.ANOMALY_TYPES[a] if a < len(C.ANOMALY_TYPES) else str(a)
+            if review_rows is not None:
+                positive = bool((gt[b] > thr).any())
+                negative = bool((gt[b] < -thr).any())
+                direction = ("mixed" if positive and negative else "positive" if positive
+                             else "negative" if negative else "below_threshold")
+                directional = directional_sensitivity(pred[b:b + 1], gt[b:b + 1], thr)
+                mask = gm[b].bool()
+                review_rows.append(dict(
+                    pair_id=batch["pair_id"][b],
+                    change_group_id=batch.get("change_group_id", [""] * len(pred))[b],
+                    anomaly_type=name, is_pathology=path, direction=direction,
+                    dice=dice_score(pm[b], gm[b]) if path else None,
+                    iou=iou_score(pm[b], gm[b]) if path else None,
+                    sens_pos=directional["sensitivity_positive"] if positive else None,
+                    sens_neg=directional["sensitivity_negative"] if negative else None,
+                    gt_area=float(gm[b].mean()), pred_area=float(pm[b].mean()),
+                    nuisance_fp=float(pm[b].mean()) if not path else None,
+                    l1=float((pred[b] - gt[b]).abs().mean()),
+                    wrong_sign_fraction=(float(((pred[b] * gt[b]) < 0)[mask].float().mean())
+                                         if mask.any() else None),
+                    gt_peak=float(gt[b].abs().max()), pred_peak=float(pred[b].abs().max()),
+                ))
             if path == 0:
                 nuis_fp.append(float(pm[b].mean()))       # any flagged pixel is a false positive
                 continue
@@ -110,6 +138,174 @@ def run_eval(head, backbone, loader, device, thr, feat_dim=None):
         "threshold": thr,
     }
     return report, examples
+
+
+def select_review_cases(rows, per_group=24, nuisance_count=48, seed=42):
+    if per_group < 1 or nuisance_count < 0:
+        raise ValueError("Review counts require per_group >= 1 and nuisance_count >= 0")
+    generator = random.Random(seed)
+    groups = defaultdict(list)
+    for row in sorted(rows, key=lambda item: item["pair_id"]):
+        group = (f"{row['anomaly_type']}/{row['direction']}" if row["is_pathology"]
+                 else "nuisance")
+        groups[group].append(row)
+    selected = []
+    for group, candidates in sorted(groups.items()):
+        nuisance = group == "nuisance"
+        budget = nuisance_count if nuisance else per_group
+        ordered = sorted(candidates, key=lambda item: (
+            -item["nuisance_fp"] if nuisance else item["dice"], item["pair_id"]))
+        used_pairs, used_changes = set(), set()
+        chosen = []
+
+        def take(pool, count, reason):
+            if count <= 0:
+                return
+            added = 0
+            for row in pool:
+                identity = row.get("change_group_id") or row["pair_id"]
+                if row["pair_id"] in used_pairs or identity in used_changes:
+                    continue
+                chosen.append(dict(row, review_group=group, selection=reason))
+                used_pairs.add(row["pair_id"])
+                used_changes.add(identity)
+                added += 1
+                if added >= count:
+                    break
+
+        if not budget:
+            continue
+        quota = max(1, budget // (2 if nuisance else 4))
+        take(ordered, min(quota, budget), "highest_fp" if nuisance else "lowest_dice")
+        if not nuisance:
+            middle = sorted(ordered, key=lambda row: (
+                abs(row["dice"] - ordered[len(ordered) // 2]["dice"]), row["pair_id"]))
+            take(middle, min(quota, budget - len(chosen)), "middle_dice")
+            take(reversed(ordered), min(quota, budget - len(chosen)), "highest_dice")
+        shuffled = list(candidates)
+        generator.shuffle(shuffled)
+        if len(chosen) < budget:
+            take(shuffled, budget - len(chosen), "seeded_random")
+        selected.extend(chosen)
+    return selected
+
+
+@torch.no_grad()
+def export_review(head, backbone, dataset, rows, selected, dataset_root, split,
+                  out_dir, device, threshold, feat_dim=None, batch_size=8, img_size=512):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from PIL import Image
+
+    output = Path(out_dir)
+    panel_dir = output / "cases"
+    panel_dir.mkdir(parents=True, exist_ok=True)
+    raw = LongitudinalPairDataset(dataset_root, split=split, img_size=img_size)
+    raw_indices = {record["pair_id"]: index for index, record in enumerate(raw.records)}
+    cached_indices = {row["pair_id"]: index for index, row in enumerate(rows)}
+    if len(cached_indices) != len(dataset) or len(raw_indices) != len(raw):
+        raise ValueError("Duplicate pair IDs or evaluation dataset/row mismatch")
+    missing = set(raw_indices) - set(cached_indices)
+    if missing:
+        raise ValueError(f"Review requires complete split coverage; missing {len(missing)} pairs")
+    selected_by_id = {row["pair_id"]: row for row in selected}
+    loader = DataLoader(Subset(dataset, [cached_indices[row["pair_id"]] for row in selected]),
+                        batch_size=batch_size, shuffle=False, num_workers=0)
+    head.eval()
+    for batch in loader:
+        tokens = _tokens(batch, backbone, device, feat_dim)
+        predictions, _ = head(*tokens)
+        for index, pair_id in enumerate(batch["pair_id"]):
+            row = selected_by_id[pair_id]
+            source = raw[raw_indices[pair_id]]
+            current = source["img_curr"][0].numpy()
+            gt = batch["gt_diff"][index, 0].cpu().numpy()
+            pred = predictions[index, 0].cpu().numpy()
+            if current.shape != gt.shape or pred.shape != gt.shape:
+                raise ValueError(f"Image/map shape mismatch for {pair_id}")
+            gt_mask = np.where(np.abs(gt) > threshold, np.sign(gt), 0)
+            pred_mask = np.where(np.abs(pred) > threshold, np.sign(pred), 0)
+            zoom = max(float(np.abs(gt).max()), float(np.abs(pred).max()), threshold)
+            figure, axes = plt.subplots(2, 5, figsize=(20, 8))
+            axes = axes.ravel()
+            try:
+                axes[0].imshow(source["img_prior"][0], cmap="gray", vmin=0, vmax=1)
+                axes[1].imshow(current, cmap="gray", vmin=0, vmax=1)
+                for axis, values in ((axes[2], gt), (axes[3], pred)):
+                    axis.imshow(values, cmap="bwr", vmin=-1, vmax=1)
+                axes[4].imshow(gt, cmap="bwr", vmin=-zoom, vmax=zoom)
+                for axis, mask in ((axes[5], gt_mask), (axes[6], pred_mask)):
+                    axis.imshow(current, cmap="gray", vmin=0, vmax=1)
+                    axis.imshow(np.ma.masked_where(mask == 0, mask), cmap="bwr",
+                                vmin=-1, vmax=1, alpha=0.55)
+                axes[7].imshow(gt_mask, cmap="bwr", vmin=-1, vmax=1)
+                axes[8].imshow(pred_mask, cmap="bwr", vmin=-1, vmax=1)
+                axes[9].imshow(pred, cmap="bwr", vmin=-zoom, vmax=zoom)
+                titles = ("Prior", "Current", "Signed GT [-1,1]", "Signed prediction [-1,1]",
+                          f"GT zoom [-{zoom:.3f},+{zoom:.3f}]",
+                          "GT mask / current", "Prediction mask / current",
+                          "Signed GT mask", "Signed prediction mask",
+                          f"Prediction zoom [-{zoom:.3f},+{zoom:.3f}]")
+                for axis, title in zip(axes, titles):
+                    axis.set_title(title)
+                    axis.axis("off")
+                metric = (f"Dice={row['dice']:.3f}" if row["is_pathology"]
+                          else f"Nuisance FP area={row['nuisance_fp']:.4f}")
+                figure.suptitle("\n".join(textwrap.wrap(pair_id, 120)) + "\n" +
+                               f"{row['review_group']} | {row['selection']} | {metric} | "
+                               f"peaks GT/pred={row['gt_peak']:.3f}/{row['pred_peak']:.3f}\n"
+                               f"Red: positive; blue: negative; masks: |map| > {threshold}", fontsize=10)
+                figure.tight_layout(rect=(0, 0, 1, 0.87))
+                filename = hashlib.sha256(pair_id.encode()).hexdigest()[:16] + ".png"
+                figure.savefig(panel_dir / filename, dpi=110)
+                row["panel"] = f"cases/{filename}"
+            finally:
+                plt.close(figure)
+        print(f"[review] rendered {sum('panel' in row for row in selected)}/{len(selected)}", flush=True)
+
+    with (output / f"per_pair_{split}.csv").open("w", newline="", encoding="utf-8") as stream:
+        if rows:
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+    (output / "review_cases.json").write_text(json.dumps(selected, indent=2), encoding="utf-8")
+    lines = [f"# {split.title()} Prediction Review", "",
+             f"Full split: {len(rows)} pairs. Selected: {len(selected)} panels. Threshold: {threshold}.", "",
+             "Red = positive change; blue = negative change. Heatmaps use fixed [-1,1] limits.",
+             "Additional zoom panels share the same per-case GT/prediction limits, printed in their titles.",
+             "Overlays show signed thresholded masks on the current image, not attention weights.",
+             "Source images use the same resizing and per-image normalization as the dataset loader.",
+             "Selection is enriched for failures and successes, not a representative performance estimate.",
+             "See report JSON for full-split metrics, CSV for every pair, and review_metadata.json for provenance.", ""]
+    groups = defaultdict(list)
+    for row in selected:
+        groups[row["review_group"]].append(row)
+    for group, cases in sorted(groups.items()):
+        sheet = Image.new("RGB", (3 * 480, ((len(cases) + 2) // 3) * 240), "white")
+        for index, row in enumerate(cases):
+            with Image.open(output / row["panel"]) as image:
+                thumbnail = image.convert("RGB")
+                thumbnail.thumbnail((480, 240))
+                sheet.paste(thumbnail, ((index % 3) * 480, (index // 3) * 240))
+        filename = "contact_" + hashlib.sha256(group.encode()).hexdigest()[:12] + ".png"
+        sheet.save(output / filename)
+        lines.extend([f"## {group}", "", f"![{group}]({filename})", ""])
+        for row in cases:
+            metric = (f"Dice {row['dice']:.3f}" if row["is_pathology"]
+                      else f"FP {row['nuisance_fp']:.4f}")
+            lines.append(f"- [{Path(row['panel']).stem}]({row['panel']}): {row['selection']}, {metric}")
+        lines.append("")
+    (output / "index.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def plot_per_type(report, out_path):
@@ -168,14 +364,40 @@ def parse_args():
     p.add_argument("--device", default=C.DEVICE)
     p.add_argument("--threshold", type=float, default=0.1, help="|map| threshold for change masks")
     p.add_argument("--out_dir", default=os.path.join(C.PLOTS_FOLDER, "eval"))
+    p.add_argument("--review", action="store_true", help="Export source-image review panels and all-pair metrics")
+    p.add_argument("--review_per_group", type=int, default=24, help="Panels per pathology/GT-sign group")
+    p.add_argument("--review_nuisance", type=int, default=48, help="Highest-FP and random nuisance panels")
+    p.add_argument("--review_seed", type=int, default=42)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
     device = args.device
+    if args.review:
+        if args.review_per_group < 1 or args.review_nuisance < 0:
+            raise ValueError("Invalid review sample counts")
+        if Path(args.out_dir).exists() and any(Path(args.out_dir).iterdir()):
+            raise ValueError("Use a new, empty review output directory to avoid mixing runs")
+        import matplotlib
+        from PIL import Image
+        source = LongitudinalPairDataset(args.dataset_root, split=args.split)
+        pair_ids = [record["pair_id"] for record in source.records]
+        if len(set(pair_ids)) != len(pair_ids):
+            raise ValueError("Duplicate pair IDs in the review split manifest")
+        if not args.no_cache:
+            missing = [pair_id for pair_id in pair_ids
+                       if not (Path(args.cache_dir) / pair_id / "feat.pt").is_file()]
+            if missing:
+                raise FileNotFoundError(f"Review requires complete cache: {len(missing)} missing; first={missing[0]}")
     os.makedirs(args.out_dir, exist_ok=True)
-    state = torch.load(args.ckpt, map_location=device)
+    if args.review:
+        checkpoint_bytes = Path(args.ckpt).read_bytes()
+        checkpoint_digest = hashlib.sha256(checkpoint_bytes).hexdigest()
+        state = torch.load(io.BytesIO(checkpoint_bytes), map_location=device)
+        del checkpoint_bytes
+    else:
+        state = torch.load(args.ckpt, map_location=device)
     spec = state.get("head_spec")
     feat_dim = spec["kwargs"]["patch_dim"] if spec else None
 
@@ -197,8 +419,34 @@ def main():
     head.load_state_dict(state["head"])
     print(f"[eval] loaded {args.ckpt} (epoch {state.get('epoch', '?')}) | split={args.split} | n={len(ds)}")
 
-    report, examples = run_eval(head, backbone, loader, device, args.threshold, feat_dim)
+    review_rows = [] if args.review else None
+    report, examples = run_eval(head, backbone, loader, device, args.threshold, feat_dim, review_rows)
     report["head_spec"] = spec
+    report["checkpoint_epoch"] = state.get("epoch")
+
+    if args.review:
+        selected = select_review_cases(review_rows, args.review_per_group,
+                                       args.review_nuisance, args.review_seed)
+        export_review(head, backbone, ds, review_rows, selected, args.dataset_root,
+                      args.split, args.out_dir, device, args.threshold, feat_dim,
+                      args.batch_size, spec["kwargs"].get("out_size", C.IMG_SIZE) if spec else C.IMG_SIZE)
+        manifest = Path(args.dataset_root) / "manifest_split.jsonl"
+        if not manifest.is_file():
+            manifest = Path(args.dataset_root) / "manifest.jsonl"
+        metadata = dict(checkpoint=Path(args.ckpt).name, checkpoint_sha256=checkpoint_digest,
+                        checkpoint_epoch=state.get("epoch"), head_spec=spec,
+                cache_dir=args.cache_dir if not args.no_cache else None,
+                        manifest_sha256=file_sha256(manifest), split=args.split,
+                        threshold=args.threshold, seed=args.review_seed,
+                        per_group=args.review_per_group, nuisance_count=args.review_nuisance,
+                        evaluated_pairs=len(review_rows), selected_pairs=len(selected),
+                        selection="Low/middle/high Dice and seeded random per pathology/GT sign; "
+                                  "highest-FP and seeded random nuisance; unique change groups per bucket")
+        (Path(args.out_dir) / "review_metadata.json").write_text(
+            json.dumps(metadata, indent=2), encoding="utf-8")
+        report["review_selected"] = len(selected)
+        total_bytes = sum(path.stat().st_size for path in Path(args.out_dir).rglob("*") if path.is_file())
+        print(f"[review] {len(selected)} panels; {total_bytes / 1e6:.1f} MB before summary plots", flush=True)
 
     json_path = os.path.join(args.out_dir, f"report_{args.split}.json")
     with open(json_path, "w") as f:

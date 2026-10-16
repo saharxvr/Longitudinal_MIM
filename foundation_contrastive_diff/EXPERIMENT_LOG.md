@@ -34,6 +34,25 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — Export a broad validation review into the repository for campus-to-local Git transfer.**
+  User requests repo-local artifacts and enough examples to avoid repeated small exports.
+  Existing evaluator gains optional --review: all validation-pair metrics plus deterministic
+  low/middle/high-Dice and random cases per pathology/GT-sign group (24 each), and 48
+  highest-FP/random nuisance controls. Distinct change groups within each review group
+  limit duplicate variants; small groups can yield fewer examples. Typical positive/negative
+  coverage across four pathologies targets up to 240 panels; mixed groups can add more.
+  Panels show actual prior/current images, fixed-scale signed GT/prediction, matched
+  amplitude zooms, signed masks and current-image overlays. Repo-relative contact sheets,
+  index, CSV/JSON and loaded-checkpoint/manifest SHA256 provenance support offline review.
+  Complete-cache preflight and nonempty-output rejection guard against partial/mixed reviews.
+  The full split is scored once; selected cases alone are rerun for rendering, without
+  retaining all validation tensors. No model weights/caches/NIfTI files are exported.
+  Commands write to foundation_contrastive_diff/review_outputs/<timestamped run>, then
+  stage/commit/push only that folder from campus; pull here for inspection. Keep test held out.
+  Existing 21 head/cache tests plus four review tests pass locally (25 total), including
+  actual temporary NIfTI/checkpoint-to-PNG rendering and deterministic selection.
+  Actual cluster review images, counts and runtime remain unverified until the user runs it.
+
 - **2026-10-16 — By epoch 55, best reported validation Dice is approximately 0.55.**
   User reports the native-last-one cross-attention run has reached epoch 55 with
   best validation Dice **0.55**; this is not necessarily the epoch-55 score. Best

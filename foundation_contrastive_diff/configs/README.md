@@ -116,9 +116,27 @@ fi
 ```
 
 ## Validation Output Review
-Use the best checkpoint, not necessarily the last epoch, and the existing threshold
-0.05. Keep the test split untouched while choosing model/loss changes. Run after the
-current GPU training finishes to avoid competing for memory. This does not resume training:
+Export inside this repository so the campus PC can push the review and this PC can
+pull it. Use best.pt at threshold 0.05, with validation only; leave test data untouched
+while choosing model/loss changes. Run after GPU training finishes. No retraining occurs.
+The optional review mode scores the complete validation split, then runs only selected
+pairs again to render source images. Defaults select up to 24 cases per pathology/GT-sign
+group (positive, negative, mixed, or below threshold) and 48 nuisance controls:
+- Low, middle, high Dice and seeded-random cases in each pathology/sign group.
+- Highest-FP and seeded-random nuisance cases.
+- One variant per change_group_id per review group, with pair_id fallback.
+
+For four pathologies and both signs, this targets up to 240 panels; mixed-sign groups
+can increase this to 336, and below-threshold groups can add more. Actual counts depend
+on available distinct change groups. All validation-pair metrics are exported, not just
+those selected for visualization. Selection is deliberately enriched, not representative.
+
+Each panel contains prior/current images, signed GT/prediction with fixed [-1,1] limits,
+matched zoom views for faint maps, signed masks and current-image overlays. Red is
+positive; blue is negative. Contact sheets and index.md navigate the full panels.
+Source images use the existing dataset loader's normalization and resizing.
+
+Complete campus launch (OUT is relative to foundation_contrastive_diff):
 ```bash
 cd /cs/labs/josko/sahar_aharon/repos && git pull --ff-only
 cd foundation_contrastive_diff
@@ -128,15 +146,34 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export DATA=/cs/labs/josko/sahar_aharon/fcd_train
 export CACHE_DIR=/cs/labs/josko/sahar_aharon/fcd_cache_last1_inference
 export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_dpt_cross_attention_inference
-python -u -m evaluation.evaluate_rq1 --dataset_root "$DATA" --cache_dir "$CACHE_DIR" --ckpt "$RUN/checkpoints/best.pt" --split val --threshold 0.05 --device cuda --batch_size 8 --num_workers 0 --out_dir "$RUN/review_val_best"
+export OUT="review_outputs/last1_dpt_cross_attention_val_best_$(date +%Y%m%d_%H%M%S)"
+python -u -m evaluation.evaluate_rq1 --dataset_root "$DATA" --cache_dir "$CACHE_DIR" --ckpt "$RUN/checkpoints/best.pt" --split val --threshold 0.05 --device cuda --batch_size 8 --num_workers 0 --review --review_per_group 24 --review_nuisance 48 --review_seed 42 --out_dir "$OUT"
 ```
-Outputs are `report_val.json`, `per_type_val.png` and `examples_val.png`. The last
-contains continuous signed GT/prediction maps at a fixed [-1,1] color scale, one
-example per pathology. It is not a best/worst/random sample and contains neither
-source prior/current images nor nuisance examples; do not base the next experiment
-solely on this panel. Also inspect training curves and per-direction sensitivities.
-A fuller review should include source images, thresholded signed masks, each pathology,
-both appearance/resolution, and nuisance controls, with reproducible case selection.
+Outputs include index.md, contact sheets, cases/*.png, report_val.json, per_pair_val.csv,
+review_cases.json and review_metadata.json. Provenance records the exact loaded checkpoint
+SHA256/epoch/head specification, manifest SHA256, split, threshold and sampling seed.
+No checkpoint weights, NIfTI files or feature tensors are exported. Existing nonempty
+review directories are rejected to avoid mixing experiments. A missing split cache fails
+before inference rather than silently reporting a partial validation set.
+
+After the evaluator succeeds, inspect the index and size, then push only this folder:
+```bash
+du -sh "$OUT"
+git -C .. add -- "foundation_contrastive_diff/$OUT"
+git -C .. diff --cached --stat -- "foundation_contrastive_diff/$OUT"
+git -C .. commit --only -m "Add single-layer attention validation output review" -- "foundation_contrastive_diff/$OUT"
+git -C .. push
+```
+Do not use git add . or stage external cache/run directories. Each PNG is a separate
+small artifact; the evaluator also reports total review size. After the campus push,
+on this Windows PC run from the repository root:
+```powershell
+git pull --ff-only
+Get-ChildItem foundation_contrastive_diff/review_outputs -Filter index.md -Recurse
+```
+Open the generated index in VS Code Markdown Preview and follow contact-sheet/panel
+links. The original one-example-per-pathology plots remain for compatibility, but the
+full review should use the index and all-pair CSV rather than those first examples.
 
 ## Cross-Attention Ablation
 The optional `dpt_cross_attention` head retains the frozen last-four cache and the

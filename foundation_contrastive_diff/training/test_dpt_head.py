@@ -11,12 +11,135 @@ from unittest.mock import patch
 
 import torch
 
-from evaluation.evaluate_rq1 import _tokens, run_eval
+from evaluation.evaluate_rq1 import _tokens, run_eval, select_review_cases
 from losses import change_map_loss
 from models import DPTCrossAttentionHead, DPTDifferenceHead, DifferenceHead, build_change_head
 from training.train_foundation_diff import head_spec, parse_args
 from training import train_foundation_diff as trainer
 from training.cache_features import slice_last_layer_cache
+
+
+class ReviewSelectionTests(unittest.TestCase):
+    def test_review_export_end_to_end(self):
+        import numpy as np
+        import nibabel as nib
+        from PIL import Image
+        from evaluation import evaluate_rq1 as evaluator
+
+        spec = {"type": "dpt_cross_attention", "kwargs": dict(
+            backbone_dim=16, patch_dim=16, cls_dim=16, grid=5,
+            channels=8, out_size=32, embed_dim=12, num_layers=1)}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records = []
+            for index, value in enumerate((0.2, -0.2, 0.0)):
+                pair_id = f"case/pair{index}/variant0"
+                folder = root / pair_id
+                folder.mkdir(parents=True)
+                prior = np.linspace(0, 1, 32 * 32, dtype=np.float32).reshape(32, 32)
+                gt = np.zeros((32, 32), dtype=np.float32)
+                gt[8:20, 8:20] = value
+                for name, array in (("prior", prior), ("current", prior + gt), ("diff_map", gt)):
+                    nib.save(nib.Nifti1Image(array, np.eye(4)), folder / f"{name}.nii.gz")
+                records.append(dict(pair_id=pair_id, split="val", realized_change=bool(value),
+                                    effective_anomaly_type="consolidation" if value else "none",
+                                    change_group_id=str(index)))
+                cache = root / "cache" / pair_id
+                cache.mkdir(parents=True)
+                torch.save(dict(p_prior=torch.randn(25, 16), p_curr=torch.randn(25, 16),
+                                cls_prior=torch.randn(16), cls_curr=torch.randn(16),
+                                gt_diff=torch.from_numpy(gt)[None], anomaly_type=1 if value else 0,
+                                direction=0, is_pathology=int(bool(value)),
+                                change_group_id=str(index), pair_id=pair_id), cache / "feat.pt")
+            (root / "manifest_split.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in records), encoding="utf-8")
+            checkpoint = root / "best.pt"
+            torch.save(dict(head=build_change_head(spec).state_dict(), head_spec=spec,
+                            epoch=55), checkpoint)
+            output = root / "review"
+            arguments = ["eval", "--dataset_root", str(root), "--cache_dir", str(root / "cache"),
+                         "--ckpt", str(checkpoint), "--split", "val", "--threshold", "0.05",
+                         "--device", "cpu", "--batch_size", "2", "--num_workers", "0",
+                         "--out_dir", str(output), "--review"]
+            with patch.object(sys, "argv", arguments):
+                evaluator.main()
+            cases = json.loads((output / "review_cases.json").read_text())
+            metadata = json.loads((output / "review_metadata.json").read_text())
+            self.assertEqual(len(cases), 3)
+            self.assertEqual(metadata["evaluated_pairs"], 3)
+            self.assertEqual(metadata["checkpoint_epoch"], 55)
+            self.assertEqual(metadata["checkpoint_sha256"], evaluator.file_sha256(checkpoint))
+            self.assertTrue((output / "index.md").is_file())
+            self.assertEqual(len((output / "per_pair_val.csv").read_text().splitlines()), 4)
+            self.assertEqual(len(list(output.glob("contact_*.png"))), 3)
+            for row in cases:
+                with Image.open(output / row["panel"]) as image:
+                    self.assertGreater(image.width, 1000)
+                    self.assertTrue(any(low != high for low, high in image.convert("RGB").getextrema()))
+            with patch.object(sys, "argv", arguments), self.assertRaisesRegex(ValueError, "empty"):
+                evaluator.main()
+            rows = [dict(row) for row in cases]
+            rows.pop()
+            dataset = evaluator.CachedPairDataset(str(root), str(root / "cache"), split="val")
+            with self.assertRaisesRegex(ValueError, "mismatch"):
+                evaluator.export_review(build_change_head(spec), None, dataset, rows, [],
+                                        str(root), "val", output, "cpu", 0.05, img_size=32)
+            (root / "cache" / records[0]["pair_id"] / "feat.pt").unlink()
+            arguments[arguments.index("--out_dir") + 1] = str(root / "new_review")
+            with patch.object(sys, "argv", arguments), self.assertRaisesRegex(FileNotFoundError, "complete cache"):
+                evaluator.main()
+
+    def test_stratified_selection_is_reproducible_and_diverse(self):
+        rows = []
+        for anomaly in ("consolidation", "pleural_effusion"):
+            for direction in ("positive", "negative", "mixed"):
+                for index in range(40):
+                    rows.append(dict(pair_id=f"{anomaly}_{direction}_{index:02}",
+                                     change_group_id=f"{anomaly}_{direction}_{index // 2}",
+                                     anomaly_type=anomaly, direction=direction,
+                                     is_pathology=1, dice=index / 40, nuisance_fp=None))
+        for index in range(60):
+            rows.append(dict(pair_id=f"nuisance_{index:02}", change_group_id="",
+                             anomaly_type="none", direction="below_threshold",
+                             is_pathology=0, dice=None, nuisance_fp=index / 60))
+        chosen = select_review_cases(rows, per_group=12, nuisance_count=20)
+        self.assertEqual(chosen, select_review_cases(list(reversed(rows)), 12, 20))
+        self.assertEqual(len(chosen), 6 * 12 + 20)
+        self.assertEqual(len({row["pair_id"] for row in chosen}), len(chosen))
+        self.assertEqual({row["selection"] for row in chosen},
+                         {"lowest_dice", "middle_dice", "highest_dice", "seeded_random", "highest_fp"})
+        self.assertIn("nuisance_59", {row["pair_id"] for row in chosen})
+        for group in {row["review_group"] for row in chosen} - {"nuisance"}:
+            identities = [row["change_group_id"] for row in chosen if row["review_group"] == group]
+            self.assertEqual(len(identities), len(set(identities)))
+
+    def test_small_buckets_and_invalid_counts(self):
+        row = dict(pair_id="one", anomaly_type="consolidation", direction="positive",
+                   is_pathology=1, dice=0.5, nuisance_fp=None)
+        self.assertEqual(len(select_review_cases([row])), 1)
+        for count in (1, 2, 3):
+            rows = [dict(row, pair_id=str(index)) for index in range(8)]
+            self.assertEqual(len(select_review_cases(rows, per_group=count)), count)
+        with self.assertRaises(ValueError):
+            select_review_cases([row], per_group=0)
+
+    def test_review_metrics_include_nuisance_and_direction(self):
+        class FixedHead(torch.nn.Module):
+            def forward(self, *inputs):
+                return torch.tensor([[[[0.2, -0.2]]], [[[0.2, 0.0]]]]), None
+
+        batch = dict(p_prior=torch.zeros(2, 1, 1), p_curr=torch.zeros(2, 1, 1),
+                     cls_prior=torch.zeros(2, 1), cls_curr=torch.zeros(2, 1),
+                     gt_diff=torch.tensor([[[[0.2, -0.2]]], [[[0.0, 0.0]]]]),
+                     anomaly_type=torch.tensor([1, 0]), is_pathology=torch.tensor([1, 0]),
+                     pair_id=["pathology", "control"], change_group_id=["a", "b"])
+        rows = []
+        report, _ = run_eval(FixedHead(), None, [batch], "cpu", 0.05, review_rows=rows)
+        self.assertEqual(rows[0]["direction"], "mixed")
+        self.assertEqual(rows[0]["dice"], 1.0)
+        self.assertEqual(rows[1]["nuisance_fp"], 0.5)
+        self.assertIsNone(rows[1]["dice"])
+        self.assertEqual(report["overall"]["n"], 1)
 
 
 class DPTHeadTests(unittest.TestCase):
