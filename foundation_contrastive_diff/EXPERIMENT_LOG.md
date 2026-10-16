@@ -33,6 +33,17 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — Single-layer launch blocked before job execution by log redirection.**
+  User's cluster pull succeeded through a1e2e6c2. GPU query reports **24.8 / 25.3 GB free**.
+  Background job 2320567 exits 1 with zsh `no such file or directory` while opening
+  `run_last1_dpt_cross_attention/train.log`; no cache-conversion/training startup is
+  demonstrated. Missing log plus `>>` failure despite a preceding mkdir is consistent
+  with zsh APPEND_CREATE disabled; directory existence/permissions were not independently
+  checked. Remedy: explicitly mkdir and touch the log before append redirection, preserving
+  any existing contents. Stop if either fails. An unmatched quote subsequently entered
+  `dquote>` mode; the supplied prompt shows that state was cancelled (exit 130).
+  Corrected launch documentation; do not treat the failed shell job as a training failure.
+
 - **2026-10-16 — Last-four DPT reaches epoch 15; recommend stopping to reallocate compute.**
   User reports epoch-15 validation Dice **0.458**. Epochs 13-14 and other epoch-15
   metrics are unavailable; best previously supplied is epoch 11 **0.4647**, not an

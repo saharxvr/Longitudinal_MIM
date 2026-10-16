@@ -71,6 +71,9 @@ and is intentionally not enabled. The existing four-layer runs remain unchanged.
 
 This resumable sequence creates the compact cache first, then trains only if conversion
 succeeds. Allow additional disk space for the compact cache, and use a free GPU for training.
+The explicit `touch` permits append redirection even when zsh has `APPEND_CREATE` disabled;
+it preserves existing log contents. If directory/log creation fails, resolve that error
+before launching the background job.
 ```bash
 cd /cs/labs/josko/sahar_aharon/repos && git pull --ff-only
 cd foundation_contrastive_diff
@@ -84,7 +87,7 @@ export CACHE_DIR="$CACHE1"
 export HEAD_CONFIG=configs/last1_dpt_cross_attention.yaml
 export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_dpt_cross_attention
 python -c "import torch; f,t=torch.cuda.mem_get_info(); print(f'GPU free {f/1e9:.1f}GB / {t/1e9:.1f}GB')"
-mkdir -p "$RUN"
+mkdir -p "$RUN" && touch "$RUN/train.log"
 nohup bash -c 'python -u -m training.cache_features --dataset_root "$DATA" --cache_dir "$CACHE1" --last_n_layers 1 --slice_last_layer_from "$CACHE4" --device cpu && exec bash training/run_last4_dpt.sh' >> "$RUN/train.log" 2>&1 &
 tail -f "$RUN/train.log"
 ```
