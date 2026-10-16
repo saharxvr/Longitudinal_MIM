@@ -17,6 +17,7 @@ case "$cache_layers" in
     *) echo "Expected a one- or four-layer config"; exit 1 ;;
 esac
 export CACHE_LAYERS="$cache_layers"
+export ROTATION_K="$(python -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1])).get("rotation_k", 0))' "$HEAD_CONFIG")"
 mkdir -p "$RUN"
 exec 9>"$RUN/.train.lock"
 flock -n 9 || { echo "A DPT run already holds the lock in $RUN"; exit 1; }
@@ -38,6 +39,17 @@ records = [json.loads(line) for line in payload.splitlines() if line.strip()]
 if not records:
     raise SystemExit('Empty split manifest')
 print('manifest SHA256:', hashlib.sha256(payload).hexdigest(), flush=True)
+rotation_k = int(os.environ.get('ROTATION_K', '0'))
+metadata = Path(os.environ['CACHE_DIR']) / 'cache_config.json'
+if rotation_k or metadata.is_file():
+    if not metadata.is_file():
+        raise SystemExit('Rotated run requires cache_config.json from native extraction')
+    cache_config = json.loads(metadata.read_text())
+    for key, expected in (('rotation_k', rotation_k),
+                          ('last_n_layers', int(os.environ['CACHE_LAYERS'])),
+                          ('manifest_sha256', hashlib.sha256(payload).hexdigest())):
+        if cache_config.get(key) != expected:
+            raise SystemExit(f'Cache configuration mismatch: {key}')
 patients, groups = {}, {}
 counts = Counter()
 samples = defaultdict(list)
@@ -72,6 +84,8 @@ for split in ('train', 'val', 'test'):
         raise SystemExit(f'Empty split: {split}')
     for path in samples[split]:
         cached = torch.load(path, map_location='cpu', weights_only=False)
+        if cached.get('rotation_k', 0) != rotation_k:
+            raise SystemExit(f'Cache rotation mismatch in {path}')
         for key, shape in (('p_prior', (1369, patch_dim)), ('p_curr', (1369, patch_dim)),
                            ('cls_prior', (768,)), ('cls_curr', (768,)),
                            ('gt_diff', (1, 512, 512))):

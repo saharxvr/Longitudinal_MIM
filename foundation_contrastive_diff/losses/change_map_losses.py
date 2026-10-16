@@ -29,15 +29,24 @@ def change_map_loss(
     w_l2: float = 0.0,
     pos_weight: float = 10.0,
     eps: float = 1e-6,
+    target_mode: str = "continuous",
+    target_threshold: float = 0.05,
+    background_weight: float = 1.0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """Return (total_loss, components dict).
 
     Set w_dice=w_sign=0, w_l2=1 for an Itamar-style pure L1+L2 reconstruction loss.
     """
+    if target_mode not in ("continuous", "signed_mask"):
+        raise ValueError("target_mode must be continuous or signed_mask")
+    if not 0 <= target_threshold < 1 or not 0 < background_weight <= 1:
+        raise ValueError("Invalid target_threshold or background_weight")
+    if target_mode == "signed_mask":
+        gt = torch.where(gt.abs() > target_threshold, gt.sign(), torch.zeros_like(gt))
     change_mask = (gt.abs() > tau).float()                       # [B,1,H,W]
 
     # 1) Weighted L1 on magnitude — change pixels count much more than background.
-    weight = 1.0 + pos_weight * change_mask
+    weight = background_weight + (1.0 + pos_weight - background_weight) * change_mask
     l1 = (weight * (pred - gt).abs()).mean()
 
     # 1b) Weighted L2 (MSE) — reconstruction term (Itamar-style).

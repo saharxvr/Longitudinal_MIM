@@ -70,8 +70,9 @@ def _mean(x):
 
 
 @torch.no_grad()
-def run_eval(head, backbone, loader, device, thr, feat_dim=None, review_rows=None):
+def run_eval(head, backbone, loader, device, thr, feat_dim=None, review_rows=None, gt_thr=None):
     head.eval()
+    gt_thr = thr if gt_thr is None else gt_thr
     per_type = defaultdict(lambda: {"dice": [], "iou": [], "sens_pos": [], "sens_neg": []})
     nuis_fp = []                        # predicted-change area on nuisance-only pairs
     examples = {}                       # one (gt, pred) per anomaly type for the panel
@@ -84,17 +85,17 @@ def run_eval(head, backbone, loader, device, thr, feat_dim=None, review_rows=Non
         atype = batch["anomaly_type"]
         is_path = batch["is_pathology"]
         pm = (pred.abs() > thr).float()
-        gm = (gt.abs() > thr).float()
+        gm = (gt.abs() > gt_thr).float()
 
         for b in range(pred.shape[0]):
             a = int(atype[b]); path = int(is_path[b])
             name = C.ANOMALY_TYPES[a] if a < len(C.ANOMALY_TYPES) else str(a)
             if review_rows is not None:
-                positive = bool((gt[b] > thr).any())
-                negative = bool((gt[b] < -thr).any())
+                positive = bool((gt[b] > gt_thr).any())
+                negative = bool((gt[b] < -gt_thr).any())
                 direction = ("mixed" if positive and negative else "positive" if positive
                              else "negative" if negative else "below_threshold")
-                directional = directional_sensitivity(pred[b:b + 1], gt[b:b + 1], thr)
+                directional = directional_sensitivity(pred[b:b + 1], gt[b:b + 1], thr, gt_thr)
                 mask = gm[b].bool()
                 review_rows.append(dict(
                     pair_id=batch["pair_id"][b],
@@ -116,11 +117,11 @@ def run_eval(head, backbone, loader, device, thr, feat_dim=None, review_rows=Non
                 continue
             per_type[name]["dice"].append(dice_score(pm[b], gm[b]))
             per_type[name]["iou"].append(iou_score(pm[b], gm[b]))
-            d = directional_sensitivity(pred[b:b + 1], gt[b:b + 1], thr)
+            d = directional_sensitivity(pred[b:b + 1], gt[b:b + 1], thr, gt_thr)
             # Only count a direction's recall on pairs that contain that direction.
-            if (gt[b] > thr).any():
+            if (gt[b] > gt_thr).any():
                 per_type[name]["sens_pos"].append(d["sensitivity_positive"])
-            if (gt[b] < -thr).any():
+            if (gt[b] < -gt_thr).any():
                 per_type[name]["sens_neg"].append(d["sensitivity_negative"])
             if name not in examples:
                 examples[name] = (gt[b, 0].cpu(), pred[b, 0].cpu())
@@ -134,8 +135,11 @@ def run_eval(head, backbone, loader, device, thr, feat_dim=None, review_rows=Non
     report = {
         "overall": {"n": len(all_d), "dice": _mean(all_d), "iou": _mean(all_i)},
         "per_anomaly_type": summary,
-        "nuisance_false_positive_area": {"n": len(nuis_fp), "mean_fp_area": _mean(nuis_fp)},
+        "nuisance_false_positive_area": {"n": len(nuis_fp), "mean_fp_area": _mean(nuis_fp),
+                        "p95_fp_area": float(torch.quantile(torch.tensor(nuis_fp), 0.95)) if nuis_fp else 0.0,
+                        "max_fp_area": max(nuis_fp, default=0.0)},
         "threshold": thr,
+        "gt_threshold": gt_thr,
     }
     return report, examples
 
@@ -192,17 +196,20 @@ def select_review_cases(rows, per_group=24, nuisance_count=48, seed=42):
 
 @torch.no_grad()
 def export_review(head, backbone, dataset, rows, selected, dataset_root, split,
-                  out_dir, device, threshold, feat_dim=None, batch_size=8, img_size=512):
+                  out_dir, device, threshold, feat_dim=None, batch_size=8, img_size=512,
+                  gt_threshold=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
     from PIL import Image
 
+    gt_threshold = threshold if gt_threshold is None else gt_threshold
     output = Path(out_dir)
     panel_dir = output / "cases"
     panel_dir.mkdir(parents=True, exist_ok=True)
-    raw = LongitudinalPairDataset(dataset_root, split=split, img_size=img_size)
+    raw = LongitudinalPairDataset(dataset_root, split=split, img_size=img_size,
+                                  rotation_k=getattr(dataset, "rotation_k", 0))
     raw_indices = {record["pair_id"]: index for index, record in enumerate(raw.records)}
     cached_indices = {row["pair_id"]: index for index, row in enumerate(rows)}
     if len(cached_indices) != len(dataset) or len(raw_indices) != len(raw):
@@ -225,7 +232,7 @@ def export_review(head, backbone, dataset, rows, selected, dataset_root, split,
             pred = predictions[index, 0].cpu().numpy()
             if current.shape != gt.shape or pred.shape != gt.shape:
                 raise ValueError(f"Image/map shape mismatch for {pair_id}")
-            gt_mask = np.where(np.abs(gt) > threshold, np.sign(gt), 0)
+            gt_mask = np.where(np.abs(gt) > gt_threshold, np.sign(gt), 0)
             pred_mask = np.where(np.abs(pred) > threshold, np.sign(pred), 0)
             zoom = max(float(np.abs(gt).max()), float(np.abs(pred).max()), threshold)
             figure, axes = plt.subplots(2, 5, figsize=(20, 8))
@@ -256,7 +263,7 @@ def export_review(head, backbone, dataset, rows, selected, dataset_root, split,
                 figure.suptitle("\n".join(textwrap.wrap(pair_id, 120)) + "\n" +
                                f"{row['review_group']} | {row['selection']} | {metric} | "
                                f"peaks GT/pred={row['gt_peak']:.3f}/{row['pred_peak']:.3f}\n"
-                               f"Red: positive; blue: negative; masks: |map| > {threshold}", fontsize=10)
+                               f"Red: positive; blue: negative; thresholds: GT={gt_threshold}, prediction={threshold}", fontsize=10)
                 figure.tight_layout(rect=(0, 0, 1, 0.87))
                 filename = hashlib.sha256(pair_id.encode()).hexdigest()[:16] + ".png"
                 figure.savefig(panel_dir / filename, dpi=110)
@@ -272,7 +279,7 @@ def export_review(head, backbone, dataset, rows, selected, dataset_root, split,
             writer.writerows(rows)
     (output / "review_cases.json").write_text(json.dumps(selected, indent=2), encoding="utf-8")
     lines = [f"# {split.title()} Prediction Review", "",
-             f"Full split: {len(rows)} pairs. Selected: {len(selected)} panels. Threshold: {threshold}.", "",
+             f"Full split: {len(rows)} pairs. Selected: {len(selected)} panels. Prediction threshold: {threshold}; GT threshold: {gt_threshold}.", "",
              "Red = positive change; blue = negative change. Heatmaps use fixed [-1,1] limits.",
              "Additional zoom panels share the same per-case GT/prediction limits, printed in their titles.",
              "Overlays show signed thresholded masks on the current image, not attention weights.",
@@ -362,7 +369,9 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=C.BATCH_SIZE)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--device", default=C.DEVICE)
-    p.add_argument("--threshold", type=float, default=0.1, help="|map| threshold for change masks")
+    p.add_argument("--threshold", type=float, default=None, help="Prediction threshold; defaults to checkpoint config or 0.1")
+    p.add_argument("--gt_threshold", type=float, default=None, help="GT threshold; defaults to checkpoint config or prediction threshold")
+    p.add_argument("--rotation_k", type=int, choices=[0, 1, 2, 3], default=None)
     p.add_argument("--out_dir", default=os.path.join(C.PLOTS_FOLDER, "eval"))
     p.add_argument("--review", action="store_true", help="Export source-image review panels and all-pair metrics")
     p.add_argument("--review_per_group", type=int, default=24, help="Panels per pathology/GT-sign group")
@@ -399,6 +408,15 @@ def main():
     else:
         state = torch.load(args.ckpt, map_location=device)
     spec = state.get("head_spec")
+    run_config = state.get("run_config", {})
+    if args.threshold is None:
+        args.threshold = run_config.get("eval_threshold", 0.1)
+    if args.gt_threshold is None:
+        args.gt_threshold = run_config.get("eval_gt_threshold")
+        if args.gt_threshold is None:
+            args.gt_threshold = args.threshold
+    if args.rotation_k is None:
+        args.rotation_k = run_config.get("rotation_k", 0)
     feat_dim = spec["kwargs"]["patch_dim"] if spec else None
 
     if args.no_cache:
@@ -409,10 +427,12 @@ def main():
             last_n_layers=(feat_dim // spec["kwargs"]["backbone_dim"] if spec else C.LAST_N_LAYERS),
             freeze=C.FREEZE_BACKBONE,
         ).to(device).eval()
-        ds = LongitudinalPairDataset(args.dataset_root, split=args.split, img_size=C.IMG_SIZE)
+        ds = LongitudinalPairDataset(args.dataset_root, split=args.split, img_size=C.IMG_SIZE,
+                         rotation_k=args.rotation_k)
     else:
         backbone = None
-        ds = CachedPairDataset(args.dataset_root, args.cache_dir, split=args.split)
+        ds = CachedPairDataset(args.dataset_root, args.cache_dir, split=args.split,
+                       rotation_k=args.rotation_k)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     head = build_change_head(spec, device) if spec else build_head(device)
@@ -420,16 +440,20 @@ def main():
     print(f"[eval] loaded {args.ckpt} (epoch {state.get('epoch', '?')}) | split={args.split} | n={len(ds)}")
 
     review_rows = [] if args.review else None
-    report, examples = run_eval(head, backbone, loader, device, args.threshold, feat_dim, review_rows)
+    report, examples = run_eval(head, backbone, loader, device, args.threshold, feat_dim,
+                                review_rows, args.gt_threshold)
     report["head_spec"] = spec
     report["checkpoint_epoch"] = state.get("epoch")
+    report["rotation_k"] = args.rotation_k
+    report["target_mode"] = run_config.get("target_mode", "continuous")
 
     if args.review:
         selected = select_review_cases(review_rows, args.review_per_group,
                                        args.review_nuisance, args.review_seed)
         export_review(head, backbone, ds, review_rows, selected, args.dataset_root,
                       args.split, args.out_dir, device, args.threshold, feat_dim,
-                      args.batch_size, spec["kwargs"].get("out_size", C.IMG_SIZE) if spec else C.IMG_SIZE)
+                      args.batch_size, spec["kwargs"].get("out_size", C.IMG_SIZE) if spec else C.IMG_SIZE,
+                      gt_threshold=args.gt_threshold)
         manifest = Path(args.dataset_root) / "manifest_split.jsonl"
         if not manifest.is_file():
             manifest = Path(args.dataset_root) / "manifest.jsonl"
@@ -437,7 +461,8 @@ def main():
                         checkpoint_epoch=state.get("epoch"), head_spec=spec,
                 cache_dir=args.cache_dir if not args.no_cache else None,
                         manifest_sha256=file_sha256(manifest), split=args.split,
-                        threshold=args.threshold, seed=args.review_seed,
+                        threshold=args.threshold, gt_threshold=args.gt_threshold,
+                        rotation_k=args.rotation_k, target_mode=report["target_mode"], seed=args.review_seed,
                         per_group=args.review_per_group, nuisance_count=args.review_nuisance,
                         evaluated_pairs=len(review_rows), selected_pairs=len(selected),
                         selection="Low/middle/high Dice and seeded random per pathology/GT sign; "

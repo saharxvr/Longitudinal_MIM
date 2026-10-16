@@ -19,6 +19,134 @@ from training import train_foundation_diff as trainer
 from training.cache_features import slice_last_layer_cache
 
 
+class RotatedMaskRunTests(unittest.TestCase):
+    def test_training_and_validation_use_mask_targets_and_raw_gt_support(self):
+        class PerfectMaskHead(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.output = torch.nn.Parameter(torch.tensor([[[[1.0, -1.0, 0.0]]]]))
+
+            def forward(self, *inputs):
+                return self.output, None
+
+        batch = dict(p_prior=torch.zeros(1, 1, 1), p_curr=torch.zeros(1, 1, 1),
+                     cls_prior=torch.zeros(1, 1), cls_curr=torch.zeros(1, 1),
+                     gt_diff=torch.tensor([[[[0.08, -0.12, 0.0]]]]), is_pathology=torch.ones(1))
+        arguments = ["train", "--target_mode", "signed_mask", "--background_weight", "0.75",
+                     "--w_dice", "0", "--w_sign", "0", "--w_l2", "1", "--accum", "1"]
+        with patch.object(sys, "argv", arguments):
+            args = parse_args()
+        head = PerfectMaskHead()
+        optimizer = torch.optim.SGD(head.parameters(), lr=0.001)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 1.0)
+        metrics = trainer.train_one_epoch(head, None, [batch], optimizer, scheduler, "cpu", args)
+        self.assertEqual(metrics["total"], 0.0)
+        validation = trainer.evaluate(head, None, [batch], "cpu", threshold=0.5,
+                                      gt_threshold=0.05, target_mode="signed_mask", background_weight=0.75)
+        self.assertAlmostEqual(validation["dice"], 1.0)
+        self.assertAlmostEqual(validation["sens_pos"], 1.0, places=5)
+        self.assertAlmostEqual(validation["sens_neg"], 1.0, places=5)
+        self.assertEqual(validation["l1_ch"], 0.0)
+
+    def test_native_rotated_cache_metadata_preview_and_reuse_guard(self):
+        from training import cache_features
+        from datasets.pair_dataset import CachedPairDataset
+
+        sample = dict(img_prior=torch.arange(16).float().reshape(1, 4, 4) / 15,
+                      img_curr=torch.ones(1, 4, 4), gt_diff=torch.full((1, 4, 4), -0.08),
+                      anomaly_type=1, direction=0, is_pathology=1,
+                      change_group_id="case/pair0", pair_id="case/pair0/variant0", rotation_k=3)
+
+        class TinyBackbone(torch.nn.Module):
+            def forward(self, images):
+                values = images.mean((-2, -1))
+                return dict(patch_tokens=values[:, None].expand(-1, 4, -1), cls_token=values)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "manifest_split.jsonl").write_text(json.dumps(dict(
+                pair_id=sample["pair_id"], split="train", effective_anomaly_type="consolidation")) + "\n")
+            cache = root / "cache"
+            preview = root / "input_preview.png"
+            arguments = ["cache", "--dataset_root", str(root), "--cache_dir", str(cache),
+                         "--last_n_layers", "1", "--rotation_k", "3", "--device", "cpu",
+                         "--num_workers", "0", "--preview_path", str(preview)]
+            with patch.object(sys, "argv", arguments), \
+                 patch.object(cache_features, "LongitudinalPairDataset", return_value=[sample]) as dataset, \
+                 patch.object(cache_features, "_build_backbone", return_value=TinyBackbone()):
+                self.assertEqual(cache_features.main(), 0)
+                dataset.assert_called_with(str(root), split=None, img_size=512, rotation_k=3)
+                self.assertEqual(cache_features.main(), 0)
+            self.assertTrue(preview.is_file())
+            metadata = json.loads((cache / "cache_config.json").read_text())
+            self.assertEqual(metadata["rotation_k"], 3)
+            cached = CachedPairDataset(str(root), str(cache), rotation_k=3)
+            self.assertEqual(cached[0]["rotation_k"], 3)
+            torch.testing.assert_close(cached[0]["gt_diff"], sample["gt_diff"], atol=1e-4, rtol=0)
+            with self.assertRaisesRegex(ValueError, "rotation"):
+                CachedPairDataset(str(root), str(cache), rotation_k=0)
+            arguments[arguments.index("--rotation_k") + 1] = "0"
+            with patch.object(sys, "argv", arguments), self.assertRaisesRegex(ValueError, "configuration differs"):
+                cache_features.main()
+
+    def test_signed_mask_loss_and_modest_background_discount(self):
+        gt = torch.tensor([[[[0.08, -0.12, 0.0, 0.04]]]])
+        perfect = torch.tensor([[[[1.0, -1.0, 0.0, 0.0]]]])
+        options = dict(w_l1=1, w_l2=1, w_dice=0, w_sign=0,
+                       target_mode="signed_mask", target_threshold=0.05)
+        self.assertEqual(float(change_map_loss(perfect, gt, **options)[0]), 0.0)
+        wrong = perfect.clone()
+        wrong[..., 0] = -1
+        self.assertGreater(float(change_map_loss(wrong, gt, **options)[0]), 0.0)
+        false_positive = perfect.clone()
+        false_positive[..., 2] = 0.5
+        original = change_map_loss(false_positive, gt, **options)[0]
+        discounted = change_map_loss(false_positive, gt, background_weight=0.75, **options)[0]
+        torch.testing.assert_close(discounted, 0.75 * original)
+        missed = torch.zeros_like(gt)
+        torch.testing.assert_close(change_map_loss(missed, gt, **options)[0],
+                                   change_map_loss(missed, gt, background_weight=0.75, **options)[0])
+        nuisance = change_map_loss(torch.full_like(gt, 0.5), torch.zeros_like(gt),
+                                   background_weight=0.75, **options)[0]
+        self.assertGreater(float(nuisance), 0.0)
+        self.assertTrue(torch.isfinite(nuisance))
+
+    def test_distinct_prediction_and_gt_thresholds(self):
+        from evaluation.change_detection_metrics import directional_sensitivity
+
+        pred = torch.tensor([[[[0.9, -0.8, 0.0]]]])
+        gt = torch.tensor([[[[0.08, -0.12, 0.0]]]])
+        metrics = directional_sensitivity(pred, gt, 0.5, 0.05)
+        self.assertAlmostEqual(metrics["sensitivity_positive"], 1.0, places=5)
+        self.assertAlmostEqual(metrics["sensitivity_negative"], 1.0, places=5)
+
+    def test_dataset_rotates_images_and_signed_gt_together(self):
+        import numpy as np
+        import nibabel as nib
+        from datasets.pair_dataset import LongitudinalPairDataset
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "case/pair0/variant0"
+            folder.mkdir(parents=True)
+            prior = np.arange(16, dtype=np.float32).reshape(4, 4)
+            gt = np.zeros((4, 4), dtype=np.float32)
+            gt[0, 1], gt[2, 3] = 0.2, -0.1
+            for name, array in (("prior", prior), ("current", prior + gt), ("diff_map", gt)):
+                nib.save(nib.Nifti1Image(array, np.eye(4)), folder / f"{name}.nii.gz")
+            record = dict(pair_id="case/pair0/variant0", split="train", realized_change=True,
+                          effective_anomaly_type="consolidation")
+            (root / "manifest_split.jsonl").write_text(json.dumps(record) + "\n")
+            original = LongitudinalPairDataset(str(root), img_size=4)[0]
+            for rotation in (1, 2, 3):
+                rotated = LongitudinalPairDataset(str(root), img_size=4, rotation_k=rotation)[0]
+                for key in ("img_prior", "img_curr", "gt_diff"):
+                    torch.testing.assert_close(rotated[key], torch.rot90(original[key], rotation, (-2, -1)))
+                self.assertEqual(rotated["rotation_k"], rotation)
+            with self.assertRaises(ValueError):
+                LongitudinalPairDataset(str(root), rotation_k=4)
+
+
 class ReviewSelectionTests(unittest.TestCase):
     def test_review_export_end_to_end(self):
         import numpy as np
@@ -76,6 +204,31 @@ class ReviewSelectionTests(unittest.TestCase):
                 with Image.open(output / row["panel"]) as image:
                     self.assertGreater(image.width, 1000)
                     self.assertTrue(any(low != high for low, high in image.convert("RGB").getextrema()))
+            for record in records:
+                path = root / "cache" / record["pair_id"] / "feat.pt"
+                cached = torch.load(path, weights_only=False)
+                cached["rotation_k"] = 3
+                cached["gt_diff"] = torch.rot90(cached["gt_diff"], 3, (-2, -1))
+                torch.save(cached, path)
+            run_config = dict(rotation_k=3, target_mode="signed_mask", eval_threshold=0.5,
+                              eval_gt_threshold=0.05)
+            torch.save(dict(head=build_change_head(spec).state_dict(), head_spec=spec,
+                            epoch=1, run_config=run_config), checkpoint)
+            rotated_arguments = list(arguments)
+            threshold_index = rotated_arguments.index("--threshold")
+            del rotated_arguments[threshold_index:threshold_index + 2]
+            rotated_output = root / "rotated_review"
+            rotated_arguments[rotated_arguments.index("--out_dir") + 1] = str(rotated_output)
+            with patch.object(sys, "argv", rotated_arguments):
+                evaluator.main()
+            rotated_metadata = json.loads((rotated_output / "review_metadata.json").read_text())
+            self.assertEqual(rotated_metadata["rotation_k"], 3)
+            self.assertEqual(rotated_metadata["threshold"], 0.5)
+            self.assertEqual(rotated_metadata["gt_threshold"], 0.05)
+            self.assertEqual(rotated_metadata["target_mode"], "signed_mask")
+            rotated_cases = json.loads((rotated_output / "review_cases.json").read_text())
+            self.assertEqual({row["direction"] for row in rotated_cases if row["is_pathology"]},
+                             {"positive", "negative"})
             with patch.object(sys, "argv", arguments), self.assertRaisesRegex(ValueError, "empty"):
                 evaluator.main()
             rows = [dict(row) for row in cases]

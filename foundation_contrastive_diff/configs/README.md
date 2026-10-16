@@ -19,9 +19,63 @@ python -u -m training.train_foundation_diff --config configs/last1_l1l2.yaml --e
 | `last4_dpt.yaml` | last-4 | L1+L2 | 2.06M-parameter DPT-style head; separate per-layer fusion |
 | `last4_dpt_cross_attention.yaml` | last-4 | L1+L2 | 2.95M-parameter head; bidirectional attention before signed fusion |
 | `last1_dpt_cross_attention.yaml` | native last-1 from frozen GPU inference | L1+L2 | 2.06M parameters; two bidirectional blocks, separate cache/run |
+| `last1_rot90cw_mask_fp075.yaml` | native last-1, scans and GT rotated 90 degrees clockwise | signed-mask L1+L2 | foreground weight 11, background 0.75; separate cache/run |
 | `overfit_l1l2.yaml` | last-4 | L1+L2 | capacity sanity test (16 pairs, 400 ep) |
 
 Loss default here is **L1+L2 (no Dice)** — the overfit test showed Dice hurts on the faint GT.
+
+## Rotated Signed-Mask Run
+
+This is a combined follow-up recipe, not an isolated loss ablation. Keep the frozen
+RAD-DINO encoder, single-layer cross-attention head, split, optimizer and 60-epoch
+budget unchanged. Do not run it alongside another GPU training job without checking
+available GPU memory first.
+
+- `rotation_k: 3`: apply the same 90-degree clockwise quarter-turn to prior, current,
+	and continuous GT before frozen feature extraction. No image resampling for rotation.
+- Fresh native GPU cache: `fcd_cache_last1_rot90cw_inference`. Do not copy old features.
+	Cache metadata records orientation/layers/manifest; mismatches fail. New native
+	writes are atomic. Input previews show up to three distinct cases before extraction.
+- Cache retains continuous signed GT. During training, `abs(GT)>0.05` becomes
+	`sign(GT)` and all other pixels become zero. No-change targets stay zero.
+- Signed L1+L2, averaged over all pixels, with weight **11** on masked change and
+	**0.75** on background. This is a 25% background discount, not foreground/background
+	region normalization. Nuisance-only pairs retain a nonzero penalty.
+- Dice and extra sign terms remain off; fixed initial seed 42. Predictions are signed
+	change scores, not reconstructed DRR intensities or calibrated probabilities.
+- Validation prediction threshold **0.5**, original continuous GT threshold **0.05**.
+	Thus the GT reference stays comparable to the old run. Evaluation/review reads both
+	thresholds and rotation from checkpoint metadata; CLI overrides remain available.
+- Mean, 95th-percentile and maximum nuisance FP area are printed and stored in the
+	checkpoint validation dictionary. Do not select improvements using Dice alone.
+- Separate run: `run_last1_rot90cw_mask_fp075`; old checkpoints are not reused.
+	Relaunching the same command resumes only this run after cache checks.
+
+Complete campus launch after these changes have been published to the remote:
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export DATA=/cs/labs/josko/sahar_aharon/fcd_train
+export CACHE_DIR=/cs/labs/josko/sahar_aharon/fcd_cache_last1_rot90cw_inference
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_rot90cw_mask_fp075
+python -c "import torch; f,t=torch.cuda.mem_get_info(); print(f'GPU free {f/1e9:.1f}GB / {t/1e9:.1f}GB')"
+if mkdir -p "$RUN" && touch "$RUN/train.log"; then
+	nohup bash training/run_rotated_mask.sh >> "$RUN/train.log" 2>&1 &
+	tail -f "$RUN/train.log"
+fi
+```
+
+The launcher writes `$RUN/input_preview.png` before inference, uses direct frozen GPU
+extraction (not CPU cache conversion), then runs the audited training wrapper. Leaving
+`tail` with Ctrl+C does not stop the background pipeline. Inspect the input preview
+and early validation maps, ideally by epochs 3-5. Keep the test split held out.
+Do not add Dice, boundary relaxation or another architecture change to this run.
+If the combined recipe helps, subsequent ablations can identify which change helped.
 
 ## DPT Experiment
 `training/run_last4_dpt.sh` activates the cluster venv, sets library/data paths, locks the

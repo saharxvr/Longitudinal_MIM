@@ -84,6 +84,7 @@ class LongitudinalPairDataset(Dataset):
         img_size: int = C.IMG_SIZE,
         clip_gt: float = 1.0,
         only_realized: bool = False,
+        rotation_k: int = 0,
     ):
         """
         dataset_root: folder containing manifest[_split].jsonl and the pair tree.
@@ -94,6 +95,9 @@ class LongitudinalPairDataset(Dataset):
         self.root = dataset_root
         self.img_size = int(img_size)
         self.clip_gt = float(clip_gt)
+        if rotation_k not in (0, 1, 2, 3):
+            raise ValueError("rotation_k must be 0, 1, 2, or 3 counterclockwise quarter-turns")
+        self.rotation_k = int(rotation_k)
 
         records = _read_manifest(dataset_root)
         if split is not None:
@@ -134,6 +138,9 @@ class LongitudinalPairDataset(Dataset):
         curr = _norm01(_to_chw(_load_nii_2d(self._abspath(rec, "current_path", "current.nii.gz")), size))
         gt = _to_chw(_load_nii_2d(self._abspath(rec, "diff_map_path", "diff_map.nii.gz")), size)
         gt = gt.clamp(-self.clip_gt, self.clip_gt)
+        if self.rotation_k:
+            prior, curr, gt = (torch.rot90(tensor, self.rotation_k, (-2, -1)).contiguous()
+                               for tensor in (prior, curr, gt))
 
         return {
             "img_prior": prior,
@@ -144,6 +151,7 @@ class LongitudinalPairDataset(Dataset):
             "is_pathology": int(bool(rec.get("realized_change", rec.get("effective_anomaly_type", "none") != "none"))),
             "change_group_id": rec.get("change_group_id", ""),
             "pair_id": rec.get("pair_id", ""),
+            "rotation_k": self.rotation_k,
         }
 
 
@@ -155,7 +163,8 @@ class CachedPairDataset(Dataset):
         p_prior/p_curr [N, D], cls_prior/cls_curr [D], gt_diff [1,H,W], + labels.
     """
 
-    def __init__(self, dataset_root: str, cache_dir: str, split: Optional[str] = None):
+    def __init__(self, dataset_root: str, cache_dir: str, split: Optional[str] = None,
+                 rotation_k: Optional[int] = None):
         super().__init__()
         recs = _read_manifest(dataset_root)
         if split is not None:
@@ -175,12 +184,18 @@ class CachedPairDataset(Dataset):
                 f"No cached feat.pt found under {cache_dir} for split={split!r}. "
                 f"Run training/cache_features.py first."
             )
+        first = torch.load(self.paths[0], map_location="cpu", weights_only=False)
+        self.rotation_k = int(first.get("rotation_k", 0)) if rotation_k is None else rotation_k
+        if int(first.get("rotation_k", 0)) != self.rotation_k:
+            raise ValueError("Cache rotation does not match the requested run; regenerate frozen features")
 
     def __len__(self) -> int:
         return len(self.paths)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         d = torch.load(self.paths[idx], map_location="cpu", weights_only=False)
+        if int(d.get("rotation_k", 0)) != self.rotation_k:
+            raise ValueError(f"Cache rotation mismatch: {self.paths[idx]}")
         return {
             "p_prior": d["p_prior"].float(),
             "cls_prior": d["cls_prior"].float(),
@@ -192,4 +207,5 @@ class CachedPairDataset(Dataset):
             "is_pathology": d["is_pathology"],
             "change_group_id": d["change_group_id"],
             "pair_id": d["pair_id"],
+            "rotation_k": self.rotation_k,
         }

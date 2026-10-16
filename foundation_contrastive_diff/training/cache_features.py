@@ -24,6 +24,8 @@ Usage (on the cluster GPU):
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -101,6 +103,66 @@ def _build_backbone(device: str, last_n_layers: int) -> FrozenCXRBackbone:
     ).to(device).eval()
 
 
+def prepare_native_cache(args):
+    cache_dir = Path(args.cache_dir or C.FEATURE_CACHE_DIR).resolve()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    manifest = Path(args.dataset_root) / "manifest_split.jsonl"
+    if not manifest.is_file():
+        manifest = Path(args.dataset_root) / "manifest.jsonl"
+    expected = dict(backbone=C.RAD_DINO_MODEL, last_n_layers=args.last_n_layers,
+                    rotation_k=args.rotation_k, image_size=C.IMG_SIZE,
+                    manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest())
+    metadata = cache_dir / "cache_config.json"
+    if metadata.is_file():
+        if json.loads(metadata.read_text()) != expected:
+            raise ValueError("Cache configuration differs; use a new cache directory")
+    elif any(cache_dir.iterdir()):
+        if args.rotation_k:
+            raise ValueError("Rotated cache requires a new empty directory or matching cache_config.json")
+    else:
+        metadata.write_text(json.dumps(expected, indent=2), encoding="utf-8")
+    return cache_dir
+
+
+def save_input_preview(dataset, path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    indices, seen = [], set()
+    for index, record in enumerate(getattr(dataset, "records", [])):
+        case = record["pair_id"].split("/")[0]
+        if case not in seen:
+            indices.append(index)
+            seen.add(case)
+        if len(indices) == 3:
+            break
+    if not indices:
+        indices = list(range(min(3, len(dataset))))
+    count = len(indices)
+    if not count:
+        raise ValueError("Cannot preview an empty dataset")
+    figure, axes = plt.subplots(count, 4, figsize=(12, 3 * count), squeeze=False)
+    for row, index in enumerate(indices):
+        sample = dataset[index]
+        gt = sample["gt_diff"][0]
+        mask = torch.where(gt.abs() > 0.05, gt.sign(), torch.zeros_like(gt))
+        for axis, values, title in zip(axes[row],
+                                      (sample["img_prior"][0], sample["img_curr"][0], gt, mask),
+                                      ("Prior encoder input", "Current encoder input", "Continuous GT", "Signed GT mask @0.05")):
+            axis.imshow(values, cmap="gray" if "input" in title else "bwr",
+                        vmin=0 if "input" in title else -1, vmax=1)
+            axis.set_title(title)
+            axis.axis("off")
+    figure.suptitle(f"Dataset inputs before frozen-backbone resize/normalization; rotation_k={sample['rotation_k']}")
+    figure.tight_layout()
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(path, dpi=120)
+    plt.close(figure)
+    print(f"[cache] input preview: {path}", flush=True)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("-o", "--dataset_root", required=True, help="Folder with manifest[_split].jsonl + pair tree.")
@@ -111,6 +173,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default=C.DEVICE)
     p.add_argument("--last_n_layers", type=int, default=C.LAST_N_LAYERS,
                    help="concat the last N backbone layers (4 for the DPT/multi-scale cache)")
+    p.add_argument("--rotation_k", type=int, choices=[0, 1, 2, 3], default=0)
+    p.add_argument("--preview_path", default="", help="Save dataset input/GT preview before feature extraction")
+    p.add_argument("--preview_only", action="store_true", help="Save preview without loading the backbone")
     p.add_argument("--slice_last_layer_from", default="",
                    help="CPU-only: copy final 768 dims from this last-four cache; requires --last_n_layers 1")
     p.add_argument("--limit", type=int, default=0, help="Cache at most N pairs (0 = all); for smoke tests.")
@@ -120,19 +185,25 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.slice_last_layer_from:
+        if args.rotation_k:
+            raise SystemExit("Rotated scans require native feature extraction, not cache slicing")
         if not args.cache_dir or args.last_n_layers != 1:
             raise SystemExit("Cache slicing requires explicit --cache_dir and --last_n_layers 1")
         slice_last_layer_cache(args.dataset_root, args.slice_last_layer_from,
                                args.cache_dir, args.split, args.limit)
         return 0
-    cache_dir = os.path.abspath(args.cache_dir or C.FEATURE_CACHE_DIR)
-    os.makedirs(cache_dir, exist_ok=True)
+    cache_dir = str(prepare_native_cache(args))
 
-    ds = LongitudinalPairDataset(args.dataset_root, split=args.split, img_size=C.IMG_SIZE)
+    ds = LongitudinalPairDataset(args.dataset_root, split=args.split, img_size=C.IMG_SIZE,
+                                 rotation_k=args.rotation_k)
+    if args.preview_path or args.preview_only:
+        save_input_preview(ds, args.preview_path or Path(cache_dir) / "input_preview.png")
+    if args.preview_only:
+        return 0
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     backbone = _build_backbone(args.device, args.last_n_layers)
 
-    print(f"[cache] {len(ds)} pairs -> {cache_dir} on {args.device} (last_n_layers={args.last_n_layers})", flush=True)
+    print(f"[cache] {len(ds)} pairs -> {cache_dir} on {args.device}; layers={args.last_n_layers}, rotation_k={args.rotation_k}", flush=True)
     done = 0
     for batch in loader:
         pair_ids = batch["pair_id"]
@@ -150,8 +221,7 @@ def main() -> int:
             if os.path.isfile(out_path):
                 continue
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            torch.save(
-                {
+            payload = {
                     "p_prior": fp["patch_tokens"][i].half().cpu(),
                     "cls_prior": fp["cls_token"][i].half().cpu(),
                     "p_curr": fc["patch_tokens"][i].half().cpu(),
@@ -162,9 +232,15 @@ def main() -> int:
                     "is_pathology": int(batch["is_pathology"][i]),
                     "change_group_id": batch["change_group_id"][i],
                     "pair_id": pid,
-                },
-                out_path,
-            )
+                    "rotation_k": args.rotation_k,
+                }
+            with tempfile.NamedTemporaryFile(dir=os.path.dirname(out_path), suffix=".tmp", delete=False) as temporary:
+                temporary_path = Path(temporary.name)
+            try:
+                torch.save(payload, temporary_path)
+                os.replace(temporary_path, out_path)
+            finally:
+                temporary_path.unlink(missing_ok=True)
             done += 1
             if args.limit and done >= args.limit:
                 print(f"[cache] hit --limit {args.limit}; stopping.", flush=True)

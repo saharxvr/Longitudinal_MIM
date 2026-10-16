@@ -114,6 +114,8 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
         loss, comp = change_map_loss(
             pred, gt, tau=args.tau, w_l1=args.w_l1, w_dice=w_dice,
             w_sign=args.w_sign, w_l2=args.w_l2, pos_weight=args.pos_weight,
+            target_mode=args.target_mode, target_threshold=args.target_threshold,
+            background_weight=args.background_weight,
         )
         # NaN guard: skip corrupt/exploding batches instead of poisoning the whole run.
         if not torch.isfinite(loss):
@@ -138,8 +140,11 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
 
 
 @torch.no_grad()
-def evaluate(head, backbone, loader, device, threshold=0.1, tau=0.02, pos_weight=10.0):
+def evaluate(head, backbone, loader, device, threshold=0.1, tau=0.02, pos_weight=10.0,
+             gt_threshold=None, target_mode="continuous", target_threshold=0.05,
+             background_weight=1.0):
     head.eval()
+    gt_threshold = threshold if gt_threshold is None else gt_threshold
     dices, ious, spos, sneg, nuis_fp = [], [], [], [], []
     l1s, l2s, l1ms, l2ms = [], [], [], []
     for batch in loader:
@@ -149,12 +154,16 @@ def evaluate(head, backbone, loader, device, threshold=0.1, tau=0.02, pos_weight
         pred, _ = head(p_prior, p_curr, cls_prior, cls_curr)
 
         pm = (pred.abs() > threshold).float()
-        gm = (gt.abs() > threshold).float()
-        _, comp = change_map_loss(pred, gt, tau=tau, pos_weight=pos_weight)  # all-pixel recon error
+        gm = (gt.abs() > gt_threshold).float()
+        _, comp = change_map_loss(pred, gt, tau=tau, pos_weight=pos_weight,
+                                  target_mode=target_mode, target_threshold=target_threshold,
+                                  background_weight=background_weight)
         l1s.append(comp["l1"]); l2s.append(comp["l2"])
-        m = gt.abs() > tau                                                   # change-region (masked) error
+        target = (torch.where(gt.abs() > target_threshold, gt.sign(), torch.zeros_like(gt))
+                  if target_mode == "signed_mask" else gt)
+        m = target.abs() > tau
         if m.any():
-            diff = pred - gt
+            diff = pred - target
             l1ms.append(float(diff.abs()[m].mean())); l2ms.append(float((diff[m] ** 2).mean()))
         for b in range(pred.shape[0]):
             # Split change vs no-change: empty-GT pairs score Dice=1.0 and would inflate
@@ -164,24 +173,26 @@ def evaluate(head, backbone, loader, device, threshold=0.1, tau=0.02, pos_weight
                 continue
             dices.append(dice_score(pm[b], gm[b]))
             ious.append(iou_score(pm[b], gm[b]))
-            d = directional_sensitivity(pred[b:b + 1], gt[b:b + 1], threshold)
+            d = directional_sensitivity(pred[b:b + 1], gt[b:b + 1], threshold, gt_threshold)
             # Only count a direction's recall on pairs that actually contain that direction,
             # else pure-appearance/pure-resolution pairs inject spurious 0s and deflate sens.
-            if (gt[b] > threshold).any():
+            if (gt[b] > gt_threshold).any():
                 spos.append(d["sensitivity_positive"])
-            if (gt[b] < -threshold).any():
+            if (gt[b] < -gt_threshold).any():
                 sneg.append(d["sensitivity_negative"])
 
     def mean(x):
         return sum(x) / max(1, len(x))
     return {"dice": mean(dices), "iou": mean(ious),
             "sens_pos": mean(spos), "sens_neg": mean(sneg), "nuis_fp": mean(nuis_fp),
+            "nuis_fp95": float(torch.quantile(torch.tensor(nuis_fp), 0.95)) if nuis_fp else 0.0,
+            "nuis_fp_max": max(nuis_fp, default=0.0),
             "l1": mean(l1s), "l2": mean(l2s),
             "l1_ch": mean(l1ms), "l2_ch": mean(l2ms)}
 
 
 @torch.no_grad()
-def save_sample_plots(head, backbone, loader, device, out_path, n=6):
+def save_sample_plots(head, backbone, loader, device, out_path, n=6, target_threshold=None):
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -193,6 +204,8 @@ def save_sample_plots(head, backbone, loader, device, out_path, n=6):
     p_prior, p_curr, cls_prior, cls_curr = _tokens_from_batch(batch, backbone, device)
     pred, _ = head(p_prior, p_curr, cls_prior, cls_curr)
     gt = batch["gt_diff"]
+    if target_threshold is not None:
+        gt = torch.where(gt.abs() > target_threshold, gt.sign(), torch.zeros_like(gt))
     # Prefer change pairs so the panel isn't dominated by empty (no-change) GT.
     is_path = batch.get("is_pathology")
     if is_path is not None:
@@ -263,13 +276,17 @@ def make_loaders(args, device):
             last_n_layers=args.feat_last_k or C.LAST_N_LAYERS, freeze=C.FREEZE_BACKBONE,
         ).to(device)
         backbone.eval()
-        train_ds = LongitudinalPairDataset(args.dataset_root, split="train", img_size=C.IMG_SIZE)
-        val_ds = LongitudinalPairDataset(args.dataset_root, split="val", img_size=C.IMG_SIZE)
+        train_ds = LongitudinalPairDataset(args.dataset_root, split="train", img_size=C.IMG_SIZE,
+                          rotation_k=args.rotation_k)
+        val_ds = LongitudinalPairDataset(args.dataset_root, split="val", img_size=C.IMG_SIZE,
+                        rotation_k=args.rotation_k)
         labels = [train_ds._anomaly_index(r) for r in train_ds.records]  # enables --balanced
     else:
         backbone = None
-        train_ds = CachedPairDataset(args.dataset_root, args.cache_dir, split="train")
-        val_ds = CachedPairDataset(args.dataset_root, args.cache_dir, split="val")
+        train_ds = CachedPairDataset(args.dataset_root, args.cache_dir, split="train",
+                        rotation_k=args.rotation_k)
+        val_ds = CachedPairDataset(args.dataset_root, args.cache_dir, split="val",
+                      rotation_k=args.rotation_k)
         labels = train_ds.labels
 
     # Overfit sanity test: train AND eval on the same N change pairs (is_pathology==1).
@@ -321,6 +338,8 @@ def parse_args():
     p.add_argument("--grad_clip", type=float, default=1.0, help="max grad norm (0 = off); prevents NaN blow-ups")
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--device", default=C.DEVICE)
+    p.add_argument("--rotation_k", type=int, choices=[0, 1, 2, 3], default=0)
+    p.add_argument("--seed", type=int, default=None)
     # loss hyperparameters
     p.add_argument("--tau", type=float, default=0.02, help="|GT| threshold for change pixels")
     p.add_argument("--w_l1", type=float, default=1.0)
@@ -328,9 +347,13 @@ def parse_args():
     p.add_argument("--w_sign", type=float, default=0.5)
     p.add_argument("--w_l2", type=float, default=0.0, help="L2/MSE weight (set w_dice=w_sign=0, w_l2=1 for Itamar-style reconstruction)")
     p.add_argument("--pos_weight", type=float, default=10.0)
+    p.add_argument("--target_mode", choices=["continuous", "signed_mask"], default="continuous")
+    p.add_argument("--target_threshold", type=float, default=0.05)
+    p.add_argument("--background_weight", type=float, default=1.0)
     p.add_argument("--dice_warmup_epochs", type=int, default=0,
                    help="ramp w_dice linearly 0 -> w_dice over the first N epochs (0 = off; L1 learns magnitude first)")
     p.add_argument("--eval_threshold", type=float, default=0.1, help="|map| threshold for Dice/IoU")
+    p.add_argument("--eval_gt_threshold", type=float, default=None, help="GT support threshold; defaults to eval_threshold")
     p.add_argument("--resume", action="store_true",
                    help="resume from <save_folder>/last.pt (restores head/optimizer/scheduler/epoch)")
     p.add_argument("--resume_from", default="", help="explicit checkpoint path to resume from (overrides --resume)")
@@ -360,6 +383,10 @@ def parse_args():
 def main():
     args = parse_args()
     device = args.device
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
     if not args.dataset_root:
         raise SystemExit("--dataset_root is required (pass -o ... or set dataset_root in --config)")
     if args.head == "dpt" and args.feat_last_k != 4:
@@ -405,6 +432,12 @@ def main():
     ckpt_path = args.resume_from or (os.path.join(args.save_folder, "last.pt") if args.resume else "")
     if ckpt_path and os.path.isfile(ckpt_path):
         ck = torch.load(ckpt_path, map_location=device)
+        saved_config = ck.get("run_config", {})
+        for key, default in (("rotation_k", 0), ("target_mode", "continuous"),
+                             ("target_threshold", 0.05), ("background_weight", 1.0),
+                             ("eval_gt_threshold", None)):
+            if saved_config.get(key, default) != getattr(args, key):
+                raise ValueError(f"Resume checkpoint differs in {key}; use a new run directory")
         if "head_spec" in ck and ck["head_spec"] != spec:
             raise ValueError("Resume checkpoint architecture does not match this run")
         head.load_state_dict(ck["head"])
@@ -427,12 +460,15 @@ def main():
         tr = train_one_epoch(head, backbone, train_loader, optimizer, scheduler, device, args,
                              w_dice=w_dice_eff)
         va = evaluate(head, backbone, val_loader, device, threshold=args.eval_threshold,
-                      tau=args.tau, pos_weight=args.pos_weight)
+                      tau=args.tau, pos_weight=args.pos_weight, gt_threshold=args.eval_gt_threshold,
+                      target_mode=args.target_mode, target_threshold=args.target_threshold,
+                      background_weight=args.background_weight)
         lr_now = optimizer.param_groups[0]["lr"]
         print(f"epoch {epoch:03d}/{args.epochs} | lr {lr_now:.2e} | w_dice {w_dice_eff:.2f} | "
               f"train total {tr['total']:.4f} (l1 {tr['l1']:.4f} l2 {tr['l2']:.4f} dice {tr['dice']:.4f} sign {tr['sign']:.4f}) | "
               f"val dice {va['dice']:.4f} iou {va['iou']:.4f} l1ch {va['l1_ch']:.4f} l2ch {va['l2_ch']:.4f} "
-              f"sens+ {va['sens_pos']:.3f} sens- {va['sens_neg']:.3f} fp {va['nuis_fp']:.4f}",
+              f"sens+ {va['sens_pos']:.3f} sens- {va['sens_neg']:.3f} fp {va['nuis_fp']:.4f} "
+              f"fp95 {va['nuis_fp95']:.4f} fpmax {va['nuis_fp_max']:.4f}",
               flush=True)
 
         # Mid-training tracking: append a CSV row + redraw curves every epoch.
@@ -459,7 +495,8 @@ def main():
         if is_best:
             torch.save(ckpt, os.path.join(args.save_folder, "best.pt"))
             save_sample_plots(head, backbone, val_loader, device,
-                              os.path.join(args.plots_folder, "val_best_samples.png"))
+                              os.path.join(args.plots_folder, "val_best_samples.png"),
+                              target_threshold=args.target_threshold if args.target_mode == "signed_mask" else None)
 
     print(f"[RQ1] done. best val dice = {best_dice:.4f}")
 

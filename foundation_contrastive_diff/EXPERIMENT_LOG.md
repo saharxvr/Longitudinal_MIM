@@ -34,6 +34,156 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-16 — Prepared requested combined run: upright scans, signed-mask GT, modest FP discount.**
+  User requested a new run combining rotated scans, +/-1 GT and slightly less FP
+  punishment. Config: `configs/last1_rot90cw_mask_fp075.yaml`; launcher:
+  `training/run_rotated_mask.sh`. This is a combined recipe, not evidence isolating
+  a loss effect. Campus launch has not been executed from this local Windows session.
+  A three-way visual comparison of an exported source image established **90 degrees
+  clockwise (rotation_k=3)** as upright. Apply that same transform to both scans and
+  continuous GT before frozen extraction; no interpolation or left/right flip is added.
+  Native GPU cache: `/cs/labs/josko/sahar_aharon/fcd_cache_last1_rot90cw_inference`.
+  Run: `/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_rot90cw_mask_fp075`.
+  Cache contains continuous GT plus rotation tags; native extraction writes atomically,
+  records manifest/layers/orientation and exports an actual input preview. Dataset,
+  launcher and resume guards reject incompatible rotated caches/checkpoints.
+  Training converts `abs(GT)>0.05` to sign(GT), otherwise zero. Signed L1+L2 uses
+  foreground **11** and background **0.75** (25% background-only reduction, not the
+  earlier proposed region-normalized loss). No-change pairs retain a nonzero penalty.
+  Keep frozen native last-one RAD-DINO, the same 2,060,033-parameter cross-attention
+  head, optimizer/splits and 60 epochs; seed42; Dice/sign weights remain zero.
+  Prediction threshold **0.5**, original GT support **0.05**, stored in checkpoint
+  metadata and reused automatically by evaluation/review; source panels rotate too.
+  These outputs are signed change scores rather than calibrated intensity maps.
+  Validation logs/checkpoints additionally track nuisance FP p95/max. Inspect inputs
+  and early validation maps by epochs3-5; leave test untouched. Do not add more changes
+  yet; use later separate ablations for attribution and threshold calibration.
+  **Validation:** 30 CPU tests passed, including real NIfTI aligned rotation, signed
+  target/FP weighting, training/validation target consistency, native cache guards,
+  and end-to-end legacy plus rotated review export. Both launchers pass bash -n.
+  Config parsing resolves rotation3/target=signed_mask/BG0.75/pred0.5/GT0.05.
+  Real campus GPU/cache throughput and this run's learning quality remain unverified.
+
+- **2026-10-16 — User proposes GT normalization/masking and a lower FP penalty; experiments not yet approved or run.**
+  Motivation: weak/empty predictions may reflect conservative optimization. This is a
+  hypothesis, not proof that the current FP term causes the misses. Recommended target
+  ablation: signed ternary mask {-1,0,+1}, using an explicit support threshold (0.05
+  would match the existing evaluation GT definition), rather than per-image max/min-max
+  normalization. Zero must remain zero and no-change GT must stay empty. Mask targets
+  change output semantics to change scores, not reconstructed DRR intensity; retain
+  original continuous GT and a fixed reference mask for comparable evaluation.
+  Recommended independent loss ablation: per-image foreground/background-mean signed
+  reconstruction, starting with background coefficient 0.1 relative to foreground 1
+  as a tunable hypothesis, not an established best value. Retain an explicit nonzero
+  penalty on nuisance-only pairs. Do not train only inside the GT mask. A lower global
+  background penalty also tolerates distant hallucinations; if boundary displacement
+  is the issue, edge softness/spatial tolerance is a separate targeted option.
+  Compare target-only and loss-only changes before combining them; keep encoder frozen
+  and cache/head/splits fixed. Tune prediction thresholds on validation without changing
+  the original GT reference, and report signed recall plus nuisance FP tails. No training
+  code, config, cache, or checkpoint changed in response to this proposal.
+
+- **2026-10-16 — Prediction/loss review: under-response is supported; loss-only causation is not established.**
+  Reviewed all 2,108 rows of the epoch-39 validation CSV and visually inspected
+  **12 selected panels** spanning all four pathologies, successes, failures, and two controls.
+  This is not a visual review of all 338 panels. Selected panels are intentionally
+  enriched for extremes; quantitative results below use the full validation CSV.
+  Source: `review_outputs/last1_dpt_cross_attention_val_best_20261016_171153/`.
+  No model, feature cache, loss, configuration, or held-out test data was changed.
+
+  **Observed error pattern (threshold 0.05):**
+  1,293 pathology-labelled pairs include 56 with no GT pixels above threshold.
+  On the remaining **1,237 nonempty-GT pairs**, mean Dice is **0.5431**;
+  **191 (15.4%)** have empty thresholded predictions and **240 (19.4%)** have
+  effectively zero overlap (Dice < 1e-6). Empty prediction does not mean a zero-valued map.
+  These rows cover repeated variants, not independent patients/experiments.
+
+  | Nonempty-GT subset | Pairs | Mean Dice | Empty predictions |
+  |---|---:|---:|---:|
+  | GT area <=1% of image | 207 | 0.0485 | 128 |
+  | GT area >1% and <=5% | 319 | 0.3893 | 55 |
+  | GT area >5% | 711 | 0.7561 | 8 |
+  | GT peak >0.05 and <=0.10 | 241 | 0.0899 | 124 |
+  | GT peak >0.10 and <=0.20 | 567 | 0.5490 | 61 |
+  | GT peak >0.20 and <=0.40 | 418 | 0.7876 | 6 |
+  | GT peak >0.40 | 11 | 0.8792 | 0 |
+
+  Area/intensity are related and defined from GT at the evaluation threshold, not
+  the training mask threshold. A joint check still shows an intensity gradient for
+  area >5%: Dice **0.4188 / 0.7064 / 0.8034** for peaks <=0.10 / <=0.20 / >0.20
+  (15 / 287 / 409 pairs). This is descriptive evidence, not an isolated causal effect.
+  Median per-pair prediction/GT peak ratio: **0.8168** overall, **0.6834** consolidation,
+  **0.7088** fluid overload, **0.8856** pleural effusion, **0.9481** pneumothorax.
+  A global peak ratio does not establish correct spatial placement.
+  On 970 single-sign, nonempty-GT pairs, mean unsigned GT recall is **0.54836**
+  versus correct-sign recall **0.54679**. Unsigned recall was reconstructed from
+  Dice and mask areas (negligible smoothing error). Thus thresholded sign reversal
+  is not the main aggregate deficit on this subset; mixed-sign pairs need separate care.
+  The exported wrong_sign_fraction counts even subthreshold opposite-sign values,
+  so it must not be read as a thresholded direction-error rate.
+
+  **Concrete panels (filenames under the source folder's cases/):**
+  - `abaf17cd83edf328.png`: fluid-overload resolution; broad correctly signed response,
+    peak **0.04869** versus GT **0.18054**; thresholded prediction empty, Dice ~0.
+  - `153f403a42fa51b7.png`: fluid-overload resolution; roughly localized but smoother
+    and weaker; predicted area **8.89%** versus GT **21.71%**, Dice **0.5631**.
+  - `abd371b8b6a476d6.png`: consolidation appearance; reduced support and detail,
+    predicted area **2.02%** versus GT **4.59%**, Dice **0.4985**.
+  - `bbc2ae99c05ab107.png`: mixed consolidation; textured signed GT is largely missed,
+    GT/pred peaks **0.2089/0.03284**, Dice ~0; attenuation alone need not explain it.
+  - `755dd28b383c02b7.png`: mixed pneumothorax; misses the negative region and gives
+    faint positive responses; peak **0.04589**, Dice ~0. Not merely global gain.
+  - `0bb99a810d41c6fa.png`: mixed pleural effusion; large off-target positive response,
+    poor overlap with the negative GT region, Dice **0.0284**.
+  - `d96dee84e1a18d8d.png`, `ce63e745db6c39dc.png`, `9e7fc242917b5203.png`,
+    `f90aa7f118002274.png`: broad successful changes across the four pathologies,
+    Dice **0.9467 / 0.9697 / 0.9560 / 0.9493**, respectively; fine texture is smoother.
+  - `0d66731b9434938a.png`: worst nuisance control; FP area **17.397%**, not immunity
+    to nuisance. `e376d93a8b89e32b.png`: random control, no thresholded detections.
+    All 815 controls have zero GT: 643 have no detections; 50 exceed 1% FP area;
+    mean FP area **0.2395%**, 95th percentile **1.3332%**. Monitor tails, not only mean.
+
+  **Loss audit and executed checks:**
+  Current config/call site uses signed L1+L2 with
+  `mean((1 + 10 * (abs(gt)>0.02)) * (abs(pred-gt) + (pred-gt)**2))`.
+  Dice/sign coefficients are zero. Sign is already supervised by signed reconstruction.
+  Small/weak targets have less aggregate influence despite 11x changed-pixel weighting;
+  L2 adds little relative to L1 for small residuals. A CPU check of the actual function
+  gave zero-prediction loss **0.009504** for 1% area at GT=0.08, versus **0.264**
+  for 10% area at GT=0.20 (**27.78x**). A correctly localized half-amplitude prediction
+  at 0.04 gives loss **0.004576** but an empty mask at evaluation threshold 0.05.
+  Perfect reconstruction gives zero active loss: do not claim zero output is its optimum.
+  The inactive existing Dice compares abs(pred) to a **binary** GT>0.02 mask;
+  at perfect reconstruction of the 0.08 target it still gives **0.851852** loss.
+  Enabling it unchanged can push magnitudes toward one and conflict with continuous
+  target calibration. Its mere presence is not evidence of a suitable localization term.
+
+  **Important competing explanation: input orientation.**
+  Reviewed source CXRs are sideways. `_load_nii_2d` uses squeeze without NIfTI affine
+  reorientation; `_to_chw` only reshapes/resizes. Native cache generation passes these
+  tensors directly to the backbone, whose `_prep` repeats/resizes/normalizes without
+  rotation. The review uses the same dataset arrays and imshow without rotation.
+  Thus the current code path does not explain the sideways views as a display-only fix.
+  Historical cache input pixels were not available locally for direct inspection;
+  verify an actual encoder-input preview on campus before choosing an orientation fix.
+  A frozen encoder's representation, coarse feature grid, smoothing, and nuisance
+  robustness remain alternatives to loss-only causation; no benefit from rotation is proven.
+
+  **Recommended next decision, not implemented:**
+  First check actual encoder-input orientation. Use the existing checkpoint for a
+  validation-only prediction-threshold/gain sweep while holding GT threshold fixed
+  at 0.05, tracking signed recall and nuisance FP tails as well as Dice. This requires
+  raw maps or rerunning the head on campus: the CSV/PNG export cannot supply an exact sweep.
+  Then isolate a loss ablation with the same frozen encoder/cache/head/splits and matched
+  initialization/training budget: signed L1+L2 averaged separately over foreground and
+  background per image, with fixed documented coefficients and background-only handling
+  for no-change pairs. Keep a real background penalty. Normalizing by the sum of pixel
+  weights alone does not give region-balanced means. Do not combine orientation changes,
+  a new loss, and an architecture change in one comparison. Do not enable the existing
+  raw-magnitude Dice or prioritize a larger sign penalty based on these results.
+  Runtime assertions passed for CSV/report counts and Dice, analytical loss examples,
+  the Dice calibration counterexample, and existence of all 338 referenced panel files.
+
 - **2026-10-16 — Campus review push succeeded; artifacts and exact validation results verified locally.**
   Campus first push successfully published 87a5dba2. Subsequent authentication failures
   came from explicitly disabling the working credential helper; the later git -C ..

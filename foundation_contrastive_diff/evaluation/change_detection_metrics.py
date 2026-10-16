@@ -28,10 +28,11 @@ def iou_score(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-6) -> fl
     return ((inter + eps) / (union + eps)).item()
 
 
-def directional_sensitivity(pred_diff: torch.Tensor, gt_diff: torch.Tensor, threshold: float = 0.1):
+def directional_sensitivity(pred_diff: torch.Tensor, gt_diff: torch.Tensor, threshold: float = 0.1,
+                            gt_threshold=None):
     """Sensitivity (recall) for positive and negative changes separately."""
     pred_pos, pred_neg = _binarize(pred_diff, threshold)
-    gt_pos, gt_neg = _binarize(gt_diff, threshold)
+    gt_pos, gt_neg = _binarize(gt_diff, threshold if gt_threshold is None else gt_threshold)
 
     def recall(p, g, eps=1e-6):
         return ((p * g).sum() / (g.sum() + eps)).item()
