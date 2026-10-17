@@ -35,6 +35,28 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-17 - User chose training target cutoff0.0001 for the next ablation.**
+  Added configs/last1_rot90cw_mask_thr0p0001_fp075.yaml with signed-mask cutoff0.0001,
+  fresh run_last1_rot90cw_mask_thr0p0001_fp075 checkpoint/plot paths, diagnostics every
+  epoch, GT diagnostic thresholds0/.0001/.02/.05 and connected-component diagnostics.
+  Shared run_rotated_mask.sh now honors HEAD_CONFIG while preserving its original
+  default. Campus command explicitly exports both HEAD_CONFIG and RUN; guarded cache
+  checks, split audits, locking and same-run resume remain in place. Reuse existing
+  native-last1 rotated features; do not copy or resume the previous run's checkpoint.
+  Model/frozen encoder, rotation3, seed42, optimizer,60epochs, L1+L2, foreground11 and
+  background0.75 unchanged. Primary evaluation/selection stays prediction0.5/GT0.05
+  for comparison; extra pixelwise sweeps include GT0.0001. Components remain at primary
+  thresholds. Signed conversion occurs before tau0.02, so low-amplitude pixels surviving
+  the new cutoff remain unit foreground targets, not discarded by tau. Boundary test
+  verifies strict > cutoff, correct signed targets, weighted objective/gradients,
+  active background supervision, diagnostic parity, and unchanged baseline settings.
+  Audit at .0001 retained93.05%/93.18% train/val nonzero support, >99.99% pooled absolute
+  GT mass, and erased no nonempty maps. This is user-selected, not proven optimal;
+  selected spatial GT examples remain unreviewed locally. No actual campus training
+  launched. Full setup/launch instructions saved in configs/README.md.
+  Verification: all40 CPU regression tests passed in44.125s; both rotated-mask and
+  audited training launchers passed bash -n. The new boundary/config test passed.
+
 - **2026-10-17 - Full campus GT audit retrieved and independently verified.**
   Pulled campus result commit64c07dbd, results/gt_audit_20261017_125959. Audit selected
   and processed all18572 records: train16464 (9508 nonempty GT,6956 zero controls),

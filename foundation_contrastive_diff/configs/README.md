@@ -4,6 +4,50 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## GT Cutoff 0.0001 Ablation
+
+User-selected follow-up: `last1_rot90cw_mask_thr0p0001_fp075.yaml` changes the training
+signed-mask cutoff from 0.05 to 0.0001. Pixels with abs(GT)>0.0001 become +/-1;
+all others remain zero. Conversion precedes tau=0.02, so tau does not remove surviving
+unit-valued targets. Foreground weight11, background0.75, L1+L2, frozen encoder,
+native-last1 cache, head, rotation3, seed42 and60-epoch budget are unchanged.
+Reuse the rotated cache; start a fresh head in a separate run, not from the old model.
+
+For comparison, best.pt selection and primary evaluation retain prediction threshold
+0.5 and raw-GT threshold0.05. Additional diagnostic sweeps include raw-GT threshold
+0.0001, but do not change checkpoint selection. Full train/val diagnostics run every
+epoch, including connected-component statistics enabled in this config. Components
+still use the primary evaluation thresholds; the threshold CSV contains the additional
+pixelwise GT-cutoff comparisons. Expect extra CPU work for diagnostics.
+
+Complete campus launch (check GPU availability; do not overlap another training job):
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export DATA=/cs/labs/josko/sahar_aharon/fcd_train
+export CACHE_DIR=/cs/labs/josko/sahar_aharon/fcd_cache_last1_rot90cw_inference
+export HEAD_CONFIG=configs/last1_rot90cw_mask_thr0p0001_fp075.yaml
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_rot90cw_mask_thr0p0001_fp075
+python -c "import torch; f,t=torch.cuda.mem_get_info(); print(f'GPU free {f/1e9:.1f}GB / {t/1e9:.1f}GB')"
+if mkdir -p "$RUN" && touch "$RUN/train.log"; then
+	nohup bash training/run_rotated_mask.sh >> "$RUN/train.log" 2>&1 &
+	tail -f "$RUN/train.log"
+fi
+```
+
+Always set both HEAD_CONFIG and RUN as above: the shared launcher keeps its original
+0.05 config/run defaults when they are not supplied. It checks cache/split metadata,
+uses the existing pipeline lock, and resumes only the selected run if interrupted.
+Do not copy old checkpoints into this new run. Ctrl+C stops tail, not training.
+Outputs include checkpoints/best.pt, checkpoints/metrics.csv and
+checkpoints/diagnostics/epoch_NNNN_{train,val}.json/.csv.gz/_thresholds.csv.gz.
+No campus training is launched by editing this config locally.
+
 ## GT Audit Before Choosing a Loss
 
 Run this CPU audit on the campus machine with the original NIfTIs. It does not train

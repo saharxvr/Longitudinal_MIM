@@ -258,6 +258,40 @@ class ClinicalInferenceTests(unittest.TestCase):
 
 
 class RotatedMaskRunTests(unittest.TestCase):
+    def test_small_cutoff_config_and_signed_target_boundary(self):
+        config_root = Path(__file__).resolve().parents[1] / "configs"
+        with patch.object(sys, "argv", ["train", "--config", str(config_root / "last1_rot90cw_mask_fp075.yaml")]):
+            baseline = parse_args()
+        with patch.object(sys, "argv", ["train", "--config", str(config_root / "last1_rot90cw_mask_thr0p0001_fp075.yaml")]):
+            args = parse_args()
+        allowed_changes = {"config", "save_folder", "plots_folder", "target_threshold",
+                           "diagnostics_gt_thresholds", "diagnostics_components"}
+        self.assertEqual({key: value for key, value in vars(args).items() if key not in allowed_changes},
+                         {key: value for key, value in vars(baseline).items() if key not in allowed_changes})
+        self.assertEqual(args.target_threshold, .0001)
+        self.assertNotEqual(args.save_folder, baseline.save_folder)
+        self.assertNotEqual(args.plots_folder, baseline.plots_folder)
+        self.assertEqual((args.eval_threshold, args.eval_gt_threshold), (.5, .05))
+        self.assertTrue(args.diagnostics_components)
+        self.assertIn(.0001, args.diagnostics_gt_thresholds)
+        gt = torch.tensor([[[[0., .000099, -.000099, .0001, -.0001, .000101, -.000101, .04]]]])
+        target = torch.tensor([[[[0., 0., 0., 0., 0., 1., -1., 1.]]]])
+        pred = torch.full_like(gt, .2, requires_grad=True)
+        options = {key: getattr(args, key) for key in ("tau", "w_l1", "w_l2", "w_dice", "w_sign",
+                   "pos_weight", "target_mode", "target_threshold", "background_weight")}
+        loss, _ = change_map_loss(pred, gt, **options)
+        weight = torch.where(target != 0, 11., .75)
+        expected = (weight * ((pred - target).abs() + (pred - target).square())).mean()
+        torch.testing.assert_close(loss, expected)
+        self.assertEqual(float(change_map_loss(target, gt, **options)[0]), 0.)
+        loss.backward()
+        self.assertGreater(float(pred.grad[..., 0]), 0.)
+        self.assertLess(float(pred.grad[..., 5]), 0.)
+        self.assertGreater(float(pred.grad[..., 6]), 0.)
+        diagnostics = trainer.make_diagnostics(args)
+        diagnostics.update(pred.detach(), gt, dict(pair_id=["boundary"], is_pathology=[1]))
+        self.assertAlmostEqual(diagnostics.rows[0]["target_area"], 3 / 8)
+
     def test_training_and_validation_use_mask_targets_and_raw_gt_support(self):
         class PerfectMaskHead(torch.nn.Module):
             def __init__(self):

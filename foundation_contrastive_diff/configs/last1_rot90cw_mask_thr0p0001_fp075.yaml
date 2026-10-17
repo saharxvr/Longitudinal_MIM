@@ -1,0 +1,37 @@
+dataset_root: /cs/labs/josko/sahar_aharon/fcd_train
+cache_dir: /cs/labs/josko/sahar_aharon/fcd_cache_last1_rot90cw_inference
+save_folder: /cs/labs/josko/sahar_aharon/fcd_runs/run_last1_rot90cw_mask_thr0p0001_fp075/checkpoints
+plots_folder: /cs/labs/josko/sahar_aharon/fcd_runs/run_last1_rot90cw_mask_thr0p0001_fp075/plots
+
+head: dpt_cross_attention
+dpt_channels: 96
+feat_last_k: 1
+rotation_k: 3
+seed: 42
+epochs: 60
+batch_size: 8
+accum: 4
+lr: 0.0003
+weight_decay: 0.01
+warmup_epochs: 2.0
+grad_clip: 1.0
+num_workers: 0
+balanced: true
+
+target_mode: signed_mask
+target_threshold: 0.0001
+background_weight: 0.75
+w_l1: 1.0
+w_l2: 1.0
+w_dice: 0.0
+w_sign: 0.0
+dice_warmup_epochs: 0
+pos_weight: 10.0
+tau: 0.02
+eval_threshold: 0.5
+eval_gt_threshold: 0.05
+
+diagnostics: true
+diagnostics_every: 1
+diagnostics_gt_thresholds: [0.0, 0.0001, 0.02, 0.05]
+diagnostics_components: true
