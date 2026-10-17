@@ -35,6 +35,52 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-17 - Full campus GT audit retrieved and independently verified.**
+  Pulled campus result commit64c07dbd, results/gt_audit_20261017_125959. Audit selected
+  and processed all18572 records: train16464 (9508 nonempty GT,6956 zero controls),
+  val2108 (1293 nonempty,815 zero controls); no test rows and no reported issues.
+  Independently streamed all55716 per-pair/stage rows and reproduced every summary
+  pair/nonempty count and support/entire-map-loss statistic at cutoffs0,.0001,.001,
+  .01,.02,.05. Pair/stage identities are unique. Every native GT is already512x512;
+  native and training-float32 aggregate support statistics match, so resizing in this
+  pipeline does not explain the tiny tails. No out-of-range or nonfinite GT pixels.
+  Viewed cutoff_diagnostics.png, but selected actual GT overlays/NPZ were intentionally
+  not pushed and have not been inspected locally. Statistical conclusions below do
+  not certify anatomical validity of every nonzero pixel or explain clinical F1 alone.
+
+  | Split | Support retained at .05 | Absolute GT mass retained, pooled | Entire nonempty maps erased |
+  |---|---|---|---|
+  | Train |33.6271%|75.8989%|430/9508 (4.52%)|
+  | Val |34.0876%|77.3766%|56/1293 (4.33%)|
+
+  Validation support retained at .05 by pathology: consolidation48.0582%, fluid
+  overload49.6760%, pleural effusion38.2633%, pneumothorax16.6947%. Entire maps erased
+  are5,14,9,28 respectively, reproducing the prior56-case observation while revealing
+  substantial partial-support loss in other maps. Exact nonzero masks average28.63%
+  (train) /28.68% (val) of image area on nonempty cases, versus9.63%/9.78% at .05.
+  At .001, support retained is85.6609%/85.7988%, pooled absolute mass99.9335%/99.9366%,
+  and no nonempty maps disappear. At .0001, support93.0516%/93.1807%, mass99.9948%/
+  99.9951%, no maps disappear. These are sensitivity checks, not validated optimal
+  thresholds. Per-pair mean mass retention at .05 is56.58%/56.12%; do not confuse this
+  macro statistic with pooled mass retention75.90%/77.38%.
+  Exact-nonzero masks contain fragmentation: pneumothorax averages118.06/115.04 signed
+  8-connected components per nonempty pair. Tiny tails therefore cannot be assumed
+  negligible once sign(GT) promotes them to unit labels. Mixed-sign raw GT occurs in
+  5038/9508 train and661/1293 val nonempty maps; sign direction should be reviewed too.
+  Simulated float16 removes only0.02685%/0.02529% of nonzero pixels and flips13404/1708
+  pixel decisions at .05, without changing erased-map counts430/56. It is not the main
+  explanation for large .05 support loss; actual cache read-back remains unaudited.
+  No nonempty native GT array hash is shared across train/val; the one shared hash is
+  the empty array. This is not proof of patient/change-group split independence.
+  Recommendation: prioritize GT support/cutoff review before a more complex loss.
+  Inspect actual selected masks, then make a controlled target-cutoff ablation with
+  frozen encoder, same head/L1+L2/background penalty and fixed evaluation definitions.
+  Do not declare exact-zero targets correct from these scalar statistics. Holding
+  weights11/.75 while moving .05 to0 also raises average all-pixel weight budget from
+  about1.320 to2.445 on train; target expansion changes effective weighting even when
+  flags stay fixed. Region-normalized weighting would be a separate ablation. No
+  config, loss or training changes made after receiving the audit.
+
 - **2026-10-17 - Implemented original-GT audit and loss-independent epoch diagnostics.**
   User requested evidence for choosing the next loss and rich train/val statistics,
   including terms not used by the objective. Added evaluation/audit_gt.py and
