@@ -35,6 +35,73 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-17 - Retrieved epochs15-37; matched macro Dice plateaus while FP falls.**
+  Pulled c6c1aca0, results/cutoff0001_epoch37_20261017_192724: full validation JSON
+  and threshold sweeps15-37, train JSON37, metrics.csv through38. Combined with the
+  earlier epoch14 snapshot to verify all37 configurations and validation coverage
+  (2108 pairs=1293 pathology+815 nuisance), all28416 sweep rows' pooled overlap formulas
+  and integer counts, all validation groups' weighted-loss decompositions, and epoch37
+  train decomposition. Config, GT and prediction thresholds remain unchanged.
+
+  | Epoch | Matched unsigned macro Dice | Matched signed macro Dice | Signed precision | Signed recall | Nuisance FP mean | FP P95 | Printed GT.05 Dice |
+  |---|---|---|---|---|---|---|---|
+  |14|.67329|.64951|.62850|.77965|.02737|.18812|.35716|
+  |23|.68613|.66068|.62552|.79500|.02960|.19057|.35720|
+  |36|.68354|.66040|.67512|.75376|.01406|.09152|.37284|
+  |37|.68346|.65954|.67656|.75023|.01432|.10285|.37312|
+
+  Matched scores use raw-GT>.0001 and prediction>.5 on pathology pairs; FP values are
+  nuisance image-area fractions, not affected-case rates. Among full diagnostics1-37,
+  epoch23 is best on matched unsigned/signed macro Dice, epoch33 on mean nuisance FP
+  (.0136005), epoch36 on FP P95 (.0915218), epoch17 on validation diagnostic loss
+  (.8092077), and epoch37 on original printed Dice. Different objectives do not select
+  the same checkpoint. Epoch36 signed Dice.66040 is very close to23 .66068; do not
+  present these small observed differences as statistically established superiority.
+  By37, predictions are more conservative than23: signed precision rises.62552->.67656
+  while recall falls.79500->.75023. Mean pathology predicted area33.87%->30.45% against
+  unchanged GT26.73%; pooled predicted/reference ratio1.267->1.139. Macro Dice is flat,
+  but pooled unsigned Dice improves.77419->.79151 and signed.75053->.76757, so it is
+  incorrect to say every overlap measure has stopped improving. Epoch37 pooled
+  unsigned precision/recall=.74310/.84667 and signed=.72062/.82105. Macro emphasizes
+  pairs equally; pooled metrics weight by pixel counts. Both must be reported clearly.
+  Epoch37 nuisance FP mean1.43%, P9510.29%, max42.98%, versus epoch14 2.74%/18.81%/
+  48.41%. Large worst-case errors remain despite substantial suppression of the mean.
+
+  | Anomaly | Epoch14 signed macro Dice | Epoch23 signed macro Dice | Epoch37 signed macro Dice | Epoch37 signed precision | Epoch37 signed recall |
+  |---|---|---|---|---|---|
+  |Consolidation|.56728|.58822|.57590|.59195|.70217|
+  |Fluid overload|.67889|.68855|.69652|.66063|.85031|
+  |Pleural effusion|.69806|.71103|.71072|.75746|.73265|
+  |Pneumothorax|.65586|.65872|.65874|.69071|.72181|
+
+  Consolidation remains weakest and loses Dice/recall relative to23. Fluid improves;
+  effusion/pneumothorax are approximately flat in Dice, with precision/recall tradeoffs.
+  Epoch37 area ratios: consolidation1.3273, fluid1.3238, effusion.9606, pneumothorax
+  1.0960. No source of medical/anatomical validity is established by these synthetic
+  reference masks. This is not proof of clinical benefit or superiority over the
+  earlier .05-target model; do not compare different-reference Dice as equivalent.
+  Numerical health across1-37: invalid pairs0, nonfinite losses/gradient steps0;
+  2058 successful batches/514 optimizer steps/2 pending batches each epoch, unchanged
+  known remainder. Epoch37 grad norm mean1.070/max3.127, epoch510.29s, peak2.45GiB.
+  Train total.53938 at14->.39882 at23->.28375 at37, while validation diagnostic loss
+  .83100->.82254->.89119; FG contribution.72260->.71387->.81371 and BG.10840->.10867
+  ->.07748. Foreground validation errors worsen while train loss falls: overfitting/
+  generalization warning, not numerical collapse. Train is online replacement-sampled,
+  so the train/val means are not an exact like-for-like generalization-gap estimate.
+  Epoch38 has metrics only: printed Dice.371234, nuisance FP.013591, train.273675,
+  foreground L1/L2.249095/.290015; no full health/matched diagnostics for38 received.
+  Under the existing selection rule, best in metrics1-38 is37, not latest38. Checkpoint
+  weights were not uploaded. Only best/last are automatically retained; epoch23 was not
+  an original-metric best then, so do not assume its weights remain recoverable from
+  these diagnostic files or propose selecting an unavailable checkpoint.
+  Recommendation: no mid-run loss/sampler/threshold/selection changes. The head is a
+  promising but largely plateaued synthetic candidate with better nuisance control;
+  do not expect large macro-Dice gains from more epochs alone. Finish the planned60
+  unchanged if the remaining budget is acceptable, without extending solely for the
+  printed Dice. Next useful assessment is the stored best checkpoint on clinician
+  annotations under the same comparison protocol, not clinical-set tuning. No clinical/
+  test evaluation, new training run, checkpoint manipulation or running-job change made.
+
 - **2026-10-17 - Retrieved epochs1-14 diagnostics; metrics extend through epoch17.**
   Pulled e03d46eb, results/cutoff0001_epoch14_20261017_162415. Full validation JSON
   and threshold sweeps cover1-14; training JSON covers14; metrics.csv covers1-17.
