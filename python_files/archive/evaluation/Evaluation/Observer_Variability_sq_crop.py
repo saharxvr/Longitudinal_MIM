@@ -21,7 +21,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
 from matplotlib import colors
 from scipy.ndimage import label
 from itertools import combinations
@@ -113,6 +112,8 @@ def plot_diff_on_current(c_diff_map, c_current, out_p):
 # ---------------------------------------------------------------------------
 
 def plot_matrix(matrix_df: pd.DataFrame, output_path: str, title='Correlation Matrix'):
+    import seaborn as sns
+
     N = matrix_df.shape[0]
     figsize = max(8, int(N * 0.6))
     plt.figure(figsize=(figsize, figsize))

@@ -35,6 +35,38 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-17 - Campus clinical preflight blocked by unused seaborn import; fixed locally.**
+  User successfully pulled main through7d32da40 on cas703, confirming publication of
+  the clinical runner. Preflight then failed importing seaborn from the legacy OV
+  module, before discovery/inference; guarded nohup command did not start a job.
+  Moved seaborn import into its sole consumer, plot_matrix; annotation resolution,
+  ellipse rasterization, checkpoint settings and predictions are unchanged.
+  Full LOCAL preflight passed100pairs/500annotations with seaborn deliberately blocked;
+  the same16known raster-warning pairs remain. Four clinical unit tests passed,
+  including a new blocked-seaborn annotation-reader regression. No real clinical
+  inference results yet. User subsequently requested immediate commit/push of this
+  fix, regression test and log entries, leaving unrelated work untouched.
+  Immediate campus workaround for the already-pulled code: install seaborn using
+  the activated fcd_venv's python -m pip, then rerun guarded preflight/inference.
+
+- **2026-10-17 - Apparently empty GT panel7bfdd75204f78981 analyzed.**
+  User asked why Signed GT and GT zoom look empty and whether this affects loss.
+  Case train_10833_a_1/pair1/variant1, negative pleural effusion: continuous GT
+  peak0.06982421875, prediction peak1.0. Exporter's shared zoom=max(GTpeak,predpeak,
+  threshold)=1, so GT zoom is identical to fixed[-1,1] and both are very pale, NOT empty.
+  Actual GT mask has20721pixels (7.9044%); prediction mask18652pixels (7.1152%).
+  Dice0.5735403, negative recall0.5449061: partial localization with extra/missing regions,
+  not absent GT. Training call/config verified signed_mask at0.05; retained negative
+  GT becomes-1, background0, foreground loss weight11/background0.75. Actual loss-function
+  check with representative GT[-0.0698242,-0.04,0] ->target[-1,0,0] gave zero loss for
+  exact target and positive loss for zero prediction. This illustrative check is NOT
+  the full case's loss; original GT/prediction arrays are not in the review export.
+  Display contrast does not affect training; thresholding changes supervised support.
+  Exported per-pair l1 currently compares prediction to CONTINUOUS GT and is not the
+  signed-mask training loss. Recommend explicit Continuous GT and Training target labels
+  and a GT-only contrast view, keeping numerical values and scored masks unchanged.
+  No plotting/loss code changed for this question.
+
 - **2026-10-17 - Clinical100 comparison-head inference prepared, not yet executed.**
   User requested trying the trained head on the100 clinician-annotated ICU pairs for
   qualitative direction. Added evaluation/evaluate_clinical.py and

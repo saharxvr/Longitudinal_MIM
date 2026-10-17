@@ -20,6 +20,22 @@ from training.cache_features import slice_last_layer_cache
 
 
 class ClinicalInferenceTests(unittest.TestCase):
+    def test_clinical_annotation_reader_does_not_require_seaborn(self):
+        from evaluation.evaluate_clinical import clinical_tools
+
+        with patch.dict(sys.modules, {"seaborn": None}):
+            tools = clinical_tools()
+            with tempfile.TemporaryDirectory() as temporary:
+                doctor = Path(temporary) / "Avi"
+                doctor.mkdir()
+                annotation = doctor / "pair1.json"
+                annotation.write_text(json.dumps([{}, dict(cx=4, cy=5, rx=2, ry=2,
+                                                           angle=0, label="Appearance")]))
+                resolved = tools.resolve_annotation_path(temporary, "Avi", 1)
+                positive, negative = tools.load_labels_map(resolved, (11, 13))
+                self.assertTrue(positive.any())
+                self.assertFalse(negative.any())
+
     def test_training_transform_and_asymmetric_inverse(self):
         import numpy as np
         from datasets.pair_dataset import _norm01, _to_chw
