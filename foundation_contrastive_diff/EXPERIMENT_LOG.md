@@ -35,6 +35,61 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-17 - Retrieved epoch4 diagnostics; metrics snapshot also includes epoch5.**
+  Pulled08c75764, results/cutoff0001_epoch4_20261017_144309: train/val epoch4 JSON,
+  val threshold CSV, run_config.json and metrics.csv through epoch5. Confirmed signed
+  target cutoff.0001, FG11/BG.75, L1+L2 only, eval prediction.5/GT.05, seed42 and
+  balanced replacement sampling. Independently recomputed micro precision/recall/Dice/
+  IoU from integer-valued counts for all768 threshold rows; CSV count fields serialize
+  with .0 suffixes. Verified weighted L1/L2 equal the sum of recorded foreground and
+  background contributions for overall/pathology/nuisance groups in both splits.
+
+  | Epoch4 validation reference | Unsigned macro Dice | Signed macro Dice | Unsigned precision | Unsigned recall |
+  |---|---|---|---|---|
+  | Raw GT>.0001, prediction>.5 |.62901|.60165|.55122|.84518|
+  | Raw GT>.05, prediction>.5 |.32108|.31743|.21149|.91689|
+
+  Table values are pathology per-pair means with valid denominators. Printed legacy
+  Dice.3118158 includes empty-reference pathology cases differently from diagnostic
+  Dice.32108; do not substitute them or confuse unsigned with signed overlap. Matched
+  .0001 scores must NOT be compared numerically to the prior run's .05-reference .6002
+  as evidence of improvement. Checkpoint selection remains on the original metric.
+  At GT.0001/pred.5, pooled unsigned precision/recall/Dice=.58107/.88821/.70254,
+  while signed=.56154/.85835/.67892. All1293 pathology references are nonempty;
+  16 predictions are empty and1268 pairs have at least one unsigned GT hit. Mean
+  predicted pathology area40.86% vs target26.73%, ratio1.529: model learns expanded
+  support but overpredicts it. Wrong-sign overlap fraction averages3.14% on valid
+  pairs; overlap/false-positive control is a larger visible deficit than polarity.
+  Matched signed macro Dice by anomaly: consolidation.51555, fluid overload.64855,
+  effusion.66325, pneumothorax.58667. Consolidation pooled predicted/reference area
+  ratio2.074 is the largest, versus1.685 fluid,1.237 effusion and1.488 pneumothorax.
+  Raising prediction threshold.5->.75 in this exploratory sweep increases matched
+  unsigned Dice.62901->.63759 and signed.60165->.61549, but nuisance FP remains7.46%
+  vs11.82%. Do not change the active threshold or claim this validation sweep is a
+  held-out result. Component F1 in JSON still refers to primary GT.05, not GT.0001.
+  Epoch4 weighted train loss has79.33% foreground contribution; val76.69%. Observed
+  training sampling is13207 pathology/3257 nuisance (80.22%/19.78%), versus natural
+  val1293/815 (61.34%/38.66%). Source confirms inverse-anomaly-frequency replacement
+  sampler equalizes four pathology categories plus one nuisance category; it does not
+  balance total pathology versus nuisance 50/50. Epoch train16464 rows cover9691
+  unique pairs/4852 groups, whereas val2108 unique pairs cover703 groups. Online
+  train and fixed-model val means are therefore not directly comparable estimates.
+  Health: no invalid prediction/GT pairs, nonfinite losses or nonfinite gradient norms;
+  2058 successful batches,514 steps, preclip grad norm mean4.633/max14.731. Clip1 is
+  active. Metadata reports579.67s per epoch (train526.11s), peak CUDA allocation2.45GiB.
+  A pre-existing accumulation remainder leaves2 batches unstepped at epoch end;
+  train_one_epoch zeros them on next entry. This affects16 sampled occurrences
+  (<0.1%), not a plausible sole cause of large FP. No mid-run optimizer fix applied.
+  Additional epoch5 metrics: train total.8851623, val Dice.3314069/IoU.2281510,
+  sens+.860919/-.826529, nuisance FP.0612955, down from.1181964 at4. Best printed
+  selection Dice is now epoch5, superseding epoch2 from the earlier log-only report.
+  No epoch5 threshold/health artifacts were uploaded; do not infer their scores.
+  Recommendation: continue the current experiment unchanged and inspect the same
+  matched-target/precision/nuisance diagnostics around epoch10. Current data support
+  learning plus excess foreground, not training collapse or proven clinical benefit.
+  Sampling and weight exposure are plausible contributors, not isolated causal proof.
+  No training/loss/config/selection or running-job changes made after this review.
+
 - **2026-10-17 - Campus cutoff0.0001 run started; user supplied epochs1-4.**
   Supersedes the preceding launch-pending note. Run uses published32668a5b and starts
   fresh with no last.pt in run_last1_rot90cw_mask_thr0p0001_fp075. Cache has20755 pairs,
