@@ -35,6 +35,45 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-17 - Campus cutoff0.0001 run started; user supplied epochs1-4.**
+  Supersedes the preceding launch-pending note. Run uses published32668a5b and starts
+  fresh with no last.pt in run_last1_rot90cw_mask_thr0p0001_fp075. Cache has20755 pairs,
+  98.3GB; audited split coverage train16464/val2108/test2183 and manifest SHA256
+  78d18b1c8c6c34aae2023f2c8342fba28b8109ca0343f81be4939ee849c54468. Cached test coverage
+  does not mean test evaluation: reported loader is2058 train/264 val batches. Head
+  has2.06M trainable parameters, native-last1 patch_dim768. Diagnostics report16464
+  online sampled train rows and2108 val rows each epoch, not16464 unique train IDs.
+  Runtime now reports torch2.14.1+cu130, GPU free24.8/25.3GB; this differs from earlier
+  recorded campus torch2.5.1+cu121 and adds an environment difference for comparisons.
+
+  | Epoch | LR | Train total | L1 | L2 | Inactive Dice term | Inactive sign term | Val Dice | IoU | L1ch | L2ch | Sens+ | Sens- | Nuisance FP mean | P95 | Max |
+  |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+  |1|1.50e-4|2.2310|1.1056|1.1254|.6318|.0603|.2861|.1897|.3357|.3758|.758|.760|.1573|.4367|.7225|
+  |2|3.00e-4|1.4228|.6929|.7299|.5527|.0332|.3190|.2178|.3003|.3127|.792|.748|.0902|.3043|.6538|
+  |3|3.00e-4|1.1437|.5559|.5879|.5158|.0267|.3150|.2156|.2449|.2948|.845|.815|.1282|.4060|.8336|
+  |4|2.99e-4|1.0078|.4866|.5212|.4947|.0249|.3118|.2112|.2109|.2508|.874|.831|.1182|.4011|.8819|
+
+  Observations are from user logs, not downloaded epoch artifacts. Optimization and
+  target-region errors improve. Best printed selection Dice so far is epoch2 .3190;
+  epoch4 correct-direction sensitivity is .874/.831, but nuisance FP occupies11.82%
+  of image area on average,40.11% atP95 and88.19% worst case. This FP metric is an area
+  fraction, not a percentage of cases with false positives. No nonfinite warning is
+  shown, but gradient/step health cannot be certified without diagnostics JSON.
+  Verified evaluate(): printed Dice/IoU are unsigned support overlap at prediction.5
+  versus raw-GT.05; signed sensitivities are separate. Training targets use raw-GT
+  .0001, so intended support expansion can reduce the old-reference Dice. That mismatch
+  cannot explain nuisance FP because zero-GT controls remain zero at both cutoffs.
+  Larger foreground support with unchanged11/.75 weights plausibly encourages broad
+  predictions, but logs alone do not establish the cause. Train Dice/sign terms remain
+  observational (weights0); they are not active additions to L1+L2. Early training is
+  not comparable to the previous converged best checkpoint, and train losses across
+  the two different target definitions are not directly comparable.
+  Recommendation: retain this run unchanged for an early review around epoch10,
+  inspect epoch4 train/val JSON plus val threshold CSV now for precision, matched-GT
+  .0001 signed/unsigned overlap, per-anomaly behavior and nuisance FP/health. If high
+  nuisance FP persists, consider a separate weighting ablation, not a mid-run change.
+  No model/config/threshold or running-job changes made in response to these logs.
+
 - **2026-10-17 - User chose training target cutoff0.0001 for the next ablation.**
   Added configs/last1_rot90cw_mask_thr0p0001_fp075.yaml with signed-mask cutoff0.0001,
   fresh run_last1_rot90cw_mask_thr0p0001_fp075 checkpoint/plot paths, diagnostics every
