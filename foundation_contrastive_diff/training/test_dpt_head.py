@@ -19,10 +19,149 @@ from training import train_foundation_diff as trainer
 from training.cache_features import slice_last_layer_cache
 
 
+class TrainingDiagnosticsTests(unittest.TestCase):
+    def test_signed_overlap_empty_references_and_exports(self):
+        import csv
+        import gzip
+        from evaluation.training_diagnostics import PredictionDiagnostics, gt_statistics
+
+        gt = torch.tensor([[[[1., -1.], [0., 0.]]], [[[0., 0.], [0., 0.]]]])
+        pred = torch.tensor([[[[-1., 1.], [0., 0.]]], [[[.8, 0.], [0., 0.]]]], requires_grad=True)
+        diagnostics = PredictionDiagnostics([.5], [0., .05], target_mode="signed_mask", components=True)
+        diagnostics.update(pred, gt, dict(anomaly_type=[1, 0], is_pathology=[1, 0], pair_id=["change", "empty"]))
+        changed, empty = diagnostics.rows
+        self.assertEqual(changed["support_dice"], 1)
+        self.assertEqual(changed["signed_dice"], 0)
+        self.assertEqual(changed["wrong_sign_pixels"], 2)
+        self.assertIsNone(empty["signed_dice"])
+        self.assertEqual(empty["predicted_area"], .25)
+        self.assertEqual(empty["positive_precision"], 0)
+        self.assertIsNone(pred.grad)
+        self.assertAlmostEqual(changed["weighted_l1"], changed["foreground_l1_contribution"] +
+                               changed["background_l1_contribution"])
+        stats = gt_statistics([0., 1e-8, .04, -.2], [0., .05])
+        self.assertEqual(stats["cutoff_0_pixels"], 3)
+        self.assertEqual(stats["cutoff_0.05_pixels"], 1)
+        with tempfile.TemporaryDirectory() as temporary:
+            diagnostics.save(temporary, 1, "train")
+            report = json.loads((Path(temporary) / "epoch_0001_train.json").read_text())
+            self.assertEqual(report["groups"]["pathology"]["signed_dice"]["n"], 1)
+            self.assertIsNone(report["groups"]["nuisance"]["signed_dice"]["mean"])
+            with gzip.open(Path(temporary) / "epoch_0001_train.csv.gz", "rt") as stream:
+                self.assertEqual(len(list(csv.DictReader(stream))), 2)
+
+    def test_component_matching_agrees_with_legacy_reference_first(self):
+        import numpy as np
+        from evaluation.evaluate_clinical import clinical_tools
+        from evaluation.training_diagnostics import component_counts
+
+        tools = clinical_tools()
+        tools.struct = tools.STRUCT_3x3
+        generator = np.random.default_rng(42)
+        for _ in range(12):
+            pred, reference = generator.random((2, 16, 16)) > .7
+            expected, _ = tools.get_pairwise_detections(reference, pred)
+            self.assertEqual(component_counts(pred, reference)["matched"], expected)
+
+    def test_gt_audit_end_to_end_and_split_exclusion(self):
+        import nibabel as nib
+        import numpy as np
+        from types import SimpleNamespace
+        from evaluation.audit_gt import DEFAULT_THRESHOLDS, run
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records = []
+            for split, amplitude in (("train", .04), ("val", -.12), ("test", .2)):
+                folder = root / "data" / split
+                folder.mkdir(parents=True)
+                image = np.arange(96, dtype=np.float32).reshape(8, 12)
+                gt = np.zeros_like(image)
+                gt[2:5, 4:8] = amplitude
+                for name, values in (("prior", image), ("current", image + gt), ("diff_map", gt)):
+                    nib.save(nib.Nifti1Image(values, np.eye(4)), folder / f"{name}.nii.gz")
+                records.append(dict(pair_id=split, split=split, effective_anomaly_type="consolidation"))
+            (root / "data" / "manifest_split.jsonl").write_text("\n".join(json.dumps(row) for row in records))
+            args = SimpleNamespace(dataset_root=root / "data", out_dir=root / "audit", splits=["train", "val"],
+                                   limit=0, seed=42, img_size=16, rotation_k=3, thresholds=DEFAULT_THRESHOLDS,
+                                   component_thresholds=[0., .05], overlays_per_group=1)
+            report = run(args)
+            self.assertEqual(report["audited_pairs"], 2)
+            self.assertFalse(report["issues"])
+            self.assertEqual(len(report["previews"]), 2)
+            self.assertTrue((args.out_dir / "cutoff_diagnostics.png").is_file())
+            for preview in report["previews"]:
+                with np.load(args.out_dir / preview["arrays"], allow_pickle=False) as arrays:
+                    self.assertEqual(arrays["gt_native"].shape, (8, 12))
+                    self.assertEqual(arrays["gt_training_float32"].shape, (16, 16))
+                    self.assertEqual(str(arrays["pair_id"]), preview["pair_id"])
+            self.assertNotIn("test", {row["split"] for row in report["summaries"]})
+            summary = next(row for row in report["summaries"] if row["split"] == "train" and
+                           row["stage"] == "training_float32" and row["anomaly_type"] == "overall")
+            self.assertEqual(summary["cutoff_0.05_entirely_removed_pairs"], 1)
+            with self.assertRaisesRegex(ValueError, "new output directory"):
+                run(args)
+
+    def test_diagnostics_do_not_change_optimizer_update(self):
+        class TinyHead(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.output = torch.nn.Parameter(torch.tensor([[[[.2, -.1], [.05, 0.]]]]))
+
+            def forward(self, *inputs):
+                return self.output, None
+
+        arguments = ["train", "--accum", "1", "--w_dice", "0", "--w_sign", "0", "--w_l2", "1"]
+        with patch.object(sys, "argv", arguments):
+            args = parse_args()
+        batch = dict(p_prior=torch.zeros(1, 1, 1), p_curr=torch.zeros(1, 1, 1),
+                     cls_prior=torch.zeros(1, 1), cls_curr=torch.zeros(1, 1),
+                     gt_diff=torch.tensor([[[[.1, -.2], [0., 0.]]]]), is_pathology=[1], pair_id=["toy"])
+        results = []
+        for diagnostics in (None, trainer.make_diagnostics(args)):
+            head = TinyHead()
+            optimizer = torch.optim.SGD(head.parameters(), lr=.01)
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 1.)
+            trainer.train_one_epoch(head, None, [batch], optimizer, scheduler, "cpu", args,
+                                    diagnostics=diagnostics)
+            results.append(head.output.detach().clone())
+        torch.testing.assert_close(results[0], results[1], atol=0, rtol=0)
+
+
 class ClinicalInferenceTests(unittest.TestCase):
+    def test_legacy_original_and_square_crop_coordinates(self):
+        import nibabel as nib
+        import numpy as np
+        from evaluation.evaluate_clinical import clinical_tools
+
+        tools = clinical_tools()
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output.nii.gz"
+            scores = np.zeros((4, 4), dtype=np.float32)
+            scores[0, 1], scores[2, 3], scores[1, 2] = 0.8, -0.8, 0.5
+            nib.save(nib.Nifti1Image(scores, np.eye(4)), output)
+            positive, negative, restored = tools.load_model_labels_map(
+                output, None, scores.shape, 0, 0, prediction_threshold=0.5)
+            np.testing.assert_array_equal(restored, scores)
+            np.testing.assert_array_equal(positive, scores > 0.5)
+            np.testing.assert_array_equal(negative, scores < -0.5)
+            with self.assertRaises(ValueError):
+                tools.load_model_labels_map(output, None, (4, 5), 0, 0)
+            crop = Path(temporary) / "crop_info.json"
+            crop.write_text(json.dumps(dict(current=dict(sq_x_min=1, sq_y_min=2,
+                                                         square_size=4, orig_h=7, orig_w=9))))
+            expected = np.zeros((7, 9))
+            expected[1:5, 2:6] = scores.T
+            positive, negative, restored = tools.load_model_labels_map(
+                output, crop, (9, 7), 0, 0)
+            np.testing.assert_array_equal(restored, expected.T)
+            np.testing.assert_array_equal(positive, expected.T > 0)
+            np.testing.assert_array_equal(negative, expected.T < 0)
+
     def test_clinical_annotation_reader_does_not_require_seaborn(self):
         from evaluation.evaluate_clinical import clinical_tools
 
+        clinical_tools()
         with patch.dict(sys.modules, {"seaborn": None}):
             tools = clinical_tools()
             with tempfile.TemporaryDirectory() as temporary:
@@ -512,6 +651,12 @@ class DPTHeadTests(unittest.TestCase):
             self.assertEqual(checkpoint["best_dice"], max(first["best_dice"], checkpoint["val"]["dice"]))
             self.assertEqual(checkpoint["head_spec"]["type"], self.head_type)
             self.assertEqual(len((root / "checkpoints" / "metrics.csv").read_text().splitlines()), 3)
+            for epoch in (1, 2):
+                for split in ("train", "val"):
+                    report = root / "checkpoints" / "diagnostics" / f"epoch_{epoch:04d}_{split}.json"
+                    diagnostics = json.loads(report.read_text())
+                    self.assertEqual(diagnostics["groups"]["overall"]["pairs"], 2)
+                    self.assertEqual(diagnostics["metadata"]["training_health"]["optimizer_steps"], 1)
 
 
 class DPTCrossAttentionTests(DPTHeadTests):

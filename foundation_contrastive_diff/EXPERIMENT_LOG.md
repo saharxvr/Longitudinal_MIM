@@ -35,6 +35,188 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-17 - Implemented original-GT audit and loss-independent epoch diagnostics.**
+  User requested evidence for choosing the next loss and rich train/val statistics,
+  including terms not used by the objective. Added evaluation/audit_gt.py and
+  evaluation/training_diagnostics.py; integrated detached telemetry into the existing
+  trainer forward passes. No real training or full campus audit was launched. No loss,
+  frozen encoder, target cutoff, optimizer policy, legacy metrics.csv or best-checkpoint
+  selection change. No new claim that a no-cutoff loss is better.
+  Audit defaults to complete train/val only, with native/preprocessed/simulated-float16
+  GT statistics, cutoff support/mass retention, entirely removed maps, magnitude
+  histograms, components, provenance hashes, GT-only contrast overlays and real selected
+  NPZ arrays. Float16 is a simulation, not an actual cached-GT read-back. Output must be
+  new; per-case issues are retained and fail the CLI. Selected medical arrays must not
+  be published automatically. Campus setup/commands and output semantics documented in
+  configs/README.md. CPU shared-storage runtime remains unmeasured on the full dataset.
+  Epoch diagnostics default on: per-pair gzip CSV, threshold-sweep gzip CSV and grouped
+  JSON for train/val. Logs raw/sign/configured-target errors, weighted FG/BG terms,
+  inactive Dice/sign terms, signed/unsigned/positive/negative overlap, nuisance FP,
+  score/area tails, direction/anomaly groups, unique IDs and training-health metadata.
+  Optional components report pooled +/-/combined F1, HMDR and unmatched detections,
+  using reference-first largest-overlap greedy matching without PAI boost or cleanup.
+  Synthetic component F1 is not the clinical per-clinician metric. Empty-reference
+  Dice/recall are undefined and carry valid denominators. Training telemetry is online
+  sampler-observed, not a fixed-model full-train evaluation. Existing pending-gradient
+  and nonfinite-step behavior is exposed, not repaired. Diagnostics incur CPU overhead;
+  every-N-epoch and disable flags are available. Regression fixtures verify actual
+  NIfTIs, preprocessing parity, cutoff removal, held-out exclusion, real NPZ contents,
+  new-output guard, legacy matching equivalence, detached stats, train/resume reports,
+  and bit-identical optimizer updates with diagnostics enabled/disabled.
+  Final local verification: all39 training.test_dpt_head CPU tests passed in10.864s;
+  touched Python diagnostics and scoped git diff --check were clean. Visually checked
+  nonempty negative-GT and empty-GT fixture overlays plus the cutoff summary figure.
+  Fixture figures are not real dataset findings; campus original-array results remain
+  pending. Related earlier clinical-comparison source is included for test dependencies,
+  without publishing generated clinical images or unrelated clinician/LLM work.
+
+- **2026-10-17 - Raw-GT visual review requested and gallery saved.**
+  User requested raw GT overlays. Local samples/reuse_test contains18 original
+  current_with_differences.png previews across6 projection/sample folders and3
+  variants each, but no diff_map.nii.gz arrays. Created
+  review_outputs/raw_gt_overlays_20261017/index.md with all18 preview links,
+  six embedded examples and two below-cutoff synthetic-validation panels.
+  Original previews are unchanged; their colorbars differ. Do not reconstruct
+  exact GT support or tiny-value tails from PNG colors. Viewed three generator
+  previews (10000_a_1,10001_a_1,10002_a_1 variant0) and two validation panels.
+  Recomputed counts from saved per_pair_val.csv:2108 total,1293 nonzero GT maps,
+  56 with peak<=.05 (pneumothorax28,fluid_overload14,pleural_effusion9,
+  consolidation5). Their nonzero GT is entirely removed by abs(GT)>.05; this
+  does not establish that all low-amplitude pixels are true lesions or measure
+  partial support loss in the other maps. Example peaks .0451355 and .0427856
+  show empty thresholded masks despite nonzero raw GT. Existing GT zoom panels
+  share limits with prediction and can remain +/-1, hiding faint GT visually.
+  Verified all18 PNGs decode and all27 gallery references resolve. No new raw
+  rendering, zero-cutoff array audit, training/config changes or inference run.
+
+- **2026-10-17 - Discussed threshold-free signed GT as the next loss ablation.**
+  User asked why clinical per-clinician F1 is poor and proposed masking GT inside
+  the loss without an amplitude threshold. Verified current config: signed_mask,
+  target_threshold .05, tau .02, foreground weight11/background .75, L1+L2 only.
+  Existing implementation with target_threshold0 already equals sign(raw_GT):
+  exact zeros remain background and all nonzero values become +/-1. After this
+  conversion tau .02 does not discard any nonzero target. Numerical probe checked
+  both cutoff settings against direct weighted L1+L2, including +/-1e-8 inputs,
+  and confirmed background prediction gradients remain active at cutoff0.
+  Caveat: GT is bilinearly resized before loss; raw nonzero support must be checked
+  for low-amplitude tails/noise before treating every nonzero as a true finding.
+  No local GT support audit has been performed in this discussion. More unmatched
+  components and low clinician F1 do not isolate target cutoff as the cause;
+  synthetic-to-clinical domain/target mismatch and native postprocessing differences
+  remain plausible. Proposed controlled sign-target ablation with frozen encoder
+  and otherwise unchanged recipe; keep current evaluation definitions fixed for
+  comparability. Do not restrict loss to foreground only: background supervision
+  is still needed. No loss/config/prediction changes or real training performed.
+
+- **2026-10-17 - Clarified requested F1: each individual clinician, not mean.**
+  User pointed to no_cc_itamar_plus_lmm5_100 and requested our model against each
+  clinician in the same style. Exported itamar_comparison/f1_per_clinician.md/.csv:
+  positive/negative/combined pooled detection F1 for both models vs each of five
+  clinicians, on100 and98 pairs (20 rows,60 exact score cells). Linked all six
+  existing foundation per-detection/per-pair matrix plots per cohort, preserving
+  reference layout and clearly separating detection F1 from boosted per-pair PAI.
+  Previous averaged columns now explicitly say Mean F1; not substituted for the
+  requested individual scores. Our100 combined F1 vs Avi/Benny/Sigal/Smadar/Nitzan:
+  .255814/.235081/.272904/.284644/.336283. Every cell matches JSON and CSV matrices;
+  all linked plots verified present. Added links from both review indexes; no
+  inference, metric-formula, annotation, operating-point or training changes.
+
+- **2026-10-17 - Requested compact HMDR / UDPP / F1 tables saved.**
+  Added export_metric_tables to the comparison runner and exported
+  itamar_comparison/hmdr_udpp_f1.md and .csv, linked from both review indexes.
+  Each cohort has five clinician rows plus historical Itamar and foundation rows;
+  reports sign-specific HMDR, mean UDPP (SD in CSV), and positive/negative/combined
+  detection F1. This is pooled component-matching F1 averaged vs reference readers,
+  NOT pixel Dice or boosted per-pair PAI. Human references exclude that human and
+  both models (four peers); each model uses all five humans. 100-pair combined F1:
+  Itamar .4646300560 vs foundation .2769454384; pure98 .4682591540 vs .2778287261.
+  Reused existing validated report matrices; no prediction reload, threshold tuning
+  or inference rerun. Verified all14 rows, reference pools, F1 bounds and model100
+  values against source reports. 100-pair baseline still includes lmm5 pairs99/100.
+
+- **2026-10-17 - Full clinical comparison against Itamar completed locally.**
+  User requested all statistics previously made for Itamar on the 100 pairs.
+  Added evaluation/compare_clinical_models.py; extended the existing legacy OV
+  loader/main with original-space and explicit threshold options, preserving old
+  square-crop/zero-threshold defaults and all metric formulas. Saved six numerical
+  agreement matrices/CSVs and cohort protocol alongside the original reports/plots.
+  Outputs: review_outputs/clinical100_20261017_112038/itamar_comparison/index.md,
+  comparison.csv/json, 1400 spatial metric rows, four complete legacy profiles
+  (both models on 98 and 100 pairs), and 100 six-panel matched reviews.
+  Total 208 artifacts / 51.4 MB. Profiles contain HMDR, UDPP mean/std, consensus
+  sensitivity levels1-5, six PAI matrices/plots and six sensitivity plots, plus
+  component-count summaries. All five historical JSON reports reproduced exactly
+  for BOTH the 98-pair and 100-pair baseline. All human-only metrics and agreement
+  matrix blocks are invariant across model runs. All 600 foundation CSV metric rows
+  match the original clinical export. All 500 annotation hashes checked with exact
+  raw or LF-normalized bytes. All 100 foundation masks match thresholded raw maps.
+  Historical baseline on 100 pairs is MIXED: original Itamar pairs1-98, lmm5
+  substitutes99/100. Separate matched98 results are included; do not label the
+  mixed100 cohort as pure Itamar. No additional CC filtering for either model.
+  Itamar's prior pre-save cleanup remains baked in; threshold its saved scores at0,
+  foundation signed scores at0.5. This is native-operating-point comparison, not
+  matched-FP calibration or an isolated encoder/head effect. Encoder stays frozen.
+  100-pair results, historical baseline vs foundation:
+    any-human correct-sign pair hits85/100 vs76/100;
+    pixelwise3/5 consensus pair hits64/88 vs55/88;
+    consensus mean signedDice .2150684 vs .1849128;
+    consensus Dice>=.25:36 vs30; Dice>=.5:9 vs10;
+    empty predictions10 vs12; positive/negative components116/87 vs217/151;
+    HMDR positive .6551724 vs .5069124; negative .6896552 vs .4768212;
+    UDPP positive .40 vs1.07; negative .27 vs .79;
+    model-human PAI per-detection-all mean .4646301 vs .2769454;
+    model-human legacy PAI per-pair-all mean .5505730 vs .4284842.
+  Legacy per-pair-all retains empty-empty=1 and one-sided boost, NOT pixel Dice.
+  Legacy consensus sensitivity counts connected annotation regions, NOT pair hits.
+  On pure98: any-human hits83 vs74; consensus hits63/86 vs53/86; consensus Dice
+  .2186374 vs .1880236. Of88 consensus-positive100 pairs, foundation Dice is higher
+  on31, historical higher on42, equal on15 (tolerance1e-10); on86 pure98:30/41/15.
+  Viewed paired panels1,30,85,94 only: foundation-localized/Itamar-empty pair30;
+  Itamar-localized/foundation-empty pair94; pair85 favors foundation vs narrow
+  consensus but baseline covers more of the any-human union. No clinical diagnosis
+  inferred from these views. All16 existing ellipse-raster warning pairs retained.
+  Added crop/original coordinate regression and fixed existing missing-seaborn test
+  isolation (preload dependencies before patch.dict(sys.modules)); all35 CPU tests
+  passed9.008s. No real model training, threshold tuning, annotation changes or
+  added prediction cleanup. Reports/code/log are local and not committed/pushed
+  by the agent in this analysis task. Main result: lower average clinical agreement
+  and more unmatched components for the frozen-head run, with case-specific wins.
+
+- **2026-10-17 - Clinical100 annotation-hit analysis verified.**
+  User asked how many predictions hit clinician references. At fixed checkpoint
+  threshold0.5, define a PAIR-level signed hit as >=1overlapping pixel of matching
+  polarity; this is a lenient case-level overlap measure, NOT lesion detection rate.
+  Recomputed100raw/mask threshold identities,500annotation hashes and600existing CSV
+  metric rows. All500Windows JSON hashes differ only by CRLF conversion: LF-normalized
+  bytes match campus hashes; first example also verified against the HEAD Git blob.
+  Same-sign hits: any-clinician union76/100; pixelwise3-of-5consensus55/88 (62.5%).
+  Ignoring sign: union78/100, consensus56/88. Per-clinician signed hits/annotated:
+  Avi51/92, Benny52/97, Sigal59/94, Smadar57/92, Nitzan69/98.
+  Consensus mean signedDice0.1849128, median0.1000495; Dice>=0.1:44/88,
+  >=0.25:30/88, >=0.5:10/88. Of55hits,11haveDice<0.1;53have>=50matching pixels.
+  Consensus direction-specific pair hits: positive31/56, negative26/46; a pair may
+  contain both signs, so these do not sum to the overall unique-pair count.
+  Consensus misses33/88:12empty predictions and21nonempty predictions with no signed
+  overlap. Empty outputs: pairs10,24,34,42,46,59,61,66,67,70,77,94.
+  Twelve cases have no pixelwise3-of-5reference region; all12have nonempty predictions
+  (mean predicted area3.5821%). They are NOT necessarily clinically normal: all100
+  cases have some individual-clinician annotation. Do not call these definite FP cases.
+  Highest consensus Dice: pair85 .6335,53 .6125,52 .6061,69 .5963,20 .5948,
+  96 .5843,93 .5603,31 .5484. No visual review of these clinical panels yet.
+  Same16known raster-warning pairs remain; no annotation repair, cleanup, threshold
+  tuning or model changes performed. Ellipse references are not dense pathology GT;
+  results describe exploratory overlap, not clinical sensitivity or validated accuracy.
+
+- **2026-10-17 - Clinical100 inference results received locally.**
+  User published campus results; pulled main at d81eeda4 with --ff-only.
+  Verified review_outputs/clinical100_20261017_112038: report says100completed pairs;
+  all100review PNGs, raw output maps, signed masks and source JSONs are present,
+  together with per_pair.csv, index.md and metadata.json. Metadata confirms epoch45,
+  threshold0.5 and checkpoint SHA256
+  0b7b49cc916806453ae5a2348e8b0546dd59dfbe5ff0449c034ba43d214a8053.
+  Actual clinical inference is now complete; clinical performance/visual analysis
+  has not yet been performed. Local HEAD and origin/main matched after the pull.
+
 - **2026-10-17 - Campus clinical preflight blocked by unused seaborn import; fixed locally.**
   User successfully pulled main through7d32da40 on cas703, confirming publication of
   the clinical runner. Preflight then failed importing seaborn from the legacy OV

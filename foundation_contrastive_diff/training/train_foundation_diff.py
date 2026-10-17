@@ -19,6 +19,7 @@ import csv
 import math
 import os
 import sys
+import time
 
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler
@@ -30,6 +31,7 @@ from models import build_change_head
 from losses import change_map_loss
 from datasets import LongitudinalPairDataset, CachedPairDataset
 from evaluation.change_detection_metrics import dice_score, iou_score, directional_sensitivity
+from evaluation.training_diagnostics import PredictionDiagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -100,11 +102,15 @@ def cosine_warmup(optimizer, warmup_steps, total_steps):
 # ---------------------------------------------------------------------------
 # Train / eval
 # ---------------------------------------------------------------------------
-def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, w_dice=None):
+def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, w_dice=None,
+                    diagnostics=None):
     head.train()
     w_dice = args.w_dice if w_dice is None else w_dice
     totals = {"total": 0.0, "l1": 0.0, "l2": 0.0, "dice": 0.0, "sign": 0.0}
     n_ok, n_bad = 0, 0
+    started = time.perf_counter()
+    gradient_norms = []
+    optimizer_steps, nonfinite_gradients, pending_batches = 0, 0, 0
     optimizer.zero_grad()
     for step, batch in enumerate(loader):
         p_prior, p_curr, cls_prior, cls_curr = _tokens_from_batch(batch, backbone, device)
@@ -121,14 +127,28 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
         if not torch.isfinite(loss):
             optimizer.zero_grad(set_to_none=True)
             n_bad += 1
+            pending_batches = 0
             continue
+        if diagnostics is not None:
+            diagnostics.update(pred, gt, batch)
         (loss / args.accum).backward()
+        pending_batches += 1
         if (step + 1) % args.accum == 0:
             if args.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(head.parameters(), args.grad_clip)
+                norm = torch.nn.utils.clip_grad_norm_(head.parameters(), args.grad_clip)
+            else:
+                norms = [parameter.grad.detach().norm() for parameter in head.parameters()
+                         if parameter.grad is not None]
+                norm = torch.stack(norms).norm() if norms else torch.tensor(0.)
+            if torch.isfinite(norm):
+                gradient_norms.append(float(norm))
+            else:
+                nonfinite_gradients += 1
             optimizer.step()
             optimizer.zero_grad()
             scheduler.step()
+            optimizer_steps += 1
+            pending_batches = 0
 
         n_ok += 1
         for k in totals:
@@ -136,13 +156,19 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
     if n_bad:
         print(f"  [warn] skipped {n_bad} non-finite batches this epoch", flush=True)
     n = max(1, n_ok)
-    return {k: v / n for k, v in totals.items()}
+    return {**{k: v / n for k, v in totals.items()},
+            "health": dict(successful_batches=n_ok, nonfinite_loss_batches=n_bad,
+                           optimizer_steps=optimizer_steps, pending_backward_batches=pending_batches,
+                           nonfinite_gradient_steps=nonfinite_gradients,
+                           grad_norm_mean=sum(gradient_norms) / len(gradient_norms) if gradient_norms else None,
+                           grad_norm_max=max(gradient_norms, default=None),
+                           seconds=time.perf_counter() - started)}
 
 
 @torch.no_grad()
 def evaluate(head, backbone, loader, device, threshold=0.1, tau=0.02, pos_weight=10.0,
              gt_threshold=None, target_mode="continuous", target_threshold=0.05,
-             background_weight=1.0):
+             background_weight=1.0, diagnostics=None):
     head.eval()
     gt_threshold = threshold if gt_threshold is None else gt_threshold
     dices, ious, spos, sneg, nuis_fp = [], [], [], [], []
@@ -152,6 +178,8 @@ def evaluate(head, backbone, loader, device, threshold=0.1, tau=0.02, pos_weight
         gt = batch["gt_diff"].to(device)
         is_path = batch["is_pathology"]
         pred, _ = head(p_prior, p_curr, cls_prior, cls_curr)
+        if diagnostics is not None:
+            diagnostics.update(pred, gt, batch)
 
         pm = (pred.abs() > threshold).float()
         gm = (gt.abs() > gt_threshold).float()
@@ -363,6 +391,12 @@ def parse_args():
                    help="use only the last K backbone layers from the cache (0 = all cached). last-1 from a last-4 cache = 1.")
     p.add_argument("--head", choices=["dglori", "dpt", "dpt_cross_attention"], default="dglori")
     p.add_argument("--dpt_channels", type=int, default=96)
+    p.add_argument("--diagnostics", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--diagnostics_every", type=int, default=1)
+    p.add_argument("--diagnostics_pred_thresholds", type=float, nargs="+", default=[0.1, 0.25, 0.5, 0.75])
+    p.add_argument("--diagnostics_gt_thresholds", type=float, nargs="+", default=[0.0, 0.02, 0.05])
+    p.add_argument("--diagnostics_components", action="store_true",
+                   help="also measure CPU connected-component HMDR/UDPP/F1 at primary thresholds")
 
     # Config file: pre-scan for --config, load it, and make its keys the arg defaults.
     import sys as _sys
@@ -377,7 +411,22 @@ def parse_args():
         with open(cfg_path) as f:
             cfg = yaml.safe_load(f) or {}
         p.set_defaults(**cfg)       # config = defaults; anything on the CLI still overrides
-    return p.parse_args()
+    args = p.parse_args()
+    if args.diagnostics_every < 1:
+        p.error("diagnostics_every must be positive")
+    if any(not 0 <= value < 1 for value in args.diagnostics_pred_thresholds + args.diagnostics_gt_thresholds):
+        p.error("diagnostic thresholds must be finite and in [0,1)")
+    return args
+
+
+def make_diagnostics(args):
+    return PredictionDiagnostics(
+        args.diagnostics_pred_thresholds, args.diagnostics_gt_thresholds,
+        primary_prediction=args.eval_threshold,
+        primary_gt=args.eval_threshold if args.eval_gt_threshold is None else args.eval_gt_threshold,
+        target_mode=args.target_mode, target_threshold=args.target_threshold,
+        tau=args.tau, pos_weight=args.pos_weight, background_weight=args.background_weight,
+        components=args.diagnostics_components)
 
 
 def main():
@@ -452,17 +501,34 @@ def main():
         print(f"[resume] no checkpoint at {ckpt_path}; starting fresh", flush=True)
 
     for epoch in range(start_epoch + 1, args.epochs + 1):
+        epoch_started = time.perf_counter()
+        track = args.diagnostics and (epoch == 1 or epoch % args.diagnostics_every == 0)
+        train_diagnostics = make_diagnostics(args) if track else None
+        val_diagnostics = make_diagnostics(args) if track else None
+        if torch.cuda.is_available() and str(device).startswith("cuda"):
+            torch.cuda.reset_peak_memory_stats(device)
         # w_dice warm-up: let L1 fix magnitude first, then ramp Dice in for localization.
         if args.dice_warmup_epochs > 0:
             w_dice_eff = args.w_dice * min(1.0, epoch / args.dice_warmup_epochs)
         else:
             w_dice_eff = args.w_dice
         tr = train_one_epoch(head, backbone, train_loader, optimizer, scheduler, device, args,
-                             w_dice=w_dice_eff)
+                             w_dice=w_dice_eff, diagnostics=train_diagnostics)
         va = evaluate(head, backbone, val_loader, device, threshold=args.eval_threshold,
                       tau=args.tau, pos_weight=args.pos_weight, gt_threshold=args.eval_gt_threshold,
                       target_mode=args.target_mode, target_threshold=args.target_threshold,
-                      background_weight=args.background_weight)
+                      background_weight=args.background_weight, diagnostics=val_diagnostics)
+        if track:
+            metadata = dict(run_config=vars(args), effective_w_dice=w_dice_eff,
+                            learning_rate=optimizer.param_groups[0]["lr"],
+                            training_health=tr["health"], epoch_seconds=time.perf_counter() - epoch_started,
+                            cuda_peak_allocated_bytes=(torch.cuda.max_memory_allocated(device)
+                                                       if torch.cuda.is_available() and str(device).startswith("cuda") else None))
+            directory = os.path.join(args.save_folder, "diagnostics")
+            train_diagnostics.save(directory, epoch, "train", metadata)
+            val_diagnostics.save(directory, epoch, "val", metadata)
+            print(f"[diagnostics] epoch {epoch}: {len(train_diagnostics.rows)} online train / "
+                  f"{len(val_diagnostics.rows)} validation pairs; {directory}", flush=True)
         lr_now = optimizer.param_groups[0]["lr"]
         print(f"epoch {epoch:03d}/{args.epochs} | lr {lr_now:.2e} | w_dice {w_dice_eff:.2f} | "
               f"train total {tr['total']:.4f} (l1 {tr['l1']:.4f} l2 {tr['l2']:.4f} dice {tr['dice']:.4f} sign {tr['sign']:.4f}) | "

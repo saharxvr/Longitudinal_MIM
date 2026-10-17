@@ -221,11 +221,11 @@ def load_labels_map(json_path, shape, label_mapping_dict=None):
     return labels_map_pos, labels_map_neg
 
 
-def load_model_labels_map(nif_path, crop_info_path, current_shape,
-                          min_cc_size=50, min_cc_intensity=0.03):
+def _restore_model_output(nif_path, crop_info_path, current_shape):
     """
     Load the 512x512 model output and inverse-map it back to the original
     coordinate space using the crop_info.json saved during prediction.
+    With no crop metadata, require an already-restored original-space output.
 
     The crop_info records coordinates in the *transposed* (torch) space
     (Prediction.py loads images with .T). Since nifti files and annotations
@@ -239,6 +239,12 @@ def load_model_labels_map(nif_path, crop_info_path, current_shape,
       4. Place into zero canvas of (orig_h, orig_w) at [sq_x_min:, sq_y_min:]
       5. Transpose back to nifti space → should match current_shape
     """
+    if crop_info_path is None:
+        full_output = np.asarray(nib.load(nif_path).dataobj).squeeze()
+        if full_output.shape != current_shape or not np.isfinite(full_output).all():
+            raise ValueError(f"Invalid original-space output: {full_output.shape} vs {current_shape}")
+        return full_output
+
     with open(crop_info_path) as f:
         crop_info = json.load(f)
 
@@ -273,9 +279,16 @@ def load_model_labels_map(nif_path, crop_info_path, current_shape,
     print(f"  Inverse mapping: sq=({sq_x_min}, {sq_y_min}), size={square_size}, "
           f"orig=({orig_h}x{orig_w}), target={current_shape}")
 
+    return full_output
+
+
+def load_model_labels_map(nif_path, crop_info_path, current_shape,
+                          min_cc_size=50, min_cc_intensity=0.03,
+                          prediction_threshold=0.0):
+    full_output = _restore_model_output(nif_path, crop_info_path, current_shape)
     # Filter: remove CCs that are too small or not intense enough
-    pos_map = (full_output > 0).astype(int)
-    neg_map = (full_output < 0).astype(int)
+    pos_map = (full_output > prediction_threshold).astype(int)
+    neg_map = (full_output < -prediction_threshold).astype(int)
 
     for binary_map, sign in [(pos_map, 1), (neg_map, -1)]:
         ccs, num_ccs = label(binary_map, STRUCT_3x3)
@@ -437,7 +450,10 @@ def plot_correlation_matrix(corr_df, category_name, c_out_path):
 
 def main(model_outputs_base_path, annotations_base_path, pairs_roots,
          out_path, plots_dir, num_pairs=60, bias=0,
-         min_cc_size=50, min_cc_intensity=0.03):
+        min_cc_size=50, min_cc_intensity=0.03,
+        model_space='square_crop', prediction_threshold=0.0):
+    if model_space not in ('square_crop', 'original') or prediction_threshold < 0:
+       raise ValueError('Invalid model space or prediction threshold')
     os.makedirs(out_path, exist_ok=True)
     if plots_dir:
         os.makedirs(plots_dir, exist_ok=True)
@@ -526,7 +542,8 @@ def main(model_outputs_base_path, annotations_base_path, pairs_roots,
             annotation_path_smadar = resolve_annotation_path(annotations_base_path, 'Smadar', i + 1)
             annotation_path_nitzan = resolve_annotation_path(annotations_base_path, 'Nitzan', i + 1)
             annotation_path_model = resolve_model_output(model_outputs_base_path, i + 1)
-            crop_info_path = resolve_crop_info(model_outputs_base_path, i + 1)
+            crop_info_path = (resolve_crop_info(model_outputs_base_path, i + 1)
+                              if model_space == 'square_crop' else None)
         except FileNotFoundError as e:
             print(f'SKIP pair {i+1}: {e}')
             continue
@@ -542,7 +559,8 @@ def main(model_outputs_base_path, annotations_base_path, pairs_roots,
         try:
             label_map_pos_model, label_map_neg_model, full_model_output = load_model_labels_map(
                 annotation_path_model, crop_info_path, current.shape,
-                min_cc_size=min_cc_size, min_cc_intensity=min_cc_intensity)
+                min_cc_size=min_cc_size, min_cc_intensity=min_cc_intensity,
+                prediction_threshold=prediction_threshold)
         except Exception as e:
             print(f'SKIP pair {i+1}: model inverse mapping failed: {e}')
             continue
@@ -850,6 +868,23 @@ def main(model_outputs_base_path, annotations_base_path, pairs_roots,
     per_pair_df_neg = pd.DataFrame({phy_n: mat_per_pair_neg[i].tolist() for i, phy_n in enumerate(physician_to_idx_dict.keys())}, index=index_names)
     per_pair_df_all = pd.DataFrame({phy_n: mat_per_pair_all[i].tolist() for i, phy_n in enumerate(physician_to_idx_dict.keys())}, index=index_names)
 
+    agreement_matrices = {'observers': index_names}
+    for name, frame in (('per_label_pos', per_label_df_pos),
+                        ('per_label_neg', per_label_df_neg),
+                        ('per_label_all', per_label_df_all),
+                        ('per_pair_pos', per_pair_df_pos),
+                        ('per_pair_neg', per_pair_df_neg),
+                        ('per_pair_all', per_pair_df_all)):
+        agreement_matrices[name] = frame.values.tolist()
+        frame.to_csv(os.path.join(out_path, name + '.csv'))
+    with open(os.path.join(out_path, 'agreement_matrices.json'), 'w') as stream:
+        json.dump(agreement_matrices, stream, indent=2)
+    with open(os.path.join(out_path, 'protocol.json'), 'w') as stream:
+        json.dump(dict(pairs_processed=pairs_processed, requested_pairs=num_pairs, bias=bias,
+                       model_space=model_space, prediction_threshold=prediction_threshold,
+                       min_cc_size=min_cc_size, min_cc_intensity=min_cc_intensity,
+                       pairwise_all_one_sided_boost=True), stream, indent=2)
+
     plot_matrix(per_label_df_pos, f'{out_path}/per_label_agreement_pos.png', title='Pairwise Agreement Index Per Detection (positive)')
     plot_matrix(per_label_df_neg, f'{out_path}/per_label_agreement_neg.png', title='Pairwise Agreement Index Per Detection (negative)')
     plot_matrix(per_label_df_all, f'{out_path}/per_label_agreement_all.png', title='Pairwise Agreement Index Per Detection (all)')
@@ -913,6 +948,8 @@ if __name__ == '__main__':
                         help='Minimum connected component size (pixels) to keep in model output.')
     parser.add_argument('--min-cc-intensity', type=float, default=0.03,
                         help='Minimum mean absolute intensity of a CC to keep.')
+    parser.add_argument('--model-space', choices=('square_crop', 'original'), default='square_crop')
+    parser.add_argument('--prediction-threshold', type=float, default=0.0)
     args = parser.parse_args()
 
     struct = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
@@ -925,4 +962,5 @@ if __name__ == '__main__':
 
     main(args.model_preds_dir, args.annotations_dir, args.pairs_roots,
          args.out_dir, args.plots_dir, args.num_pairs, args.bias,
-         args.min_cc_size, args.min_cc_intensity)
+            args.min_cc_size, args.min_cc_intensity, args.model_space,
+            args.prediction_threshold)

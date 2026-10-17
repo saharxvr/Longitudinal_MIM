@@ -4,6 +4,116 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## GT Audit Before Choosing a Loss
+
+Run this CPU audit on the campus machine with the original NIfTIs. It does not train
+or require a checkpoint. Default scope is all train/val records, never held-out test.
+The output directory must be new. It exports actual arrays for selected examples;
+PNG colors are not used to estimate GT values.
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export DATA=/cs/labs/josko/sahar_aharon/fcd_train
+export OUT="$PWD/results/gt_audit_$(date +%Y%m%d_%H%M%S)"
+export LOG="${OUT}.log"
+mkdir -p "$(dirname "$OUT")"
+touch "$LOG"
+nohup python -u -m evaluation.audit_gt --dataset-root "$DATA" --out-dir "$OUT" \
+		--splits train val --img-size 512 --rotation-k 3 >> "$LOG" 2>&1 &
+tail -f "$LOG"
+```
+
+Ctrl+C stops tail, not the audit. The log is outside OUT to preserve the new-directory
+guard. A complete audit can take time on shared storage. `--limit 300` gives a seeded
+random smoke sample, not a stratified or full-cohort result; default limit 0 audits all.
+
+Outputs: `index.md`, `report.json`, `summary.csv`, `per_pair.csv`,
+`cutoff_diagnostics.png`, and selected `cases/*.png` / `cases/*.npz`.
+Each example compares prior/current, fixed-scale continuous GT, GT-only contrast,
+sign(GT) without a cutoff, the current abs(GT)>0.05 mask, and support removed at 0.05.
+NPZ files retain native GT, preprocessed float32 GT, simulated float16 GT, and model
+input images; load with `numpy.load(path, allow_pickle=False)`. These contain medical
+images: transfer privately, and do not commit them or whole audit folders by default.
+`--no-save-arrays` disables NPZ export; `--overlays-per-group 0` disables examples.
+
+Statistics separate native arrays, training resize/clip/rotation, and simulated
+float16 quantization (not a read-back audit of the actual feature cache). They include
+sign/support/area, magnitude quantiles, pooled log histograms, tiny connected components,
+TV per edge, out-of-range/nonfinite values, support and absolute GT mass retained across
+cutoffs 0 through 0.5, entirely removed maps, and float16 support/threshold flips.
+Manifest and native-array hashes record provenance. Failures are listed in report.json
+and cause a nonzero exit, rather than silently presenting a complete audit.
+
+First inspect whether exact-nonzero support is anatomically plausible or consists of
+tiny interpolation tails. Then compare cutoff retention and per-anomaly/group size
+before deciding between continuous targets, sign targets, or region-normalized loss.
+Do not infer that every nonzero pixel is true pathology, or tune on held-out test.
+
+## Loss-Independent Epoch Diagnostics
+
+Diagnostics are now enabled by default for both train and val, using existing forward
+passes. Frozen encoder, loss, optimizer behavior, original metrics.csv, and best.pt
+selection by the existing validation Dice are unchanged. The original recipe still
+uses GT cutoff 0.05; this change does not launch a no-cutoff experiment.
+
+Each recorded epoch writes `<save_folder>/diagnostics/epoch_NNNN_{train,val}.json`,
+per-pair `.csv.gz`, and `_thresholds.csv.gz`. Reports contain:
+
+- Raw-GT, sign-GT and configured-target MAE/MSE; weighted L1/L2 and separate
+	foreground/background contributions; region-normalized MAE, soft support Dice and
+	sign penalty even when their loss weights are zero. Sign-GT errors are observational,
+	not a claim about how a model trained with that alternative objective would perform.
+- Positive, negative, unsigned-support and correct-sign Dice (pixel F1), IoU,
+	precision/recall, TP/FP/FN, empty predictions, pair hits, wrong-sign overlap,
+	predicted area, score percentiles and saturation. Sweep defaults are prediction
+	thresholds 0.1/0.25/0.5/0.75 crossed with GT thresholds 0/0.02/0.05; configured
+	primary thresholds are always included. These thresholds do not alter training.
+- Overall, pathology/nuisance, anomaly and GT-direction groups, unique pair/change-group
+	counts, macro means with valid denominators, pooled micro scores, and FP-area tails.
+	Undefined empty-reference Dice/recall are null, not automatically perfect scores;
+	empty-reference FP area remains visible. This differs from the legacy selection metric.
+- Optional `--diagnostics_components`: positive/negative/combined component detection
+	F1, HMDR and unmatched detections per pair at the primary thresholds. Uses synthetic
+	GT, 8-connectivity and legacy reference-first maximum-overlap greedy matching, without
+	the clinical one-sided PAI boost or component cleanup. This is not clinician F1.
+- Gradient norm, nonfinite loss/gradient counts, optimizer steps, pending accumulation
+	batches, epoch duration, learning rate, peak CUDA allocation and resolved configuration.
+	Health logging exposes existing behavior; it does not change step/skipping policy.
+
+Training rows are online, augmented/sampler-observed predictions as weights change,
+not fixed-model inference over every training pair; balanced sampling can repeat IDs.
+Validation rows come from the usual eval pass. CPU metric sweeps and compression add
+overhead; components add more. Use `--diagnostics_every 5` for epoch 1 and every fifth
+epoch, customize `--diagnostics_pred_thresholds` / `--diagnostics_gt_thresholds`, or
+disable with `--no-diagnostics`. No extra model evaluation pass is performed.
+
+When a new training run is agreed, this records the unchanged baseline plus optional
+component diagnostics in a separate run directory, using the existing guarded launcher:
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export DATA=/cs/labs/josko/sahar_aharon/fcd_train
+export CACHE_DIR=/cs/labs/josko/sahar_aharon/fcd_cache_last1_rot90cw_inference
+export RUN="/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_rot90cw_diagnostics_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$RUN"
+touch "$RUN/train.log"
+nohup bash training/run_rotated_mask.sh --diagnostics_components >> "$RUN/train.log" 2>&1 &
+tail -f "$RUN/train.log"
+```
+
+Do not run alongside another GPU job without checking memory. Audit results should
+guide the next loss ablation before launching another full training run.
+
 ## Clinical 100-Case Inference
 
 `evaluation.evaluate_clinical` applies the frozen encoder and trained head to the100 ICU
