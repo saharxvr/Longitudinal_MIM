@@ -1,0 +1,37 @@
+{
+  "checkpoint": "best.pt",
+  "checkpoint_sha256": "0b7b49cc916806453ae5a2348e8b0546dd59dfbe5ff0449c034ba43d214a8053",
+  "checkpoint_epoch": 45,
+  "head_spec": {
+    "type": "dpt_cross_attention",
+    "kwargs": {
+      "backbone_dim": 768,
+      "patch_dim": 768,
+      "cls_dim": 768,
+      "grid": 37,
+      "embed_dim": 256,
+      "out_size": 512,
+      "out_range": [
+        -1.0,
+        1.0
+      ],
+      "channels": 96,
+      "num_heads": 4,
+      "attention_depth": 2,
+      "num_layers": 1
+    }
+  },
+  "cache_dir": "/cs/labs/josko/sahar_aharon/fcd_cache_last1_rot90cw_inference",
+  "manifest_sha256": "78d18b1c8c6c34aae2023f2c8342fba28b8109ca0343f81be4939ee849c54468",
+  "split": "val",
+  "threshold": 0.5,
+  "gt_threshold": 0.05,
+  "rotation_k": 3,
+  "target_mode": "signed_mask",
+  "seed": 42,
+  "per_group": 24,
+  "nuisance_count": 48,
+  "evaluated_pairs": 2108,
+  "selected_pairs": 338,
+  "selection": "Low/middle/high Dice and seeded random per pathology/GT sign; highest-FP and seeded random nuisance; unique change groups per bucket"
+}
