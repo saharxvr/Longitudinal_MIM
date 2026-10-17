@@ -19,6 +19,89 @@ from training import train_foundation_diff as trainer
 from training.cache_features import slice_last_layer_cache
 
 
+class ClinicalInferenceTests(unittest.TestCase):
+    def test_training_transform_and_asymmetric_inverse(self):
+        import numpy as np
+        from datasets.pair_dataset import _norm01, _to_chw
+        from evaluation.evaluate_clinical import prepare_image, restore_prediction
+
+        array = np.arange(17 * 29, dtype=np.float32).reshape(17, 29)
+        expected = torch.rot90(_norm01(_to_chw(array, 32)), 3, (-2, -1))
+        torch.testing.assert_close(prepare_image(array, 32, 3), expected)
+        landmarks = np.zeros((17, 29), dtype=np.float32)
+        landmarks[2, 5], landmarks[14, 24] = 1, -1
+        for rotation in range(4):
+            rotated = torch.rot90(torch.from_numpy(landmarks), rotation, (-2, -1))
+            np.testing.assert_array_equal(restore_prediction(rotated, landmarks.shape, rotation),
+                                          landmarks)
+
+    def test_signed_metrics_and_empty_references(self):
+        import numpy as np
+        from evaluation.evaluate_clinical import score_masks
+
+        positive = np.zeros((9, 13), dtype=bool)
+        positive[2:5, 3:7] = True
+        empty = np.zeros_like(positive)
+        self.assertEqual(score_masks((positive, empty), (positive, empty))["signed_dice"], 1)
+        self.assertEqual(score_masks((empty, positive), (positive, empty))["signed_dice"], 0)
+        self.assertIsNone(score_masks((empty, empty), (empty, empty))["signed_dice"])
+        self.assertGreater(score_masks((positive, empty), (empty, empty))["fp_area_if_no_change"], 0)
+
+    def test_mocked_clinical_export_preserves_geometry_and_provenance(self):
+        import contextlib
+        import nibabel as nib
+        import numpy as np
+        from types import SimpleNamespace
+        from evaluation import evaluate_clinical as clinical
+
+        class TinyBackbone(torch.nn.Module):
+            def __init__(self, **kwargs):
+                super().__init__()
+
+            def forward(self, image):
+                return dict(patch_tokens=image, cls_token=torch.zeros(len(image), 1))
+
+        class TinyHead(torch.nn.Module):
+            def forward(self, prior, current, *args):
+                return (current - prior).clamp(-1, 1), None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shape = (17, 29)
+            affine = np.diag([0.7, 0.9, 1, 1])
+            prior, current = root / "prior.nii.gz", root / "current.nii.gz"
+            nib.save(nib.Nifti1Image(np.zeros(shape, dtype=np.float32), affine), prior)
+            nib.save(nib.Nifti1Image(np.arange(17 * 29, dtype=np.float32).reshape(shape), affine), current)
+            annotation = root / "annotation.json"
+            annotation.write_text("[]")
+            case = dict(pair_id="pair1", prior=str(prior), current=str(current),
+                        annotations={doctor: str(annotation) for doctor in clinical.PHYSICIANS})
+            tools = SimpleNamespace(load_labels_map=lambda path, shape:
+                                    (np.ones(shape), np.zeros(shape)))
+            checkpoint = root / "fake.pt"
+            torch.save(dict(epoch=45, head={}, head_spec=dict(type="test_stub", kwargs=dict(
+                backbone_dim=1, patch_dim=1, out_size=32)),
+                run_config=dict(rotation_k=3, eval_threshold=0.5, target_mode="signed_mask")), checkpoint)
+            args = SimpleNamespace(clinical_root=root, num_pairs=1, preflight=False,
+                                   ckpt=checkpoint, out_dir=root / "out", device="cpu",
+                                   threshold=None, expected_sha256=None)
+            with patch.object(clinical, "discover_cases", return_value=[case]), \
+                 patch.object(clinical, "clinical_tools", return_value=tools), \
+                 patch("models.FrozenCXRBackbone", TinyBackbone), \
+                 patch("models.build_change_head", return_value=TinyHead()), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                clinical.run(args)
+                with self.assertRaises(ValueError):
+                    clinical.run(args)
+            output = nib.load(args.out_dir / "pair1" / "output.nii.gz")
+            self.assertEqual(output.shape, shape)
+            np.testing.assert_allclose(output.affine, affine)
+            self.assertEqual(json.loads((args.out_dir / "metadata.json").read_text())["checkpoint_epoch"], 45)
+            self.assertEqual(json.loads((args.out_dir / "report.json").read_text())["pairs_completed"], 1)
+            self.assertTrue((args.out_dir / "pair1" / "review.png").is_file())
+            self.assertEqual(len((args.out_dir / "per_pair.csv").read_text().splitlines()), 7)
+
+
 class RotatedMaskRunTests(unittest.TestCase):
     def test_training_and_validation_use_mask_targets_and_raw_gt_support(self):
         class PerfectMaskHead(torch.nn.Module):

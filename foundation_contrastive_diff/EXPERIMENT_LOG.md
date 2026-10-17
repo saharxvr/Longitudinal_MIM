@@ -24,6 +24,7 @@ pneumothorax, fluid_overload) while ignoring nuisance (devices, projection angle
 | D-GLoRI head, last-4, L1+L2 | ~0.46 (in progress) | |
 | DPT-style head, last-4, L1+L2 | **0.4647** | best reported epochs 3-12: epoch 11; run ongoing |
 | Cross-attention + DPT, native last-1, L1+L2 | **0.5505** | exported validation report; best checkpoint epoch 39, threshold 0.05 |
+| Cross-attention + DPT, native last-1, 90deg CW, signed mask, BG0.75 | **0.6002** | exported validation report; best checkpoint epoch45; prediction threshold0.5, original GT threshold0.05 |
 | resolution ceiling (perfect 37² predictor) | 0.79 | from data_quality_check |
 | overfit-16 (L1+L2) | 0.948 | capacity is NOT the limit |
 
@@ -33,6 +34,208 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 ---
 
 ## Key findings / decisions
+
+- **2026-10-17 - Clinical100 comparison-head inference prepared, not yet executed.**
+  User requested trying the trained head on the100 clinician-annotated ICU pairs for
+  qualitative direction. Added evaluation/evaluate_clinical.py and
+  training/run_clinical100.sh, pinned to the verified epoch45 checkpoint SHA256 and
+  threshold0.5. Strict coverage preflight confirms100 pairs,200 scans and500 annotations
+  (Avi/Benny/Sigal/Smadar/Nitzan) locally; ambiguous/missing pair folders or scan counts
+  stop the run, rather than silently skipping. No frozen encoder/head weights changed.
+  There is NO trained foundation checkpoint in the local study tree; actual predictions
+  require the campus best.pt. Campus clinical-data availability is not yet verified.
+
+  Orientation check on real pair1 demonstrated legacy transpose differs from training
+  CW rotation by a horizontal flip. Clinical inference therefore reproduces training's
+  raw-array resize/minmax/rotation exactly, without adding the legacy transpose/crop or
+  sharpening. Predictions are inverse-rotated and resized into current NIfTI coordinates;
+  review panels transpose source-coordinate arrays for upright display. The actual
+  model-input view is included separately. Affine and source shape are preserved in
+  raw-score NIfTI exports; masks are thresholded at original resolution. Scan ordering
+  deliberately matches the existing evaluator's sorted filenames, recorded per case.
+  This does not independently prove chronological ordering or cross-cohort independence.
+
+  Outputs will include100 ten-panel reviews, raw scores, signed masks, per-clinician
+  signed Dice/directional recall, sign-specific3-of-5 consensus, empty-reference FP
+  area, per-pair CSV and provenance (checkpoint/config and annotation hashes). Human
+  ellipses are coarse regions, not dense pixel GT. No PAI claim: the study PAI function
+  is a placeholder. Do not compare these Dice directly to synthetic Dice or old CC PAI.
+  No threshold tuning, object filtering, new training or prediction results in this entry.
+
+  Full real annotation parsing/rasterization passed. Legacy zero-radius ellipse warnings
+  occur in16 pairs:4,5,9,13,23,29,31,37,45,48,51,53,57,58,73,87. Warnings are captured
+  in per-case source provenance, preserving legacy raster semantics for review.
+  Initial focused checks exposed a Windows case-insensitive duplicate-folder check and
+  incorrect checkpoint-epoch metadata source; both fixed and checks rerun successfully.
+  Final suite:33 tests passed in7.733s from the study CWD, including3 clinical regression
+  tests (all rotations/asymmetric landmarks, signed/empty metric semantics, mocked
+  end-to-end NIfTI geometry/provenance/export). Bash launcher syntax and editor
+  diagnostics clean. Initial full-suite run from repository root failed existing
+  relative-config lookups; rerun from required study directory passed without changes.
+  Actual clinical model inference remains pending on campus; mock outputs were temporary
+  test fixtures and are NOT clinical findings. Code is not committed/pushed here.
+  Noninteractive SSH to the known campus node cas703 was attempted with BatchMode and
+  strict host-key checking; Windows could not resolve the hostname. No credential prompt
+  or remote execution occurred. Publishing approval was unavailable, so no commit/push
+  was performed; the user must publish/transfer the scoped implementation before launch.
+
+- **2026-10-17 - User flagged faint GT in the rotated-mask review.**
+  Exact case train_10887_a_2/pair0/variant0, panel0c9745237261bcb7: GT peak0.05740356,
+  GT area0.0002326965 =61/262144pixels (0.02327%); prediction mask14pixels,
+  peak0.6153715, no GT overlap (Dice~1.33e-8). Verified exporter: top Signed GT and
+  GT zoom panels plot ORIGINAL continuous cached GT, NOT the training signed mask;
+  fixed [-1,1] and shared zoom+/-0.615 make the0.057peak faint. Bottom Signed GT mask
+  uses where(abs(gt)>0.05,sign(gt),0) and is saturated +/-1 but spatially tiny.
+  Verified change_map_loss and its training call: signed_mask conversion is performed
+  inside loss, so training does NOT receive faded0.057-valued foreground targets.
+  Main concern is threshold-dependent target support: a cutoff only just below the
+  peak retains very few pixels. No display bug in mask amplitudes was found. Recommend
+  clearer continuous-GT/training-target labels and cropped mask views; assess GT-threshold
+  sensitivity separately before changing target definitions. No plotting or model code
+  changed. This case was inspected from the user's attached panel plus exported metrics.
+
+- **2026-10-17 - Rotated signed-mask validation export reviewed locally.**
+  Artifacts: `review_outputs/rot90cw_mask_fp075_val_best_20261017_102112`.
+  Metadata confirms best checkpoint epoch45, SHA256
+  `0b7b49cc916806453ae5a2348e8b0546dd59dfbe5ff0449c034ba43d214a8053`, rotation3,
+  signed_mask targets, prediction threshold0.5, GT threshold0.05;2108 evaluated pairs,
+  338 exported panels. Report Dice0.6001953754, IoU0.5031012869 on1293 pathology pairs.
+  Compared every pair with the previous native-last1 review: identical pair-ID sets,
+  identical GT areas and identical manifest hash. These checks establish matched
+  exported pairs, not an independent audit of source-patient split leakage.
+
+  | Pathology | n | Old Dice | New Dice |
+  |---|---:|---:|---:|
+  | Consolidation | 313 | 0.416202 | 0.492340 |
+  | Pneumothorax | 377 | 0.636580 | 0.688640 |
+  | Pleural effusion | 294 | 0.636367 | 0.682573 |
+  | Fluid overload | 309 | 0.499961 | 0.523160 |
+
+  For1237 nonempty-GT pathology pairs, mean Dice0.543122 ->0.601498. GT-area bins:
+  <=1% image (n207):0.048512 ->0.119054;1-5% (n319):0.389334 ->0.473113;
+  >5% (n711):0.756121 ->0.799558. GT-peak0.05-0.1 (n241):0.089883 ->0.157605;
+  0.1-0.2 (n567):0.549014 ->0.621431;0.2-0.4 (n418):0.787603 ->0.823471;
+  >0.4 (n11):0.879161 ->0.864306. Empty thresholded predictions191 ->93; near-zero
+  Dice<1e-5 cases240 ->142. Pairwise improvement/worsening/tie at tolerance1e-5:
+  717/399/121; variants are correlated, so these are descriptive counts, not independent
+  significance tests. Positive/negative/mixed Dice0.556944/0.502432/0.589475 ->
+  0.619642/0.551651/0.656029. Of93 remaining empty predictions,45 have peak<0.001,
+  60<0.01,82<0.1,88<0.3; a sweep down to0.1 cannot recover most complete misses.
+  Empty predictions by type: consolidation34,pneumothorax14,effusion12,fluid33.
+
+  Across815 controls, FP mean0.2395% ->0.1298%, p951.3332% ->0.6176%,
+  max17.3973% ->8.0521% of image area. Controls exceeding1% FP50 ->26, BUT entirely
+  empty controls643 ->635: fewer large FP regions, not fewer controls with any FP.
+  Different score semantics/thresholds and three simultaneous recipe changes prevent
+  matched-calibration robustness or isolated loss/rotation causal claims.
+
+  Visually inspected input_preview plus11 actual case panels, not all338. Case stems:
+  94f1c03858bf06e9 (near-zero consolidation miss), eff02aa2adb6c777 (negative localization
+  with coarse smooth support),83b6196883d30886 (mixed signs partly localized, peripheral
+  negative support missed),c12e42a257417945 (broad pneumothorax support, some missing
+  contour and tiny opposite-sign artifacts),f4d045c4b8ab9c3b (good basal negative
+  effusion localization),3ed8b865077b0b52 (high-overlap consolidation),c281aa5441f64ed3
+  and aa48afe44cc6f7de (fluid signs captured, smooth masks miss patchy target detail),
+  0eec5562d8bac8b0 and29eb5a9714201de5 (large nuisance FPs),e376d93a8b89e32b
+  (device-rich control without thresholded FP). Preview is upright and aligned.
+  Some zero-GT controls show prominent visible opacity differences; source-pair
+  construction/projection effects need checking before attributing FPs solely to
+  devices or calling these label errors. This review does not establish that explanation.
+
+  Recommendation: keep this checkpoint as the new baseline. Next compare validation
+  thresholds with small-region recall and nuisance tails, then one controlled
+  small-region-aware loss ablation (e.g. modest sign-separated Dice with binary targets)
+  while keeping the encoder frozen and the head/rotation/targets fixed. No retraining,
+  cleanup or threshold selection was performed here. CC filtering cannot repair
+  near-zero misses or the large coherent nuisance blobs. Test remains held out.
+
+- **2026-10-17 - Legacy Itamar loss and prediction cleanup audited.**
+  User asked whether Itamar removed small objects or refined predictions. Findings refer
+  to the checked-in legacy implementation, not independently recovered historical run
+  settings or proof that every existing prediction folder used this script.
+  `python_files/longitudinal_MIM_training.py:363` computes mean L1 on outputs and GT;
+  line374 computes mean MSE on BOTH tensors multiplied by128. With current
+  `python_files/constants.py:101` flags and unit lambdas, the objective before gradient
+  accumulation division is mean(abs(error)) +16384*mean(error**2), NOT equally scaled
+  ordinary L1+MSE. Perceptual/style, SSIM, Fourier and GAN flags are off. No explicit
+  foreground/background, Dice, component-area or sign weighting in the active loss.
+  `python_files/datasets.py:1040` loads continuous DRR diff_map directly, and the active
+  __getitem__ returns it; no component removal or signed-mask conversion there. This
+  does not establish how the on-disk synthetic GT was originally generated.
+
+  `python_files/archive/evaluation/Evaluation/Prediction.py:247` postprocess, in order:
+  zero abs(output)>0.75 (not clipping); iterate ten overlapping width0.05 intensity
+  bands with starts [-0.15,-0.12,-0.09,-0.06,-0.03,0,0.03,0.06,0.09,0.12], zeroing
+  any current band occupying >25% of512x512; remove nonzero components of <=250pixels;
+  then zero the open interval (-0.0075,0.02). Components use8-connectivity on nonzero
+  values, so adjacent opposite signs merge. The band operations are sequential and
+  can suppress weak values beyond the final dead zone. Postprocess runs BEFORE
+  output.nii.gz is saved (lines366-371), not merely on plots. Input segmentation is
+  used for a padded bounding-box square crop, not a hard lung-output mask.
+
+  Separately, `Observer_Variability_sq_crop.py:223` inverse-maps saved output and filters
+  positive/negative components independently: defaults reject area<50 or mean absolute
+  intensity<0.03 in original-image coordinates. This changes evaluation masks, not the
+  saved continuous output. Setting both thresholds to0 (no_cc) disables ONLY this
+  evaluator filter; it cannot restore pixels already removed before saving.
+  Executed the actual two prediction helper functions via AST extraction under the
+  workspace venv:100/250pixels removed,251retained; touching125positive+126negative
+  pixels survive together;300x300 at0.1 removed by band rule;0.9 region zeroed. Verified
+  MSE scaling identity numerically. All assertions passed. No model code changed.
+  Decision: do not copy these amplitude rules to signed-mask scores (confident values
+  near +/-1 would be erased). Component removal cannot recover our small-object misses;
+  any cleanup comparison must retain raw predictions and be tuned on validation only.
+
+- **2026-10-17 — Campus rotated-mask run completed; reported best validation Dice 0.6002.**
+  User supplied epochs43-60 and `[RQ1] done. best val dice = 0.6002`, followed by
+  successful background-job completion. This establishes the run was executed on campus;
+  local review artifacts/checkpoint/complete metrics have not yet been retrieved.
+  Best shown epoch **45**: Dice **0.6002**, IoU **0.5031**, sens+ **0.661**, sens- **0.633**,
+  mean nuisance FP area **0.0013** (0.13% image area), p95 **0.0062** (0.62%),
+  max **0.0805** (8.05%); changed-region L1/L2 **0.2559/0.2493**.
+  Epoch60: Dice **0.5955**, IoU **0.4998**, sens+ **0.645**, sens- **0.611**,
+  mean/p95/max FP **0.0010/0.0039/0.0533**; changed-region L1/L2 **0.2738/0.2685**.
+  The full training best epoch still needs checkpoint metadata confirmation; an earlier
+  epoch could have tied the reported rounded best. Review best.pt, not last.pt.
+
+  | Epoch | Train total | Val Dice | sens+ | sens- | Nuisance FP mean | p95 | max |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | 43 | 0.0484 | 0.5984 | 0.670 | 0.633 | 0.0013 | 0.0061 | 0.0733 |
+  | 44 | 0.0475 | 0.5977 | 0.669 | 0.628 | 0.0012 | 0.0056 | 0.0701 |
+  | 45 | 0.0469 | 0.6002 | 0.661 | 0.633 | 0.0013 | 0.0062 | 0.0805 |
+  | 46 | 0.0457 | 0.5986 | 0.660 | 0.631 | 0.0012 | 0.0048 | 0.0745 |
+  | 47 | 0.0460 | 0.5974 | 0.651 | 0.621 | 0.0011 | 0.0043 | 0.0668 |
+  | 48 | 0.0447 | 0.5961 | 0.650 | 0.622 | 0.0011 | 0.0043 | 0.0680 |
+  | 49 | 0.0445 | 0.5974 | 0.655 | 0.620 | 0.0011 | 0.0040 | 0.0700 |
+  | 50 | 0.0447 | 0.5969 | 0.653 | 0.617 | 0.0011 | 0.0041 | 0.0615 |
+  | 51 | 0.0436 | 0.5951 | 0.646 | 0.618 | 0.0011 | 0.0040 | 0.0607 |
+  | 52 | 0.0437 | 0.5965 | 0.648 | 0.615 | 0.0011 | 0.0041 | 0.0605 |
+  | 53 | 0.0431 | 0.5965 | 0.646 | 0.613 | 0.0010 | 0.0042 | 0.0568 |
+  | 54 | 0.0430 | 0.5967 | 0.646 | 0.612 | 0.0010 | 0.0040 | 0.0554 |
+  | 55 | 0.0431 | 0.5957 | 0.646 | 0.611 | 0.0010 | 0.0038 | 0.0539 |
+  | 56 | 0.0430 | 0.5957 | 0.645 | 0.612 | 0.0010 | 0.0041 | 0.0552 |
+  | 57 | 0.0437 | 0.5955 | 0.645 | 0.611 | 0.0010 | 0.0039 | 0.0539 |
+  | 58 | 0.0419 | 0.5954 | 0.645 | 0.611 | 0.0010 | 0.0039 | 0.0532 |
+  | 59 | 0.0427 | 0.5955 | 0.645 | 0.611 | 0.0010 | 0.0039 | 0.0533 |
+  | 60 | 0.0417 | 0.5955 | 0.645 | 0.611 | 0.0010 | 0.0039 | 0.0533 |
+
+  Versus the previous exported best0.5505348, reported best improves by **0.0496652**
+  (~4.97 percentage points, ~9.02% relative). Original GT support remains0.05, but
+  prediction thresholds differ (old0.05/new0.5), output semantics changed, and rotation,
+  target masking and background weight changed together. This supports the combined
+  recipe at its chosen operating point, NOT isolated loss or rotation causation.
+  Lower new FP area is descriptive, not a matched-calibration nuisance robustness claim.
+  Late training decreases train loss and FP area while signed recall and changed-region
+  validation reconstruction worsen: consistent with conservative drift/overfitting,
+  not proof of a unique mechanism. More epochs are not the next recommendation.
+  Printed training dice is an inactive loss component, not validation Dice.
+
+  **Next:** export validation review from best.pt using checkpoint rotation/thresholds,
+  with the large stratified review budget. Include input_preview.png, metrics.csv and
+  run_config.json (not weights/cache). Compare small/faint-change misses, consolidation,
+  mixed signs and high-FP controls with the old run before a new loss or architecture.
+  A validation-only threshold sweep with original GT support fixed is a subsequent
+  calibration option. Keep test held out. No new training changes or job launched.
 
 - **2026-10-16 — Prepared requested combined run: upright scans, signed-mask GT, modest FP discount.**
   User requested a new run combining rotated scans, +/-1 GT and slightly less FP

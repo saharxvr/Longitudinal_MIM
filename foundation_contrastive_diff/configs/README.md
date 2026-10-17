@@ -4,6 +4,62 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Clinical 100-Case Inference
+
+`evaluation.evaluate_clinical` applies the frozen encoder and trained head to the100 ICU
+pairs in `python_files/annotation tool/Pairs1..Pairs8`, using Avi, Benny, Sigal, Smadar
+and Nitzan annotations. No training, synthetic GT cutoff, clinical threshold optimization,
+lung cropping, sharpening or component cleanup is performed. The launcher pins the
+verified epoch45 best-checkpoint SHA256 and prediction threshold0.5.
+
+Inputs use the SAME raw-NIfTI resize/minmax/rotation sequence as training, NOT the
+legacy predictor's transpose. The prediction is inverse-rotated and resized to the
+current image's original array coordinates before masks/metrics are computed. Main
+review panels are transposed for familiar upright clinical display; the model-input
+panel explicitly shows the actual checkpoint input coordinates. No affine canonicalization
+or registration is introduced. Scan ordering matches the existing evaluator's sorted
+filenames; source paths are saved for auditing chronology.
+
+Publish the local implementation before the campus `git pull`. Only stage the clinical
+entry point, launcher, touched tests and study documentation; do not stage unrelated
+clinician/LLM experiments or raw medical data. Ensure the campus CLINICAL_ROOT contains
+the100 pairs and Annotations tree; these files are verified locally, not on campus.
+Override CLINICAL_ROOT if that data lives elsewhere. Parent OV dependencies include
+nibabel, scipy, scikit-image, matplotlib, pandas and seaborn in addition to the study
+requirements.
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CLINICAL_ROOT="/cs/labs/josko/sahar_aharon/repos/python_files/annotation tool"
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_rot90cw_mask_fp075
+export OUT="$PWD/review_outputs/clinical100_rot90cw_mask_fp075_$(date +%Y%m%d_%H%M%S)"
+export LOG="${OUT}.log"
+mkdir -p "$(dirname "$OUT")"
+touch "$LOG"
+if bash training/run_clinical100.sh --preflight; then
+	nohup bash training/run_clinical100.sh >> "$LOG" 2>&1 &
+	tail -f "$LOG"
+fi
+```
+
+The log lives alongside OUT, not inside it, because inference refuses nonempty output
+directories. Ctrl+C exits tail without stopping background inference.
+
+Outputs: index.md, report.json, per_pair.csv, checkpoint/config/annotation-hash metadata;
+each pair gets raw `output.nii.gz`, thresholded `mask.nii.gz`, source provenance and a
+review.png showing both images, model input, prediction and all five clinicians.
+Annotation raster warnings are retained per case. Signed Dice/recall are reported
+against each clinician and sign-specific3-of-5 consensus. Empty reference masks do not
+inflate Dice; their FP area is reported separately. Ellipses are coarse human regions,
+not dense pathology masks, so these metrics are exploratory and not comparable to
+synthetic validation Dice or the older connected-component PAI. Do not use these100
+cases to select the checkpoint or tune thresholds and then call them an untouched test.
+
 ## Usage
 ```bash
 python -u -m training.train_foundation_diff --config configs/last1_l1l2.yaml
