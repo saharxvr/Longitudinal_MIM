@@ -35,6 +35,69 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-17 - Retrieved epochs1-14 diagnostics; metrics extend through epoch17.**
+  Pulled e03d46eb, results/cutoff0001_epoch14_20261017_162415. Full validation JSON
+  and threshold sweeps cover1-14; training JSON covers14; metrics.csv covers1-17.
+  Configuration matches run_config.json in every validation summary: training target
+  cutoff.0001, frozen encoder, FG11/BG.75, L1+L2 only, original selection GT.05/pred.5.
+  Each validation pass has2108 pairs,1293 pathology and815 nuisance. Independently
+  checked pooled precision/recall/Dice/IoU formulas in all10752 sweep rows, and weighted
+  L1/L2 foreground+background sums in every validation group and epoch14 train.
+
+  | Epoch | Matched unsigned Dice | Matched signed Dice | Unsigned precision | Unsigned recall | Nuisance FP area mean | Printed GT.05 Dice |
+  |---|---|---|---|---|---|---|
+  |4|.62901|.60165|.55122|.84518|.11820|.31182|
+  |8|.65814|.63503|.61492|.81489|.04934|.33997|
+  |10|.65758|.63034|.59508|.84583|.06215|.32808|
+  |11|.66479|.63709|.60527|.84159|.05025|.33488|
+  |12|.65676|.63107|.60764|.83106|.04453|.33271|
+  |13|.65933|.63513|.61575|.82565|.03777|.33918|
+  |14|.67329|.64951|.65561|.80578|.02737|.35716|
+
+  Matched metrics are pathology per-pair means at raw-GT>.0001 and prediction>.5,
+  not the printed GT.05 metric. Epoch14 is best among uploaded1-14 on unsigned and
+  signed matched Dice, original printed Dice and lowest mean nuisance FP. Improvement
+  since4 is mainly precision with a modest recall tradeoff, not expanded foreground.
+  Epoch14 signed macro precision/recall=.62850/.77965; pooled unsigned P/R/Dice=
+  .68581/.86920/.76669, pooled signed=.66602/.84412/.74457. Pooled and macro scores
+  answer different questions; do not interchange them. Pathology predicted area falls
+  from40.86% to33.88%, with target26.73% unchanged; pooled predicted/reference area
+  ratio1.529->1.267. Nuisance FP mean improves11.82%->2.74%, P9540.11%->18.81%,
+  max88.19%->48.41%; those are image-area fractions, not affected-case percentages.
+  Important false-positive tails therefore remain despite the mean improvement.
+
+  | Anomaly | Epoch4 matched signed Dice | Epoch14 matched signed Dice | Epoch14 signed precision | Epoch14 signed recall | Epoch14 pooled predicted/reference area |
+  |---|---|---|---|---|---|
+  |Consolidation|.51555|.56728|.54604|.73305|1.5132|
+  |Fluid overload|.64855|.67889|.61415|.88050|1.4537|
+  |Pleural effusion|.66325|.69806|.71788|.74596|1.0446|
+  |Pneumothorax|.58667|.65586|.63666|.76194|1.2426|
+
+  All four pathologies improve signed Dice; consolidation remains weakest and has the
+  largest excess predicted area, followed by fluid overload. No proof of anatomical
+  validity or clinical improvement follows from these synthetic validation scores.
+  Do not compare matched .0001 Dice directly to the earlier run's GT.05 Dice.6002.
+  No new clinical100/test evaluation or validation-threshold tuning was performed.
+  Numerical health is stable across1-14: invalid pairs0, nonfinite losses0, nonfinite
+  gradient steps0; each epoch2058 successful batches/514 optimizer steps with the
+  previously documented2-batch accumulation remainder unchanged. Epoch14 preclip grad
+  norm mean2.268/max8.775; epoch528.73s, CUDA peak2.45GiB. Training loss falls1.00781
+  at4->.53938 at14; train FG share73.08%. Validation diagnostic loss.91519->.83100,
+  mostly from BG contribution.21330->.10840; FG.70189->.72260 is slightly worse.
+  Validation loss has largely plateaued around.825-.837 at10-14 despite falling train
+  loss. This cautions against claiming uniformly improving generalization; online
+  replacement-sampled train means and fixed-model validation means are not directly
+  comparable. No collapse, but monitor the growing optimization/generalization gap.
+  Additional metrics-only epochs:15 printed Dice.36344/nuisance FP.01994/train.51555;
+  16 .36131/.02534/.50283;17 .34438/.03384/.48704. Under the unchanged selection rule,
+  epoch15 is the best in this metrics snapshot, not14 or the latest17. Checkpoint files
+  were not uploaded, so their contents are not inspected. No matched-target metrics or
+  detailed health were received for15-17; their target-matched ranking is unknown.
+  Recommendation: continue the unchanged run to a review around25, compare the same
+  fixed-threshold matched metrics and FP tails, and retain best rather than assume
+  the last checkpoint is best. No reason yet to change loss, sampler or threshold
+  mid-run. No training/config/optimizer/selection or running-job changes made.
+
 - **2026-10-17 - Retrieved epoch4 diagnostics; metrics snapshot also includes epoch5.**
   Pulled08c75764, results/cutoff0001_epoch4_20261017_144309: train/val epoch4 JSON,
   val threshold CSV, run_config.json and metrics.csv through epoch5. Confirmed signed
