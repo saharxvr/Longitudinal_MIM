@@ -35,6 +35,97 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Fresh model-free cache-input/GT evidence exporter requested.**
+  User correctly distinguished the morning epoch49 clinical collage from the
+  current upright-cache run; old-model predictions are NOT evidence of current
+  model inputs. Added evaluation/export_cache_input_evidence.py for campus export
+  of3realized synthetic TRAIN pairs (distinct cases/anomaly types) and3clinical
+  TEST pairs (defaults1,2,3 including the disputed pair3). This is not the DRR
+  manifest's held-out test split. Uses actual raw dataset/DataLoader and selected
+  CachedPairDataset records, actual clinical image/annotation loaders, and actual
+  cache backbone factory/forward preprocessing. ONLY HF AutoModel.from_pretrained
+  is replaced by a parameter-free capture sink; no weights or neural inference.
+  Original processor metadata loading/fallback, RGB repeat,518resize and channel
+  normalization execute unchanged; effective mean/std are recorded. Exact input
+  and normalized pixel_values are exported as compressed NPZ; PNG encoder views
+  reverse normalization for visibility, not orientation or anatomy.
+  Current config/cache/manifest hashes must agree; active run_config.json is also
+  compared when present. Fresh oriented GT converted through float16 must equal
+  the actual cached GT. Exported signed target is verified against the actual loss
+  implementation at0.0001, with checkpoint reference0.05 shown separately.
+  Clinical doctors/consensus stay native-coordinate measurement references;
+  resized/oriented consensus is explicitly display-only, not a new scoring GT.
+  Six source/model/encoder/reference review PNGs, separate input PNGs, exact NPZ,
+  source hashes and script/config/code provenance go to a fresh results/
+  cache_input_evidence_TIMESTAMP. --publish reuses existing exact-folder Git
+  publication; authorized six clinical/DRR input views and reference masks are
+  uploaded, not source NIfTIs/annotationJSONs/cache/checkpoints. CPU-only capture
+  leaves current training and existing caches untouched; no repeated full audit.
+  Tests passed: exact encoder preprocessing without weights plus full6pair
+  non-square real-NIfTI/raw+cached-loader/clinical-annotation export, actual-loss
+  target equality, cache preservation, wrong-cache rejection and scoped publisher
+  forwarding. ACTUAL campus six-example export is PENDING user command in
+  configs/README.md Exact Input And GT Export; do not claim images reviewed yet.
+
+- **2026-10-18 - Prediction-only horizontal mirror worsens clinical epoch49 agreement.**
+  User requested checking clinician placement in the collages and mirroring the
+  predictions before OV. Annotation tool displays native image.T; legacy OV
+  rasterizes cx/cy/rx/ry in native array coordinates, and clinical collages
+  transpose the scan and human masks together. This is coordinate-consistent;
+  it does not certify every clinical label or prove anatomical laterality.
+  Existing clinical inference already inverse-transforms model-space predictions,
+  so mirrored encoder inputs alone do not justify a second output reflection.
+  Ran a separate exploratory ablation of all100 saved cutoff.0001 epoch49 maps
+  (checkpoint45a84390eefe4e233bb63ee0de7ba49429684d49ea950b9ab827e69fbd02ee7b).
+  Horizontal display reflection equals native array axis0 flip, NOT np.fliplr
+  on the native array. No sign inversion, resizing, threshold change or CC cleanup.
+  Preserved native shape/affine and original maps; used prediction threshold.5,
+  same500 annotation hashes and unchanged legacy one-to-one8CC overlap matching.
+  All100 mirrored maps/masks and collages generated in review_outputs/
+  clinical100_epoch49_mirror_ablation_20261018; index.md links the100 collages,
+  original/mirrored OV matrices and f1_comparison.csv. Both complete OV runs
+  processed100pairs; all6human-human matrix blocks are exactly unchanged.
+
+  | Clinician | Original F1+ | Mirror F1+ | Original F1- | Mirror F1- | Original F1 all | Mirror F1 all |
+  |---|---:|---:|---:|---:|---:|---:|
+  |Avi|.146565|.119084|.181818|.064516|.158635|.100402|
+  |Benny|.160000|.148148|.167598|.100559|.162633|.131655|
+  |Sigal|.142857|.136646|.217765|.108883|.169184|.126888|
+  |Smadar|.144578|.117470|.182857|.097143|.157791|.110454|
+  |Nitzan|.182891|.179941|.256131|.179837|.208612|.179904|
+
+  Every clinician's positive, negative and combined detection F1 worsens.
+  Equal-weight clinician mean combined F1 .171371 -> .129861; pixelwise3of5
+  consensus signed Dice .138688 -> .060207 (same88active-reference pairs).
+  Original F1 values exactly reproduce the previous epoch49 evaluation.
+  Components stay567positive/281negative; union-of-any-clinician HMDRpositive
+  .236332 -> .253968 improves slightly, HMDRnegative .316726 -> .202847 worsens;
+  total unmatched detections/pair6.25 ->6.47. These are different references and
+  aggregations, so do not claim every OV statistic worsens. Do NOT promote the
+  mirrored maps as corrected predictions or modify current upright training.
+  Validation: 11clinical CPUtests pass, including non-square asymmetric mirror
+  axis/involution, real NIfTI export and OV integration, annotation-hash rejection,
+  original-map preservation and exact human-human agreement invariance. All100
+  collages and12OV matrices decode; pair1 mirrored collage and combined OV matrix
+  visually inspected. Encoder, trainer, bound orientation code and old outputs
+  unchanged. Generated maps and patient-image collages remain local/untracked.
+
+- **2026-10-18 - Corrected campus cache input preview reviewed.**
+  Pulled bd0ee0b8: results/upright_cache_orientation_20261018_115435 contains
+  cache_config.json and input_preview.png. Programmatic checks confirm frozen
+  backbone identity microsoft/rad-dino, last_n_layers=1, rotation_k=3,
+  flip_horizontal=true, image_size=512; manifest SHA256 exactly matches the
+  reviewed orientation_preflight_20261018_104010 provenance. Visually inspected
+  all three preview rows: scans upright, previous horizontal mirroring corrected,
+  continuous and signed GT in the same apparent orientation as prior/current.
+  The middle row has no visible GT change; the other rows show broad positive
+  targets at the configured 0.0001 cutoff. Preview SHA256:
+  e2c420f79d24f6d8772f7d34038b88c6162aba1e8e9f5bb5054a9e2b9dc6bcf8.
+  Together with the earlier exhaustive alignment audit, this supports proceeding
+  with the corrected orientation. These exports do NOT establish cache completion,
+  independently verify every latent record, certify biological GT correctness,
+  or demonstrate improved clinical performance. No encoder/model/config changes.
+
 - **2026-10-18 - User explicitly requested skipping repeated audit and moving on.**
   Reuse the already inspected orientation_preflight_20261018_104010 (18572aligned,
   zeroissues,all37previews reviewed), not an unaudited run. Added optional explicit

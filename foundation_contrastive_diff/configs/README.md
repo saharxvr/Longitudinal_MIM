@@ -4,6 +4,57 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Exact Input And GT Export
+
+This is a fresh, model-free check of the CURRENT corrected cache configuration,
+not a collage of the morning epoch49 model's predictions. It exports three
+realized synthetic TRAIN pairs from different cases/anomaly types, and three
+clinical TEST pairs (default1,2,3). The clinical cohort is not the synthetic
+manifest's held-out test split. No neural weights, head, predictions or embeddings
+are loaded/generated, and the existing cache and active training are untouched.
+
+Synthetic images use the SAME LongitudinalPairDataset/DataLoader as cache creation.
+Clinical images and annotations use the actual clinical inference/evaluation
+loaders. The actual cache backbone factory and forward preprocessing run with
+ONLY AutoModel.from_pretrained replaced by a capture-only, parameter-free sink:
+the capture stops at pixel_values before any neural inference. The original
+processor mean/std loading and fallback, repeat-to-RGB, resize and normalization
+therefore execute unchanged. Their effective values are recorded in report.json.
+
+Each folder includes source/model-coordinate review.png, separate prior/current
+cache-input PNGs, final encoder RGB previews, exact_tensors.npz and source hashes.
+Encoder PNGs are de-normalized for visibility; NPZ preserves actual normalized
+pixel_values without scaling. Actual cached continuous GT is read by
+CachedPairDataset and required to equal fresh GT converted through cache float16.
+The actual signed training target at0.0001 is verified with change_map_loss;
+checkpoint GT at0.05 is shown separately. Clinical human masks/3of5consensus
+are shown in their NATIVE measurement coordinates; the model-space consensus
+panel is for orientation inspection ONLY, not a replacement scoring reference.
+
+Run on campus while training continues:
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+python -u -m evaluation.export_cache_input_evidence \
+	--config configs/last1_upright_mask_thr0p0001_fp075.yaml \
+	--clinical-pairs 1 2 3 \
+	--publish
+```
+
+The script checks cache/manifest/config agreement and, when present, the active
+run_config.json. It writes a fresh results/cache_input_evidence_TIMESTAMP folder
+and uses the existing exact-path Git publisher to pullff-only, stage/commit ONLY
+that folder, and pushmain. This explicitly uploads the six requested input/GT
+examples, including clinical image views and exact tensors, but no source NIfTIs,
+annotation JSONs, feature caches or checkpoints. The previous large orientation
+audit is NOT repeated. On completion, pull locally and inspect index.md. Existing
+bound preprocessing/training files are unchanged, so this export does not replace
+or invalidate the approved training preflight.
+
 ## Epoch Reporting
 
 Each epoch prints train/validation total loss and pixel-weighted L1/L2, soft-Dice

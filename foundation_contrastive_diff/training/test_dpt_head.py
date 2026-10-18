@@ -202,6 +202,215 @@ class TrainingDiagnosticsTests(unittest.TestCase):
 
 
 class ClinicalInferenceTests(unittest.TestCase):
+    def test_cache_input_evidence_exports_six_real_loader_examples_and_scopes_publish(self):
+        import contextlib
+        import hashlib
+        import nibabel as nib
+        import numpy as np
+        import yaml
+        from types import SimpleNamespace
+        from evaluation import export_cache_input_evidence as evidence
+        from datasets.pair_dataset import LongitudinalPairDataset
+
+        with tempfile.TemporaryDirectory(dir=evidence.ROOT / "results") as temporary:
+            root = Path(temporary)
+            data, cache, clinical = root / "data", root / "cache", root / "clinical"
+            data.mkdir()
+            cache.mkdir()
+            records = []
+            shape = (23, 17)
+            for number, anomaly in enumerate(("consolidation", "fluid_overload", "pleural_effusion")):
+                pair_id = f"case{number}/pair0/variant0"
+                pair = data / pair_id
+                pair.mkdir(parents=True)
+                image = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+                gt = np.zeros(shape, dtype=np.float32)
+                gt[2:8, 3:9], gt[12:17, 10:14] = .00010002, -.2
+                for name, array in (("prior.nii.gz", image), ("current.nii.gz", image + 2),
+                                    ("diff_map.nii.gz", gt)):
+                    nib.save(nib.Nifti1Image(array, np.eye(4)), pair / name)
+                records.append(dict(pair_id=pair_id, split="train", effective_anomaly_type=anomaly,
+                                    realized_change=True, direction="mixed", change_group_id=f"group{number}"))
+            manifest = data / "manifest_split.jsonl"
+            manifest.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+            config = dict(dataset_root=str(data), cache_dir=str(cache), save_folder=str(root / "checkpoints"),
+                          feat_last_k=1, rotation_k=3, flip_horizontal=True, target_mode="signed_mask",
+                          target_threshold=.0001, eval_gt_threshold=.05, eval_threshold=.5,
+                          tau=.02, pos_weight=10., background_weight=.75)
+            config_path = root / "config.yaml"
+            config_path.write_text(yaml.safe_dump(config))
+            Path(config["save_folder"]).mkdir()
+            (Path(config["save_folder"]) / "run_config.json").write_text(json.dumps(config))
+            processor = SimpleNamespace(image_mean=[.5] * 3, image_std=[.5] * 3)
+            with patch.object(evidence.C, "IMG_SIZE", 16), patch.object(evidence.C, "BACKBONE_IMG_SIZE", 18):
+                dataset = LongitudinalPairDataset(str(data), split="train", img_size=16,
+                                                  rotation_k=3, flip_horizontal=True)
+                source_hashes = {}
+                for index, record in enumerate(records):
+                    sample = dataset[index]
+                    payload = {key: value for key, value in sample.items() if not key.startswith("img_")}
+                    payload["gt_diff"] = sample["gt_diff"].half()
+                    payload.update(p_prior=torch.zeros(4, 8), p_curr=torch.zeros(4, 8),
+                                   cls_prior=torch.zeros(8), cls_curr=torch.zeros(8))
+                    folder = cache / record["pair_id"]
+                    folder.mkdir(parents=True)
+                    torch.save(payload, folder / "feat.pt")
+                    source_hashes[str(folder / "feat.pt")] = evidence.sha256(folder / "feat.pt")
+                cache_config = dict(backbone=evidence.C.RAD_DINO_MODEL, last_n_layers=1,
+                                    rotation_k=3, image_size=16, flip_horizontal=True,
+                                    manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest())
+                (cache / "cache_config.json").write_text(json.dumps(cache_config))
+                for number in range(1, 4):
+                    pair = clinical / "Pairs1" / f"pair{number}"
+                    pair.mkdir(parents=True)
+                    image = np.arange(31 * 19, dtype=np.float32).reshape(31, 19)
+                    for name in ("0_prior.nii.gz", "1_current.nii.gz"):
+                        nib.save(nib.Nifti1Image(image, np.eye(4)), pair / name)
+                    for doctor in evidence.evaluate_clinical.PHYSICIANS:
+                        path = clinical / "Annotations" / doctor / f"pair{number}.json"
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(json.dumps([{}, dict(cx=5, cy=7, rx=2, ry=2,
+                                                             angle=0, label="Appearance")]))
+                args = SimpleNamespace(config=config_path, dataset_root=None, cache_dir=None,
+                                       clinical_root=clinical, clinical_pairs=[1, 2, 3],
+                                       out_dir=root / "export", publish=True)
+                with patch("transformers.AutoImageProcessor.from_pretrained", return_value=processor), \
+                     patch("training.run_upright_clinical.publish") as publish, \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    destination = evidence.run(args)
+                publish.assert_called_once_with(destination)
+                report = json.loads((destination / "report.json").read_text())
+                self.assertEqual(len(report["examples"]), 6)
+                self.assertFalse(report["model_weights_loaded"])
+                self.assertFalse(report["inference_performed"])
+                self.assertFalse(report["existing_cache_modified"])
+                self.assertIsNotNone(report["active_run_config_sha256"])
+                self.assertEqual(len(list(destination.glob("*/review.png"))), 6)
+                for example in report["examples"]:
+                    folder = destination / example["folder"]
+                    self.assertTrue((folder / "current_cache_input.png").is_file())
+                    self.assertTrue((folder / "current_encoder_rgb_preview.png").is_file())
+                    with np.load(folder / "exact_tensors.npz") as arrays:
+                        self.assertEqual(arrays["current_pixel_values"].shape, (3, 18, 18))
+                        self.assertEqual(arrays["current_cache_input"].shape, (1, 16, 16))
+                        if example["kind"] == "drr_train":
+                            gt = torch.from_numpy(arrays["cached_continuous_gt"])
+                            expected = evidence.signed_target(gt, .0001).numpy()
+                            np.testing.assert_array_equal(arrays["actual_loss_target"], expected)
+                            self.assertTrue(example["cached_gt_matches_fresh_half"])
+                        else:
+                            self.assertEqual(arrays["native_Avi_positive"].shape, (31, 19))
+                            self.assertTrue(example["model_space_reference_is_display_only"])
+                for path, digest in source_hashes.items():
+                    self.assertEqual(evidence.sha256(path), digest)
+                args.out_dir = root / "wrong_cache"
+                cache_config["flip_horizontal"] = False
+                (cache / "cache_config.json").write_text(json.dumps(cache_config))
+                with self.assertRaisesRegex(ValueError, "cache metadata"):
+                    evidence.run(args)
+                self.assertFalse(args.out_dir.exists())
+
+    def test_model_free_cache_capture_runs_actual_backbone_preprocessing(self):
+        from types import SimpleNamespace
+        from evaluation.export_cache_input_evidence import CacheInputCapture
+
+        processor = SimpleNamespace(image_mean=[.2, .3, .4], image_std=[.5, .6, .7])
+        with patch("transformers.AutoImageProcessor.from_pretrained", return_value=processor):
+            capture = CacheInputCapture(1)
+        images = torch.arange(35, dtype=torch.float32).reshape(1, 1, 7, 5) / 34
+        actual = capture(images)
+        expected = torch.nn.functional.interpolate(images.repeat(1, 3, 1, 1),
+                    size=(capture.backbone.backbone_img_size,) * 2,
+                    mode="bilinear", align_corners=False)
+        expected = (expected - capture.backbone._mean) / capture.backbone._std
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        self.assertEqual(list(capture.backbone.parameters()), [])
+
+    def test_prediction_mirror_is_horizontal_after_display_transpose(self):
+        import numpy as np
+        from evaluation.mirror_clinical_predictions import mirror_prediction
+
+        scores = np.arange(35, dtype=np.float32).reshape(7, 5)
+        original = scores.copy()
+        mirrored = mirror_prediction(scores)
+        np.testing.assert_array_equal(mirrored.T, np.fliplr(scores.T))
+        self.assertFalse(np.array_equal(mirrored, np.fliplr(scores)))
+        np.testing.assert_array_equal(mirror_prediction(mirrored), original)
+        np.testing.assert_array_equal(scores, original)
+        self.assertFalse(np.shares_memory(mirrored, scores))
+        for invalid in (np.zeros((2, 3, 1)), np.array([[np.nan]])):
+            with self.assertRaises(ValueError):
+                mirror_prediction(invalid)
+
+    def test_prediction_mirror_export_and_real_ov_preserve_originals(self):
+        import contextlib
+        import csv
+        import hashlib
+        import nibabel as nib
+        import numpy as np
+        from types import SimpleNamespace
+        from evaluation import compare_clinical_models as comparison
+        from evaluation import mirror_clinical_predictions as mirror
+
+        tools = comparison.clinical_tools()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            clinical_root = root / "clinical"
+            pair = clinical_root / "Pairs1" / "pair1"
+            pair.mkdir(parents=True)
+            shape = (24, 18)
+            affine = np.diag([2., 3., 1., 1.])
+            image = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+            for filename in ("0_prior.nii.gz", "1_current.nii.gz"):
+                nib.save(nib.Nifti1Image(image, affine), pair / filename)
+            annotations = [{}, dict(cx=5, cy=4, rx=2, ry=2, angle=0, label="Appearance"),
+                           dict(cx=6, cy=13, rx=2, ry=2, angle=0, label="Disappearance")]
+            hashes = {}
+            for doctor in comparison.PHYSICIANS:
+                path = clinical_root / "Annotations" / doctor / "pair1.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(annotations))
+                hashes[f"pair1/{doctor}"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            positive, negative = tools.load_labels_map(path, shape)
+            target = .8 * (positive > 0).astype(np.float32) - .8 * (negative < 0).astype(np.float32)
+            source_run = root / "source"
+            (source_run / "pair1").mkdir(parents=True)
+            source = source_run / "pair1" / "output.nii.gz"
+            scores = np.flip(target, axis=0).copy()
+            nib.save(nib.Nifti1Image(scores, affine), source)
+            source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+            metadata = dict(num_pairs=1, prediction_threshold=.5, checkpoint_epoch=49,
+                            checkpoint_sha256="1" * 64, annotation_sha256=hashes,
+                            image_size=24, run_config=dict(rotation_k=3))
+            (source_run / "metadata.json").write_text(json.dumps(metadata))
+            args = SimpleNamespace(clinical_run=source_run, clinical_root=clinical_root,
+                                   out_dir=root / "mirrored", num_pairs=1)
+            with patch.object(comparison, "clinical_tools", return_value=tools), \
+                 patch.object(tools, "plot_matrix"), contextlib.redirect_stdout(io.StringIO()):
+                mirror.run(args)
+            self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), source_hash)
+            output = nib.load(args.out_dir / "predictions" / "pair1" / "output.nii.gz")
+            np.testing.assert_array_equal(np.asarray(output.dataobj), target)
+            np.testing.assert_array_equal(output.affine, affine)
+            with (args.out_dir / "f1_comparison.csv").open(newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(len(rows), 5)
+            for row in rows:
+                self.assertEqual(float(row["original_F1_all"]), 0.)
+                self.assertEqual(float(row["mirrored_F1_all"]), 1.)
+            verification = json.loads((args.out_dir / "verification.json").read_text())
+            self.assertTrue(verification["human_human_matrices_unchanged"])
+            self.assertTrue(verification["original_predictions_unchanged"])
+            self.assertEqual(verification["transform"]["nifti_array_axis"], 0)
+            self.assertTrue((args.out_dir / "predictions" / "pair1" / "review.png").is_file())
+            with self.assertRaisesRegex(ValueError, "new output directory"):
+                mirror.run(args)
+            args.out_dir = root / "changed_annotations"
+            path.write_text("[]")
+            with self.assertRaisesRegex(ValueError, "Changed annotation"):
+                mirror.run(args)
+            self.assertFalse(args.out_dir.exists())
+
     def test_detection_only_cli_does_not_require_itamar(self):
         import contextlib
         from evaluation import compare_clinical_models as comparison
