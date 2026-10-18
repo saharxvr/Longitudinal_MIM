@@ -35,6 +35,74 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Cutoff.0001 run completed60 epochs; next candidate is logged best49.**
+  Pulled5dda4d5a, results/cutoff0001_final_20261018_082525: validation JSON and sweeps
+  38-60, train JSON60, metrics.csv exactly1-60. Combined the earlier snapshots for1-37.
+  Verified identical configurations, fixed validation coverage2108=1293 pathology+
+  815 nuisance, all46080 sweep rows' integer TP/FP/FN and pooled overlap formulas,
+  all validation group/epoch weighted-loss decompositions, epoch60 train decomposition,
+  and nuisance means matching metrics.csv. No threshold optimization or new inference.
+
+  | Epoch | Matched unsigned macro Dice | Matched signed macro Dice | Signed precision | Signed recall | Nuisance FP mean | FP P95 | Printed GT.05 Dice |
+  |---|---|---|---|---|---|---|---|
+  |23|.68613|.66068|.62552|.79500|.02960|.19057|.35720|
+  |37|.68346|.65954|.67656|.75023|.01432|.10285|.37312|
+  |49|.67819|.65410|.68470|.73396|.01106|.06334|.37739|
+  |60|.67682|.65185|.68219|.73174|.01113|.06521|.37700|
+
+  Matched columns are pathology pair means with valid denominators at raw-GT>.0001,
+  prediction>.5. FP columns are nuisance image-area fractions, not affected-case rates.
+  Across1-60, best unsigned/signed matched macro Dice is23 (.6861285/.6606753), best
+  printed selection Dice49 (.3773876), best matched pooled signed Dice49 (.7679145),
+  lowest mean FP and FP P95 both57 (.0110187/.0612087), lowest diagnostic val loss17
+  (.8092077). Do not substitute one definition for another or declare one universally
+  optimal epoch. Difference in macro signed Dice23->49 is only-.00657 observed; no
+  uncertainty estimate or statistical superiority claim is available from aggregates.
+  Late training primarily improves precision/nuisance suppression at a recall cost.
+  Compared with23, epoch49 signed precision rises.62552->.68470, recall falls.79500
+  ->.73396; nuisance FP mean2.96%->1.11%, P9519.06%->6.33%. Worst nuisance FP at49
+  is49.81% of image area, so severe outliers remain. Epoch60 is1.11%/6.52%/47.80%.
+  Pooled signed Dice improves23 .75053->49 .76791, then60 .76669; per-pair macro
+  Dice and foreground fidelity do not show the same improvement. Epoch49 pooled
+  unsigned P/R/Dice=.75315/.83644/.79261; signed=.72968/.81038/.76791. Pathology
+  predicted area29.68% vs target26.73%, ratio1.1106, versus33.87%/ratio1.2671 at23.
+
+  | Anomaly | Epoch23 signed macro Dice | Epoch49 signed macro Dice | Epoch60 signed macro Dice | Epoch49 signed precision | Epoch49 signed recall |
+  |---|---|---|---|---|---|
+  |Consolidation|.58822|.56399|.56045|.59804|.66932|
+  |Fluid overload|.68855|.69378|.69093|.66876|.83508|
+  |Pleural effusion|.71103|.70302|.70142|.75959|.72055|
+  |Pneumothorax|.65872|.65825|.65706|.70604|.71521|
+
+  Consolidation remains weakest and loses the most matched Dice/recall late in training.
+  Epoch49 area ratios: consolidation1.2453, fluid1.2931, effusion.9398, pneumothorax
+  1.0793. Aggregate area agreement does not imply anatomically correct localization.
+  Foreground generalization deteriorates: diagnostic val loss17 .80921->23 .82254
+  ->49 .93114->60 .94393, while train23 .39882->49 .23075->60 .22079. Val foreground
+  contribution23 .71387->60 .87190 rises while background.10867->.07203 falls. Printed
+  foreground L1/L2 rise23 .21169/.25427->60 .26425/.31205. This supports overfitting
+  to training foreground plus a precision/recall tradeoff, not numerical collapse or
+  proof that every quality metric worsens. Train is online replacement-sampled and
+  val fixed-model; the absolute train/val gap is not a like-for-like estimate.
+  Numerical health: no invalid validation pairs or nonfinite loss/gradient steps in
+  all60 summaries; each2058 successful batches/514 optimizer steps/2 pending batches.
+  Known accumulation remainder unchanged, not fixed during the experiment. Final train
+  invalid pairs0;16464 draws/9725 unique pairs/4909 groups,13109 pathology/3355 nuisance.
+  Final grad norm mean.60184/max.78337, epoch518.93s, peak2.45GiB, recorded LR0.
+  Source still overwrites last.pt every epoch and best.pt only when original GT.05
+  Dice improves. Expected retained weights: best.pt epoch49, last.pt epoch60. Weights
+  were not uploaded/loaded; verify checkpoint metadata before inference. Epoch23 was
+  not an original-metric best at that time, so its weights are not known to be retained
+  and cannot be reconstructed from diagnostics. Do not assume they can be selected.
+  Final recommendation: do not extend this run. Evaluate the stored best candidate49
+  against clinician annotations with the same fixed protocol as the earlier model;
+  inspect severe nuisance/consolidation errors before deciding another training run.
+  Synthetic performance is promising but clinical benefit and improvement over the old
+  model remain unproven. For future runs save matched-target best separately, define
+  checkpoint/early-stopping criteria before launch, and test regularization as a
+  separate ablation, not an inferred guaranteed fix. No training/loss/sampler/threshold/
+  selection changes, checkpoint manipulation, or clinical/test evaluation performed.
+
 - **2026-10-17 - Retrieved epochs15-37; matched macro Dice plateaus while FP falls.**
   Pulled c6c1aca0, results/cutoff0001_epoch37_20261017_192724: full validation JSON
   and threshold sweeps15-37, train JSON37, metrics.csv through38. Combined with the
