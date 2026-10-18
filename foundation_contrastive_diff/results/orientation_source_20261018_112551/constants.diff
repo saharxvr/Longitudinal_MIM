@@ -1,0 +1,13 @@
+diff --git a/foundation_contrastive_diff/constants.py b/foundation_contrastive_diff/constants.py
+index 4f1a7b72..17be9697 100644
+--- a/foundation_contrastive_diff/constants.py
++++ b/foundation_contrastive_diff/constants.py
+@@ -21,7 +21,7 @@ PATCH_SIZE = 14                 # ViT-B/14 patch size
+ FEATURE_GRID = BACKBONE_IMG_SIZE // PATCH_SIZE   # 37 x 37 patch grid
+ NUM_PATCH_TOKENS = FEATURE_GRID ** 2             # 1369 patch tokens (+ 1 [CLS])
+ BACKBONE_DIM = 768              # ViT-B embedding dim (per layer)
+-LAST_N_LAYERS = 1               # first try: last layer only (last-4 concat = ablation C)
++LAST_N_LAYERS = 1
+ 
+ EMBED_DIM = 256                 # Difference embedding dimensionality (z)
+ PROJ_DIM = 128                  # Projection-head output dimensionality
