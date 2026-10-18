@@ -345,6 +345,9 @@ class ClinicalInferenceTests(unittest.TestCase):
         array = np.arange(17 * 29, dtype=np.float32).reshape(17, 29)
         expected = torch.rot90(_norm01(_to_chw(array, 32)), 3, (-2, -1))
         torch.testing.assert_close(prepare_image(array, 32, 3), expected)
+        original_display = _norm01(_to_chw(array, 32))[0].numpy().T
+        np.testing.assert_array_equal(prepare_image(array, 32, 3)[0].numpy(),
+                          np.fliplr(original_display))
         landmarks = np.zeros((17, 29), dtype=np.float32)
         landmarks[2, 5], landmarks[14, 24] = 1, -1
         for rotation in range(4):

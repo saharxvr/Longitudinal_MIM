@@ -35,6 +35,39 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - New epoch49 visual reviews rendered; mirrored encoder input identified.**
+  User requested the same visual reviews as old epoch45, then noticed mirroring in
+  the new image. Generated all100 local cases in review_outputs/
+  clinical100_cutoff0001_epoch49_20261018 with index.md, metadata/render provenance,
+  per-pair output/mask/source/review.png and copied/recomputed scalar summaries.
+  Reused the original clinical exporter, with an optional explicit NEW MODEL/epoch49/
+  target.0001/prediction.5 label and increased row spacing to prevent heading overlap.
+  Inspected actual pair1 PNG after layout repair; all100 PNGs pass readability checks.
+  All100 source-map hashes match the F1-run provenance; exported array values and
+  original-space affines are unchanged; masks match strict +/-0.5 thresholding.
+  Reproduced all600 published observer rows and the complete report without changes.
+  No training, encoder loading, new inference, threshold tuning or component cleanup.
+  Review images/volumes remain local and are not staged/published in this update.
+
+  IMPORTANT orientation finding: the third panel is the ACTUAL encoder input, not an
+  arbitrary mirrored display. Runtime check on the real pair1 gives exactly
+  prepare_image(current,512,3)[0] == fliplr(normalized_resized_current.T), maximum
+  difference0. Current and the original-space prediction/clinician overlays display
+  with .T, whereas the input panel directly shows the raw-array clockwise90 rotation.
+  Thus the clinical encoder does receive a horizontally mirrored view relative to
+  the displayed chest. Both training configuration and clinical inference use
+  rotation_k=3; the dataset applies it to prior/current/GT. Matching rotation flags
+  alone do NOT prove training DRRs and clinical scans have matching anatomical
+  orientation; actual DRR anatomy still needs inspection before a preprocessing fix.
+  Asymmetric +/- landmark tests recover exact original locations through the inverse
+  prediction transform for all4 rotations. This establishes no extra reflection in
+  that coordinate-mapping step, not that mirrored clinical inputs are appropriate
+  for RAD-DINO or that all possible registration problems have been excluded.
+  Do not call this merely cosmetic, dismiss the user's observation, flip predictions
+  to improve scores, or silently change inference orientation for the trained cached
+  head. Keep raw inputs visible and label the discrepancy in the local review index.
+  No training/cache/inference transforms or existing checkpoint metrics changed.
+
 - **2026-10-18 - Actual one-pixel detection F1 computed locally; lower for all five clinicians.**
   Campus upload298e8984 supplies100 epoch49 original-space output.nii.gz maps and
   inference metadata in results/clinical100_cutoff0001_epoch49_predictions. Supersedes

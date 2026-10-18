@@ -110,7 +110,8 @@ def load_case(case, tools):
     return prior, current, current_nifti, annotations
 
 
-def plot_case(prior, current, model_input, scores, predicted, annotations, out_path):
+def plot_case(prior, current, model_input, scores, predicted, annotations, out_path,
+              run_label=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -140,14 +141,15 @@ def plot_case(prior, current, model_input, scores, predicted, annotations, out_p
         axis.set_title(doctor)
     for axis in axes:
         axis.axis("off")
-    figure.suptitle(f"{out_path.parent.name}: red positive; blue negative; black = both human signs")
-    figure.tight_layout()
+    title = f"{out_path.parent.name}: red positive; blue negative; black = both human signs"
+    figure.suptitle(f"{run_label}\n{title}" if run_label else title)
+    figure.tight_layout(h_pad=3.0)
     figure.savefig(out_path, dpi=130)
     plt.close(figure)
 
 
 def export_case(case, scores, prior, current, model_input, current_nifti, annotations,
-                out_dir, threshold):
+                out_dir, threshold, run_label=None):
     import nibabel as nib
 
     if scores.shape != current.shape or not np.isfinite(scores).all():
@@ -168,7 +170,7 @@ def export_case(case, scores, prior, current, model_input, current_nifti, annota
     rows.append(dict(pair_id=case["pair_id"], observer="consensus_3_of_5",
                      **score_masks(predicted, consensus)))
     plot_case(prior, current, model_input, scores, predicted, annotations,
-              destination / "review.png")
+              destination / "review.png", run_label=run_label)
     (destination / "source.json").write_text(json.dumps(case, indent=2), encoding="utf-8")
     return rows
 
