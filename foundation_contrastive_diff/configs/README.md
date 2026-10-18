@@ -4,6 +4,44 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Remove Obsolete Feature Caches
+
+The user authorized removing old last-four and last-one latent caches with the
+obsolete sideways/mirrored input convention. Delete only the five exact directories
+below, never a wildcard such as `fcd_cache_last*`. Preserve the new corrected cache
+`fcd_cache_last1_upright_inference`, source DRRs/GT in `fcd_train`, all checkpoints,
+reports and predictions. Historical head evaluation/training that depends on a
+deleted cache will require regenerating those features. Check that NO job on ANY
+campus node is reading/writing these shared directories before running cleanup;
+the local process check below cannot inspect other nodes. The CPU orientation-only
+audit does not need the old caches and can be completed before cleanup.
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+if pgrep -u "$(id -u)" -af 'training[./](train_foundation_diff|cache_features|run_last4_dpt|run_rotated_mask)'; then
+	echo "Stop or finish the cache/training jobs above before cleanup."
+	exit 1
+fi
+BASE=/cs/labs/josko/sahar_aharon
+for CACHE in \
+	"$BASE/fcd_cache_last4" \
+	"$BASE/fcd_cache_last1" \
+	"$BASE/fcd_cache_last1_from_last4" \
+	"$BASE/fcd_cache_last1_inference" \
+	"$BASE/fcd_cache_last1_rot90cw_inference"
+do
+	if [[ -d "$CACHE" ]]; then
+		du -sh "$CACHE"
+		rm -rf -- "$CACHE"
+	fi
+done
+df -h "$BASE"
+BASH
+```
+
 ## Corrected DRR/GT Orientation
 
 `last1_upright_mask_thr0p0001_fp075.yaml` is an orientation-only follow-up to the

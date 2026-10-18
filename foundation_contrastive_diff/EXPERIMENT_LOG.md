@@ -35,6 +35,20 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - User authorized removal of obsolete last-four/last-one latents.**
+  Campus cleanup scope is exactly /cs/labs/josko/sahar_aharon/ directories:
+  fcd_cache_last4,fcd_cache_last1,fcd_cache_last1_from_last4,
+  fcd_cache_last1_inference,fcd_cache_last1_rot90cw_inference. These are the known
+  legacy sideways/mirrored caches; their current campus existence and byte sizes
+  have not been inspected from this PC. Keep fcd_cache_last1_upright_inference,
+  all source DRRs/signed GT, trained heads, configs, metrics and clinical outputs.
+  Added exact-path cleanup command with local job check; user must also ensure no
+  jobs on other campus nodes use the shared caches. No wildcard deletion and no
+  automatic deletion in the training pipeline. Cleanup execution remains pending
+  on campus; do not claim space recovered. Old cache-dependent runs would require
+  feature regeneration if revisited. Corrected features are rebuilt, not flipped
+  or sliced from these obsolete vectors; encoder remains frozen.
+
 - **2026-10-18 - Corrected-orientation retraining and DRR/GT approval gate prepared.**
   User requested retraining with correct positions, explicitly including DRRs AND
   GT, followed automatically by all100 clinical predictions and a Git push.
