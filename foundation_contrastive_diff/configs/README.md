@@ -4,6 +4,71 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Next Run: CE And Classwise Dice
+
+The separate `last1_upright_ce_dice_thr0p001.yaml` config uses the existing
+upright last-layer cache and a fresh three-logit cross-attention/DPT head.
+RAD-DINO remains frozen. Strict GT boundaries are unchanged=abs(GT)<=0.001,
+positive=GT>0.001, negative=GT<-0.001; no GT normalization or CC removal.
+The objective is CE + mean(positive Dice loss, negative Dice loss), with
+coefficients1/1 and CE weights[1,1,1]. Dice pools each foreground class across
+the batch and spatial dimensions; CE includes background and supervises empty
+maps. No L1/L2 or sign penalty is active. This combines a new cutoff and loss,
+so it is not a controlled loss-only comparison against the current run.
+
+Seed42,60epochs,batch8/accum4,lr0.0003,weight_decay0.01,warmup2 and clip1
+are retained. The new run is
+`/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_ce_dice_thr0p001`.
+Best-checkpoint selection uses signed Dice against raw GT0.001; the fixed
+GT0.05 reference is still reported separately. Prediction threshold remains0.5
+on p_positive-p_negative, not argmax or total foreground probability. Equal
+thresholds do not imply matched false-positive rates across formulations.
+
+Run on campus AFTER the current job finishes. This command refuses to launch
+while a known training/pipeline process is visible on this node; also check
+other sessions/nodes sharing the GPU. It does not stop any existing process.
+
+```bash
+set -e
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+if pgrep -af 'training[.]train_foundation_diff|training[.]run_upright_clinical|training[.]run_ce_dice_clinical'; then
+	echo "Existing training/pipeline detected. Wait for it to finish before launching CE."
+else
+	RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_ce_dice_thr0p001
+	mkdir -p "$RUN"
+	LOG="$RUN/pipeline_$(date +%Y%m%d_%H%M%S).log"
+	nohup python -u -m training.run_ce_dice_clinical \
+		--config configs/last1_upright_ce_dice_thr0p001.yaml \
+		--publish > "$LOG" 2>&1 < /dev/null &
+	echo "CE pipeline PID=$! log=$LOG"
+fi
+```
+
+No cache rebuild or repeated orientation audit is requested. The normal cache
+orientation/manifest checks remain. Resume uses only the new run's last
+checkpoint, with head/loss/config guards; a populated CE run missing last.pt
+must fail instead of silently restarting. Do not resume from regression weights.
+The launcher locks this CE pipeline, checks completion at epoch60 and code,
+configuration, manifest and clinical input hashes, then evaluates best.pt on the
+same100clinical pairs and computes the existing detection F1. Training failure
+prevents clinical inference and publication.
+
+Clinical output retains output.nii.gz=p_positive-p_negative, mask.nii.gz at0.5,
+and all three probability_*.nii.gz maps in original current-image geometry.
+Their finiteness, ranges, sum-to-one and signed-score identity are verified.
+Publishing includes only the dedicated results/clinical100_upright_ce_dice_thr0p001_*
+folder: predictions/probabilities, provenance, overlap and detection F1 reports,
+metrics/config and best/final train/val diagnostics. Checkpoints, feature caches,
+source scans and clinical review images stay on campus. Clinical evaluation is
+exploratory transfer, not a fresh held-out confirmation or threshold-tuning set.
+The implementation has local CPU fixture tests, not a completed campus CE run.
+
 ## Candidate Threshold Components
 
 The local comparison of0.001,0.01,0.02 is in
@@ -78,7 +143,8 @@ the existing inverse-coordinate transform and fixed comparison references; a0.5
 cutoff on this new score is not guaranteed to match the old false-positive rate.
 Test class boundaries, both signs, all-background samples, finite loss/gradients,
 frozen-encoder invariance, and native-coordinate export before campus training.
-No cross-entropy training implementation has been enabled by this audit.
+The separate implementation and launch command are documented above. The audit
+itself does not launch training or modify the current regression run.
 
 ## Exact Input And GT Export
 

@@ -26,7 +26,7 @@ class DPTDifferenceHead(nn.Module):
 
     def __init__(self, backbone_dim=768, patch_dim=3072, cls_dim=768,
                  grid=37, channels=96, embed_dim=256, out_size=512,
-                 out_range=(-1.0, 1.0), num_layers=4):
+                 out_range=(-1.0, 1.0), num_layers=4, output_mode="signed"):
         super().__init__()
         if num_layers not in (1, 4) or patch_dim != num_layers * backbone_dim:
             raise ValueError("DPT patch dimension must match one or four backbone layers")
@@ -34,6 +34,9 @@ class DPTDifferenceHead(nn.Module):
             raise ValueError("DPT channels must be a positive multiple of eight")
         if grid < 2:
             raise ValueError("DPT grid must be at least two")
+        if output_mode not in ("signed", "three_class"):
+            raise ValueError("Output mode must be signed or three_class")
+        self.output_mode = output_mode
         self.backbone_dim = backbone_dim
         self.num_layers = num_layers
         self.patch_dim = patch_dim
@@ -55,7 +58,7 @@ class DPTDifferenceHead(nn.Module):
         self.cls_proj = nn.Linear(cls_dim, channels)
         self.output = nn.Sequential(
             nn.Conv2d(channels, channels // 2, 3, padding=1), nn.GELU(),
-            nn.Conv2d(channels // 2, 1, 1),
+            nn.Conv2d(channels // 2, 3 if output_mode == "three_class" else 1, 1),
         )
         self.z_proj = nn.Linear(channels * 2, embed_dim)
 
@@ -97,6 +100,8 @@ class DPTDifferenceHead(nn.Module):
         logits = self.output(fused.contiguous())
         logits = F.interpolate(logits, size=(self.out_size, self.out_size),
                                mode="bilinear", align_corners=False)
+        if self.output_mode == "three_class":
+            return logits, embedding
         signed_map = torch.tanh(logits)
         low, high = self.out_range
         if (low, high) != (-1.0, 1.0):

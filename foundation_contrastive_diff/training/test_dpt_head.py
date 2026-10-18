@@ -22,6 +22,244 @@ from training.cache_features import slice_last_layer_cache
 
 
 class TrainingDiagnosticsTests(unittest.TestCase):
+    def test_ce_pipeline_failure_gate_and_scoped_complete_artifacts(self):
+        import nibabel as nib
+        import numpy as np
+        import yaml
+        from training import run_ce_dice_clinical as pipeline
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'results').mkdir()
+            source = root / 'current.nii.gz'
+            affine = np.diag([2., 3., 1., 1.])
+            nib.save(nib.Nifti1Image(np.zeros((3, 5)), affine), source)
+            annotation = root / 'annotation.json'
+            annotation.write_text('[]')
+            cases = [dict(pair_id=f'pair{number}', prior=str(source), current=str(source),
+                          annotations={doctor: str(annotation) for doctor in ('Avi', 'Benny', 'Sigal', 'Smadar', 'Nitzan')})
+                     for number in range(1, 101)]
+            (root / 'manifest_split.jsonl').write_text('{}\n')
+            config = yaml.safe_load(pipeline.DEFAULT_CONFIG.read_text())
+            run = root / 'run_last1_upright_ce_dice_thr0p001'
+            config.update(dataset_root=str(root), cache_dir=str(root / 'cache'),
+                          save_folder=str(run / 'checkpoints'), plots_folder=str(run / 'plots'), epochs=1)
+            config_path = root / 'config.yaml'
+            config_path.write_text(yaml.safe_dump(config))
+
+            def finish_training(command, **kwargs):
+                self.assertEqual(command, ['bash', 'training/run_last4_dpt.sh'])
+                self.assertEqual(kwargs['env']['CACHE_DIR'], config['cache_dir'])
+                checkpoints = run / 'checkpoints'
+                checkpoints.mkdir(parents=True)
+                state = dict(epoch=1, head_spec=dict(kwargs=dict(output_mode='three_class')), run_config=config)
+                for name in ('best.pt', 'last.pt'):
+                    torch.save(state, checkpoints / name)
+                (checkpoints / 'metrics.csv').write_text('epoch\n1\n')
+                (checkpoints / 'run_config.json').write_text(json.dumps(config))
+                (checkpoints / 'diagnostics').mkdir()
+                for split in ('train', 'val'):
+                    (checkpoints / 'diagnostics' / f'epoch_0001_{split}.json').write_text('{}')
+
+            def finish_clinical(args):
+                args.out_dir.mkdir(parents=True)
+                metadata = dict(num_pairs=100, prediction_threshold=.5, rotation_k=3, flip_horizontal=True)
+                (args.out_dir / 'metadata.json').write_text(json.dumps(metadata))
+                (args.out_dir / 'report.json').write_text(json.dumps(dict(pairs_completed=100)))
+                (args.out_dir / 'per_pair.csv').write_text('pair_id\n')
+                for case in cases:
+                    folder = args.out_dir / case['pair_id']
+                    folder.mkdir()
+                    for name, value in [('output.nii.gz', .6), ('mask.nii.gz', 1.),
+                                        ('probability_unchanged.nii.gz', .2),
+                                        ('probability_positive.nii.gz', .7),
+                                        ('probability_negative.nii.gz', .1)]:
+                        nib.save(nib.Nifti1Image(np.full((3, 5), value, dtype=np.float32), affine), folder / name)
+                    (folder / 'source.json').write_text(json.dumps(case))
+
+            def finish_f1(args):
+                args.out_dir.mkdir()
+                for name in ('metadata.json', 'report.json', 'f1_per_clinician.csv'):
+                    (args.out_dir / name).write_text('{}')
+
+            with patch.object(pipeline, 'CODE_PATHS', ()), \
+                 patch.object(pipeline.subprocess, 'check_output', return_value='commit\n'), \
+                 patch.object(pipeline.evaluate_clinical, 'discover_cases', return_value=cases), \
+                 patch.object(pipeline.evaluate_clinical, 'run', side_effect=finish_clinical) as infer, \
+                 patch.object(pipeline.compare_clinical_models, 'run', side_effect=finish_f1) as f1, \
+                 patch.object(pipeline, 'publish') as publish, patch('sys.stdout', io.StringIO()):
+                with patch.object(pipeline.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'train')):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        pipeline.run(config_path, root, True)
+                infer.assert_not_called()
+                f1.assert_not_called()
+                publish.assert_not_called()
+                with patch.object(pipeline, 'ROOT', root), \
+                     patch.object(pipeline.subprocess, 'run', side_effect=finish_training):
+                    destination = pipeline.run(config_path, root, True)
+                publish.assert_called_once_with(destination)
+                verification = json.loads((destination / 'verification.json').read_text())
+                self.assertEqual(verification['pairs_verified'], 100)
+                self.assertEqual(len(verification['probability_sha256']), 100)
+                self.assertEqual(len(verification['clinical_source_sha256']), 200)
+                self.assertEqual(len(verification['annotation_sha256']), 500)
+                self.assertEqual(len(list(destination.glob('pair*/probability_*.nii.gz'))), 300)
+                self.assertFalse(list(destination.rglob('*.pt')))
+                self.assertFalse(list(destination.rglob('current.nii.gz')))
+                self.assertTrue((destination / 'detection_f1/f1_per_clinician.csv').is_file())
+
+    def test_three_class_score_eval_and_probability_export(self):
+        import nibabel as nib
+        import numpy as np
+        from models import signed_change_map
+        from evaluation import evaluate_clinical as clinical
+
+        logits = torch.tensor([[[[-8., -8., 8.]], [[8., -8., -8.]], [[-8., 8., -8.]]]])
+        scores = signed_change_map(logits)
+        torch.testing.assert_close(scores, torch.tensor([[[[1., -1., 0.]]]]), atol=1e-6, rtol=0)
+        ambiguous = torch.tensor([[[[-8.]], [[8.]], [[8.]]]])
+        self.assertEqual(float(signed_change_map(ambiguous)), 0.)
+        self.assertGreater(float(ambiguous.softmax(1)[0, 1]), .49)
+
+        class FixedHead(torch.nn.Module):
+            def forward(self, *inputs):
+                return logits, None
+
+        batch = dict(p_prior=torch.zeros(1, 1, 1), p_curr=torch.zeros(1, 1, 1),
+                     cls_prior=torch.zeros(1, 1), cls_curr=torch.zeros(1, 1),
+                     gt_diff=torch.tensor([[[[.2, -.2, 0.]]]]), is_pathology=[1], anomaly_type=[1])
+        report, _ = run_eval(FixedHead(), None, [batch], 'cpu', .5, gt_thr=.05)
+        self.assertEqual(report['overall']['dice'], 1.)
+        with tempfile.TemporaryDirectory() as temporary:
+            shape = (7, 5)
+            probabilities = logits.softmax(1).expand(1, 3, 7, 3)
+            restored = np.stack([clinical.restore_prediction(channel, shape, 3, True)
+                                 for channel in probabilities[0]])
+            signed = restored[1] - restored[2]
+            affine = np.diag([2., 3., 1., 1.])
+            nifti = nib.Nifti1Image(np.zeros(shape), affine)
+            masks = (np.zeros(shape, dtype=bool), np.zeros(shape, dtype=bool))
+            with patch.object(clinical, 'plot_case'):
+                clinical.export_case(dict(pair_id='pair1'), signed, np.zeros(shape), np.zeros(shape),
+                                     np.zeros(shape), nifti, {'Avi': masks}, Path(temporary), .5,
+                                     probabilities=restored)
+            for index, name in enumerate(('unchanged', 'positive', 'negative')):
+                saved = nib.load(Path(temporary) / 'pair1' / f'probability_{name}.nii.gz')
+                np.testing.assert_allclose(np.asarray(saved.dataobj), restored[index])
+                np.testing.assert_array_equal(saved.affine, affine)
+            saved = nib.load(Path(temporary) / 'pair1/output.nii.gz')
+            np.testing.assert_allclose(np.asarray(saved.dataobj), signed)
+            from training.run_ce_dice_clinical import verify_probabilities
+            source = Path(temporary) / 'current.nii.gz'
+            nib.save(nifti, source)
+            cases = [dict(pair_id='pair1', current=str(source))]
+            hashes = verify_probabilities(Path(temporary), cases)
+            self.assertEqual(len(hashes['pair1']), 3)
+            invalid = np.zeros(shape, dtype=np.float32)
+            nib.save(nib.Nifti1Image(invalid, affine),
+                     Path(temporary) / 'pair1/probability_positive.nii.gz')
+            with self.assertRaisesRegex(ValueError, 'probabilities'):
+                verify_probabilities(Path(temporary), cases)
+
+    def test_three_class_cached_run_resume_guards_and_logged_objective(self):
+        config = str(Path(__file__).resolve().parents[1] / 'configs/last1_upright_ce_dice_thr0p001.yaml')
+        torch.manual_seed(1)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records = []
+            for split in ('train', 'val'):
+                for index in range(2):
+                    pair_id = f'{split}_{index}'
+                    records.append(dict(pair_id=pair_id, split=split,
+                                        effective_anomaly_type='consolidation' if index == 0 else 'none'))
+                    folder = root / 'cache' / pair_id
+                    folder.mkdir(parents=True)
+                    gt = torch.zeros(1, 32, 32)
+                    if index == 0:
+                        gt[:, :16] = .2
+                        gt[:, 16:] = -.2
+                    torch.save(dict(p_prior=torch.randn(25, 16), p_curr=torch.randn(25, 16),
+                                    cls_prior=torch.randn(16), cls_curr=torch.randn(16), gt_diff=gt,
+                                    anomaly_type=1 if index == 0 else 0, direction=0,
+                                    is_pathology=int(index == 0), change_group_id=pair_id,
+                                    pair_id=pair_id, rotation_k=3, flip_horizontal=True), folder / 'feat.pt')
+            (root / 'manifest_split.jsonl').write_text('\n'.join(map(json.dumps, records)))
+            arguments = ['train', '--config', config, '--dataset_root', str(root),
+                         '--cache_dir', str(root / 'cache'), '--save_folder', str(root / 'checkpoints'),
+                         '--plots_folder', str(root / 'plots'), '--batch_size', '2', '--accum', '1',
+                         '--num_workers', '0', '--device', 'cpu', '--dpt_channels', '8', '--epochs', '1']
+            output = io.StringIO()
+            with patch.multiple(trainer.C, BACKBONE_DIM=16, FEATURE_GRID=5, IMG_SIZE=32, EMBED_DIM=12), \
+                 patch.object(trainer, 'plot_curves'), patch.object(trainer, 'save_sample_plots'), \
+                  patch('models.FrozenCXRBackbone', side_effect=AssertionError('Cached training must not load the encoder')), \
+                 patch('sys.stdout', output):
+                with patch.object(sys, 'argv', arguments):
+                    trainer.main()
+                checkpoint = torch.load(root / 'checkpoints/last.pt', weights_only=True)
+                self.assertEqual(checkpoint['head_spec']['kwargs']['output_mode'], 'three_class')
+                self.assertEqual(checkpoint['head']['output.2.weight'].shape[0], 3)
+                self.assertEqual(checkpoint['best_dice'], checkpoint['val']['target_signed_dice'])
+                self.assertEqual(checkpoint['best_metric'], 'target_signed_dice')
+                self.assertAlmostEqual(checkpoint['val']['loss_total'],
+                                       checkpoint['val']['loss_ce'] + checkpoint['val']['loss_dice'],
+                                       delta=1e-6)
+                config_path = root / 'checkpoints/run_config.json'
+                before = config_path.read_bytes()
+                with patch.object(sys, 'argv', arguments), self.assertRaisesRegex(ValueError, 'already contains'):
+                    trainer.main()
+                with patch.object(sys, 'argv', arguments + ['--resume', '--w_ce', '2']), \
+                     self.assertRaisesRegex(ValueError, 'w_ce'):
+                    trainer.main()
+                legacy = dict(checkpoint, run_config=dict(checkpoint['run_config'], loss_mode='regression'))
+                torch.save(legacy, root / 'legacy.pt')
+                with patch.object(sys, 'argv', arguments + ['--resume_from', str(root / 'legacy.pt')]), \
+                     self.assertRaisesRegex(ValueError, 'loss_mode'):
+                    trainer.main()
+                self.assertEqual(config_path.read_bytes(), before)
+                with patch.object(sys, 'argv', arguments + ['--epochs', '2', '--resume']):
+                    trainer.main()
+                checkpoint = torch.load(root / 'checkpoints/last.pt', weights_only=True)
+                self.assertEqual(checkpoint['epoch'], 2)
+                diagnostic = json.loads((root / 'checkpoints/diagnostics/epoch_0002_val.json').read_text())
+                losses = diagnostic['metadata']['loss_batch_means']['val']
+                self.assertEqual(set(losses), {'total', 'ce', 'dice', 'dice_positive', 'dice_negative'})
+                self.assertEqual(diagnostic['groups']['overall']['pairs'], 2)
+                with (root / 'checkpoints/metrics.csv').open() as stream:
+                    rows = list(__import__('csv').DictReader(stream))
+                self.assertEqual(len(rows), 2)
+                self.assertIn('train_ce', rows[0])
+                self.assertIn('val_target_signed_dice', rows[0])
+            text = output.getvalue()
+            self.assertIn('positive_dice_loss=', text)
+            self.assertIn('negative_dice_loss=', text)
+            self.assertIn('[checkpoint selection] target_signed_dice=', text)
+            self.assertIn('raw_gt_abs>0.05', text)
+            self.assertIn('raw_gt_abs>0.001', text)
+
+    def test_three_class_ce_dice_boundaries_sign_and_empty_background(self):
+        from losses.change_map_losses import three_class_change_map_loss
+
+        gt = torch.tensor([[[[.001, -.001, .2, -.2, 0.]]]])
+        labels = torch.tensor([[[0, 0, 1, 2, 0]]])
+        logits = torch.nn.functional.one_hot(labels, 3).permute(0, 3, 1, 2).float() * 16
+        loss, terms = three_class_change_map_loss(logits, gt)
+        self.assertLess(float(loss), 1e-5)
+        self.assertLess(terms['dice_positive'], 1e-5)
+        self.assertLess(terms['dice_negative'], 1e-5)
+        swapped, _ = three_class_change_map_loss(logits[:, [0, 2, 1]], gt)
+        self.assertGreater(float(swapped), 1)
+        empty_logits = torch.zeros(2, 3, 2, 2, requires_grad=True)
+        empty_gt = torch.zeros(2, 1, 2, 2)
+        empty_loss, _ = three_class_change_map_loss(empty_logits, empty_gt)
+        empty_loss.backward()
+        self.assertTrue(torch.isfinite(empty_logits.grad).all())
+        self.assertTrue((empty_logits.grad[:, 0] < 0).all())
+        self.assertTrue((empty_logits.grad[:, 1:] > 0).all())
+        with self.assertRaises(ValueError):
+            three_class_change_map_loss(empty_logits, empty_gt, class_weights=(0, 1, 1))
+        with self.assertRaises(ValueError):
+            three_class_change_map_loss(empty_logits[:, :1], empty_gt)
+
     def test_validation_total_matches_active_training_objective(self):
         class FixedHead(torch.nn.Module):
             def forward(self, *inputs):

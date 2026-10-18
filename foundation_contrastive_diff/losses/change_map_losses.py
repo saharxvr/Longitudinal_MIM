@@ -13,10 +13,54 @@ pred and gt are both [B, 1, H, W] in [-1, 1].
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Tuple
 
 import torch
 import torch.nn.functional as F
+
+
+def three_class_change_map_loss(
+    logits: torch.Tensor,
+    gt: torch.Tensor,
+    target_threshold: float = 0.001,
+    w_ce: float = 1.0,
+    w_dice: float = 1.0,
+    class_weights: tuple = (1.0, 1.0, 1.0),
+    eps: float = 1e-6,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """CE plus batchwise foreground-class Dice; classes: unchanged, positive, negative."""
+    if logits.ndim != 4 or logits.shape[1] != 3:
+        raise ValueError("Three-class loss requires [B,3,H,W] raw logits")
+    if gt.shape != (logits.shape[0], 1, *logits.shape[2:]):
+        raise ValueError("GT must have shape [B,1,H,W] matching logits")
+    if (not 0 <= target_threshold < 1 or w_ce <= 0 or w_dice < 0 or eps <= 0
+            or not all(math.isfinite(value) for value in (w_ce, w_dice, eps))):
+        raise ValueError("Invalid three-class loss coefficients or threshold")
+    weights = torch.as_tensor(class_weights, device=logits.device, dtype=torch.float32)
+    if weights.shape != (3,) or not torch.isfinite(weights).all() or not (weights > 0).all():
+        raise ValueError("All three CE class weights must be finite and positive")
+    if not torch.isfinite(gt).all() or (gt.abs() > 1).any():
+        raise ValueError("GT must be finite and in [-1,1]")
+    values = gt[:, 0].float()
+    target = torch.zeros_like(values, dtype=torch.long)
+    target[values > target_threshold] = 1
+    target[values < -target_threshold] = 2
+    ce = F.cross_entropy(logits.float(), target, weight=weights)
+    probabilities = logits.float().softmax(dim=1)[:, 1:]
+    reference = F.one_hot(target, num_classes=3).permute(0, 3, 1, 2)[:, 1:].float()
+    intersection = (probabilities * reference).sum((0, 2, 3))
+    denominator = probabilities.sum((0, 2, 3)) + reference.sum((0, 2, 3))
+    class_losses = 1 - (2 * intersection + eps) / (denominator + eps)
+    dice = class_losses.mean()
+    total = w_ce * ce + w_dice * dice
+    return total, {
+        "ce": float(ce.detach()),
+        "dice": float(dice.detach()),
+        "dice_positive": float(class_losses[0].detach()),
+        "dice_negative": float(class_losses[1].detach()),
+        "total": float(total.detach()),
+    }
 
 
 def change_map_loss(

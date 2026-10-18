@@ -14,11 +14,22 @@ def build_change_head(spec, device="cpu"):
     return head_types[spec["type"]](**spec["kwargs"]).to(device)
 
 
+def signed_change_map(output):
+    """Preserve regression maps; convert class logits to p(positive)-p(negative)."""
+    if output.ndim != 4 or output.shape[1] not in (1, 3):
+        raise ValueError("Expected a one-channel signed map or three class logits")
+    if output.shape[1] == 1:
+        return output
+    probabilities = output.float().softmax(dim=1)
+    return probabilities[:, 1:2] - probabilities[:, 2:3]
+
+
 __all__ = [
     "FrozenCXRBackbone",
     "DifferenceHead",
     "DPTDifferenceHead",
     "DPTCrossAttentionHead",
     "build_change_head",
+    "signed_change_map",
     "DisentangledProjectionHeads",
 ]

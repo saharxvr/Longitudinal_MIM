@@ -35,6 +35,38 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Next fresh run: three-class CE plus classwise Dice requested.**
+  Added separate configs/last1_upright_ce_dice_thr0p001.yaml and
+  training/run_ce_dice_clinical.py. Existing upright frozen-RAD-DINO last1
+  cache retained; new three-raw-logit DPT head, no tanh. Class order is
+  unchanged/positive/negative, strict threshold0.001, CE weights1/1/1.
+  Objective CE + mean(positive,negative batchwise soft-Dice losses), weights1/1;
+  nonzero background CE includes empty maps. No L1/L2/sign penalty, GT
+  normalization, component deletion, encoder fine-tuning, or cache rebuild.
+  Dedicated run_last1_upright_ce_dice_thr0p001 preserves seed42/60epochs,
+  batch8/accum4/lr0.0003/weight_decay0.01/warmup2/clip1. Best checkpoint uses
+  matched GT0.001 signed Dice; fixed GT0.05 remains a separate reference.
+  New checkpoints identify head output mode and reject incompatible resume;
+  populated CE directories missing last.pt cannot silently start afresh.
+  Clinical export saves p_positive-p_negative plus all3 probabilities, with
+  original geometry, sum-to-one, finite/range and signed-identity verification.
+  Pipeline requires full configured training completion and unchanged code,
+  config, manifest, source scans and annotations before clinical100/F1; errors
+  stop downstream inference/publication. Only dedicated result artifacts are
+  published, not weights/cache/source scans; active regression run untouched.
+  CPU fixture tests passed for class boundaries, signs, empty-background
+  gradients, two-epoch cached training/resume/logging, probability restoration,
+  failure gating and scoped packaging. Complete training.test_dpt_head suite:
+  60tests PASS in61.315s with bounded CPU threading; all8 touched Python files
+  have clean editor diagnostics. Campus Bash command syntax/config agreement
+  PASS. Fixed only a test's loss-sum tolerance to1e-6 for float32 rounding
+  (observed difference5.96e-8); no objective change. Full campus training NOT
+  launched here.
+  Complete guarded nohup command is in configs/README.md, Next Run: CE And
+  Classwise Dice. Wait for existing GPU job to finish; no repeated orientation
+  audit. New cutoff plus loss is not an isolated CE-vs-regression ablation;
+  clinical100 remains exploratory, with no clinical threshold tuning.
+
 - **2026-10-18 - FULL candidate-threshold CC audit retrieved and verified.**
   Background watcher detected campus pushd989b2e0; pulled ff-only. Actual
   results/gt_cc_thresholds_20261018_203559 contains all18572pairs

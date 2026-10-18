@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from datasets.pair_dataset import _norm01, _to_chw, orient_tensor
+from models import signed_change_map
 
 
 PHYSICIANS = ("Avi", "Benny", "Sigal", "Smadar", "Nitzan")
@@ -149,11 +150,17 @@ def plot_case(prior, current, model_input, scores, predicted, annotations, out_p
 
 
 def export_case(case, scores, prior, current, model_input, current_nifti, annotations,
-                out_dir, threshold, run_label=None):
+                out_dir, threshold, run_label=None, probabilities=None):
     import nibabel as nib
 
     if scores.shape != current.shape or not np.isfinite(scores).all():
         raise ValueError(f"{case['pair_id']}: invalid restored prediction")
+    if probabilities is not None:
+        if (probabilities.shape != (3, *current.shape) or not np.isfinite(probabilities).all()
+                or (probabilities < 0).any() or (probabilities > 1).any()
+                or not np.allclose(probabilities.sum(axis=0), 1, atol=1e-5)
+                or not np.allclose(scores, probabilities[1] - probabilities[2], atol=1e-6)):
+            raise ValueError(f"{case['pair_id']}: invalid restored class probabilities")
     destination = out_dir / case["pair_id"]
     destination.mkdir()
     predicted = (scores > threshold, scores < -threshold)
@@ -161,6 +168,11 @@ def export_case(case, scores, prior, current, model_input, current_nifti, annota
     header.set_data_dtype(np.float32)
     nib.save(nib.Nifti1Image(scores.astype(np.float32), current_nifti.affine, header),
              destination / "output.nii.gz")
+    if probabilities is not None:
+        for index, name in enumerate(("unchanged", "positive", "negative")):
+            nib.save(nib.Nifti1Image(probabilities[index].astype(np.float32),
+                                    current_nifti.affine, header),
+                     destination / f"probability_{name}.nii.gz")
     signed = predicted[0].astype(np.int8) - predicted[1].astype(np.int8)
     nib.save(nib.Nifti1Image(signed, current_nifti.affine), destination / "mask.nii.gz")
     rows = [dict(pair_id=case["pair_id"], observer=doctor, **score_masks(predicted, masks))
@@ -228,6 +240,9 @@ def run(args):
     del payload
     spec = state["head_spec"]
     config = state.get("run_config", {})
+    three_class = spec["kwargs"].get("output_mode", "signed") == "three_class"
+    if three_class != (config.get("loss_mode", "regression") == "ce_dice"):
+        raise ValueError("Checkpoint class-head mode and training objective disagree")
     checkpoint_epoch = state.get("epoch")
     rotation = int(config.get("rotation_k", 0))
     flip_horizontal = bool(config.get("flip_horizontal", False))
@@ -259,6 +274,10 @@ def run(args):
                     scan_order="lexicographic, matching existing clinical evaluator",
                     evaluation="exploratory transfer; clinician ellipses are not dense pathology GT")
     metadata["checkpoint_epoch"] = checkpoint_epoch
+    if three_class:
+        metadata.update(class_order=["unchanged", "positive", "negative"],
+                        signed_score="p_positive-p_negative",
+                        probability_exports="three separate float32 NIfTI maps in original current geometry")
     metadata["annotation_sha256"] = {
         f"{case['pair_id']}/{doctor}": hashlib.sha256(Path(path).read_bytes()).hexdigest()
         for case in cases for doctor, path in case["annotations"].items()}
@@ -271,9 +290,18 @@ def run(args):
         features = [backbone(image[None].to(args.device)) for image in inputs]
         prediction, _ = head(features[0]["patch_tokens"], features[1]["patch_tokens"],
                              features[0]["cls_token"], features[1]["cls_token"])
-        scores = restore_prediction(prediction[0, 0], current.shape, rotation, flip_horizontal)
+        probabilities = None
+        if three_class:
+            probabilities = np.stack([
+                restore_prediction(channel, current.shape, rotation, flip_horizontal)
+                for channel in prediction.float().softmax(dim=1)[0]])
+            scores = probabilities[1] - probabilities[2]
+        else:
+            scores = restore_prediction(signed_change_map(prediction)[0, 0], current.shape,
+                                        rotation, flip_horizontal)
         rows.extend(export_case(case, scores, prior, current, inputs[1][0].numpy(),
-                                current_nifti, annotations, args.out_dir, threshold))
+                                current_nifti, annotations, args.out_dir, threshold,
+                                probabilities=probabilities))
         print(f"[clinical] {case['pair_id']} complete", flush=True)
     with (args.out_dir / "per_pair.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))

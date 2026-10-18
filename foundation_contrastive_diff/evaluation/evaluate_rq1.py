@@ -36,7 +36,7 @@ from torch.utils.data import DataLoader, Subset
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import constants as C
-from models import DifferenceHead, build_change_head
+from models import DifferenceHead, build_change_head, signed_change_map
 from datasets import CachedPairDataset, LongitudinalPairDataset
 from evaluation.change_detection_metrics import dice_score, iou_score, directional_sensitivity
 
@@ -81,6 +81,7 @@ def run_eval(head, backbone, loader, device, thr, feat_dim=None, review_rows=Non
         p_prior, p_curr, cls_prior, cls_curr = _tokens(batch, backbone, device, feat_dim)
         gt = batch["gt_diff"].to(device)
         pred, _ = head(p_prior, p_curr, cls_prior, cls_curr)
+        pred = signed_change_map(pred)
 
         atype = batch["anomaly_type"]
         is_path = batch["is_pathology"]
@@ -225,6 +226,7 @@ def export_review(head, backbone, dataset, rows, selected, dataset_root, split,
     for batch in loader:
         tokens = _tokens(batch, backbone, device, feat_dim)
         predictions, _ = head(*tokens)
+        predictions = signed_change_map(predictions)
         for index, pair_id in enumerate(batch["pair_id"]):
             row = selected_by_id[pair_id]
             source = raw[raw_indices[pair_id]]
