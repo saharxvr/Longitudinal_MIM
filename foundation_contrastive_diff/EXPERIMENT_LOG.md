@@ -35,6 +35,62 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Actual one-pixel detection F1 computed locally; lower for all five clinicians.**
+  Campus upload298e8984 supplies100 epoch49 original-space output.nii.gz maps and
+  inference metadata in results/clinical100_cutoff0001_epoch49_predictions. Supersedes
+  the F1-pending notes below. Metadata exactly matches the published clinical run,
+  checkpoint45a84390eefe4e233bb63ee0de7ba49429684d49ea950b9ab827e69fbd02ee7b, epoch49.
+  Verified100 finite map shapes/affines against local current scans and all500 annotation
+  hashes. Independently recomputed every metric in all600 published observer rows from
+  the actual transferred maps/local annotations: maximum absolute difference0, including
+  empty-reference handling. No source-image byte-hash comparison was available.
+  Ran evaluation.compare_clinical_models --foundation-only locally on CPU,100 pairs,
+  prediction.5, original coordinates,8-connected components, no size/intensity filtering.
+  No retraining, backbone loading, inference rerun, threshold tuning or annotation edits.
+  Scores/provenance in results/clinical100_f1_cutoff0001_epoch49_local_20261018_092936:
+  f1_per_clinician.csv, report.json, metadata.json and verification.json. Legacy outputs
+  and aggregate plots remain local; no new raw maps, clinical scans or case images are
+  staged for this results review. User separately authorized the preceding map upload.
+  Old epoch45 comparator: review_outputs/clinical100_20261017_112038/itamar_comparison/
+  foundation_100, pinned by comparison.json to the old metadata checkpoint. Verified
+  exact old/new500 annotation-hash equality and identical complete legacy protocol.
+  Every exported F1 was checked against its actual per_label matrix, not per_pair PAI.
+  Same-sign >=1-pixel overlap qualifies for the unchanged greedy one-to-one matching;
+  F1=2M/(2M+U), pooled across pairs; combined pools positive/negative counts.
+
+  | Clinician | Old F1+ | New F1+ | Old F1- | New F1- | Old combined | New combined |
+  |---|---|---|---|---|---|---|
+  |Avi|.268852|.146565|.236967|.181818|.255814|.158635|
+  |Benny|.233846|.160000|.236842|.167598|.235081|.162633|
+  |Sigal|.272109|.142857|.273973|.217765|.272904|.169184|
+  |Smadar|.286624|.144578|.281818|.182857|.284644|.157791|
+  |Nitzan|.329268|.182891|.345992|.256131|.336283|.208612|
+  |Equal-weight clinician mean|.278140|.155378|.275118|.201234|.276945|.171371|
+
+  Thus new combined F1 drops for5/5 clinicians, including Nitzan despite his improved
+  pixel Dice. Positive and negative detection F1 also fall for every clinician. This
+  corrects the earlier unknown-F1 status with an actual measured result, not an
+  inference from Dice. Clinician mean is not pooled across clinicians or consensus F1.
+  Model component counts: positive217->567, negative151->281, combined368->848 across
+  100 pairs (3.68->8.48 per pair). HMDR against any-clinician union positive.506912->
+  .236332, negative.476821->.316726; unmatched detections per pair positive1.07->4.33,
+  negative.79->1.92, combined1.86->6.25. Union HMDR/UDPP are descriptive auxiliary
+  measures, not per-clinician F1 precision. More predicted components and a much larger
+  unmatched burden accompany the previously measured larger total predicted area.
+  Do not claim a specific anatomical failure or that component-size filtering fixes
+  this: no cleanup ablation or new-case visual review has been performed.
+  Historical Itamar100 combined F1 (unchanged saved operating point): Avi.467236,
+  Benny.407216, Sigal.494253, Smadar.444444, Nitzan.510000; clinician mean.464630.
+  Historical100 uses lmm5 substitutes for pairs99/100 and threshold0/pre-save cleanup,
+  whereas both foundation comparisons use.5/no extra cleanup. Not a threshold-matched
+  architecture-only comparison. No new Itamar inference/evaluation was run here.
+  Decision: retain the old frozen-head model as the stronger current clinical baseline
+  on BOTH measured pixel-overlap and one-pixel component-F1 evidence. Next inspect
+  false components/target mismatch privately before another full training run; do not
+  optimize this exploratory reused clinical cohort or portray it as a fresh test.
+  Coarse ellipse references, greedy matching and different checkpoint trajectories
+  remain limitations; no significance, anatomical-validity or clinical-outcome claim.
+
 - **2026-10-18 - One-pixel clinical detection F1 requested; campus scorer prepared.**
   User requested actual detection F1 for cutoff.0001 epoch49, not pixel Dice. Added
   --foundation-only to evaluation.compare_clinical_models: reuse the unchanged
