@@ -12,7 +12,14 @@ mkdir -p "$RUN"
 exec 8>"$RUN/.pipeline.lock"
 flock -n 8 || { echo "The rotated-mask pipeline is already running in $RUN"; exit 1; }
 git rev-parse HEAD
+rotation_k=$(python -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1])).get("rotation_k", 0))' "$HEAD_CONFIG")
+preview_threshold=$(python -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1])).get("target_threshold", 0.05))' "$HEAD_CONFIG")
+flip_args=()
+if [[ "$(python -c 'import sys,yaml; print(bool(yaml.safe_load(open(sys.argv[1])).get("flip_horizontal", False)))' "$HEAD_CONFIG")" == "True" ]]; then
+    flip_args=(--flip_horizontal)
+fi
 python -u -m training.cache_features --dataset_root "$DATA" --cache_dir "$CACHE_DIR" \
-    --last_n_layers 1 --rotation_k 3 --device cuda --batch_size 8 --num_workers 4 \
-    --preview_path "$RUN/input_preview.png"
+    --last_n_layers 1 --rotation_k "$rotation_k" "${flip_args[@]}" \
+    --device cuda --batch_size 8 --num_workers 4 \
+    --preview_path "$RUN/input_preview.png" --preview_threshold "$preview_threshold"
 exec bash training/run_last4_dpt.sh "$@"

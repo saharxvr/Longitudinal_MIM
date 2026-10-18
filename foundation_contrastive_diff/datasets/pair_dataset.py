@@ -74,6 +74,19 @@ def _norm01(t: torch.Tensor) -> torch.Tensor:
     return (t - mn) / (mx - mn + 1e-8)
 
 
+def orient_tensor(tensor, rotation_k, flip_horizontal=False, inverse=False):
+    if rotation_k not in (0, 1, 2, 3):
+        raise ValueError("rotation_k must be 0, 1, 2, or 3")
+    if inverse:
+        if flip_horizontal:
+            tensor = torch.flip(tensor, (-1,))
+        return torch.rot90(tensor, -rotation_k, (-2, -1)).contiguous()
+    tensor = torch.rot90(tensor, rotation_k, (-2, -1))
+    if flip_horizontal:
+        tensor = torch.flip(tensor, (-1,))
+    return tensor.contiguous()
+
+
 class LongitudinalPairDataset(Dataset):
     """Synthetic longitudinal pairs with per-pair change-type labels, from the manifest."""
 
@@ -85,6 +98,7 @@ class LongitudinalPairDataset(Dataset):
         clip_gt: float = 1.0,
         only_realized: bool = False,
         rotation_k: int = 0,
+        flip_horizontal: bool = False,
     ):
         """
         dataset_root: folder containing manifest[_split].jsonl and the pair tree.
@@ -98,6 +112,7 @@ class LongitudinalPairDataset(Dataset):
         if rotation_k not in (0, 1, 2, 3):
             raise ValueError("rotation_k must be 0, 1, 2, or 3 counterclockwise quarter-turns")
         self.rotation_k = int(rotation_k)
+        self.flip_horizontal = bool(flip_horizontal)
 
         records = _read_manifest(dataset_root)
         if split is not None:
@@ -138,8 +153,8 @@ class LongitudinalPairDataset(Dataset):
         curr = _norm01(_to_chw(_load_nii_2d(self._abspath(rec, "current_path", "current.nii.gz")), size))
         gt = _to_chw(_load_nii_2d(self._abspath(rec, "diff_map_path", "diff_map.nii.gz")), size)
         gt = gt.clamp(-self.clip_gt, self.clip_gt)
-        if self.rotation_k:
-            prior, curr, gt = (torch.rot90(tensor, self.rotation_k, (-2, -1)).contiguous()
+        if self.rotation_k or self.flip_horizontal:
+            prior, curr, gt = (orient_tensor(tensor, self.rotation_k, self.flip_horizontal)
                                for tensor in (prior, curr, gt))
 
         return {
@@ -152,6 +167,7 @@ class LongitudinalPairDataset(Dataset):
             "change_group_id": rec.get("change_group_id", ""),
             "pair_id": rec.get("pair_id", ""),
             "rotation_k": self.rotation_k,
+            "flip_horizontal": self.flip_horizontal,
         }
 
 
@@ -164,7 +180,7 @@ class CachedPairDataset(Dataset):
     """
 
     def __init__(self, dataset_root: str, cache_dir: str, split: Optional[str] = None,
-                 rotation_k: Optional[int] = None):
+                 rotation_k: Optional[int] = None, flip_horizontal: Optional[bool] = None):
         super().__init__()
         recs = _read_manifest(dataset_root)
         if split is not None:
@@ -188,6 +204,9 @@ class CachedPairDataset(Dataset):
         self.rotation_k = int(first.get("rotation_k", 0)) if rotation_k is None else rotation_k
         if int(first.get("rotation_k", 0)) != self.rotation_k:
             raise ValueError("Cache rotation does not match the requested run; regenerate frozen features")
+        self.flip_horizontal = bool(first.get("flip_horizontal", False)) if flip_horizontal is None else flip_horizontal
+        if bool(first.get("flip_horizontal", False)) != self.flip_horizontal:
+            raise ValueError("Cache horizontal flip does not match the requested run; regenerate frozen features")
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -196,6 +215,8 @@ class CachedPairDataset(Dataset):
         d = torch.load(self.paths[idx], map_location="cpu", weights_only=False)
         if int(d.get("rotation_k", 0)) != self.rotation_k:
             raise ValueError(f"Cache rotation mismatch: {self.paths[idx]}")
+        if bool(d.get("flip_horizontal", False)) != self.flip_horizontal:
+            raise ValueError(f"Cache horizontal flip mismatch: {self.paths[idx]}")
         return {
             "p_prior": d["p_prior"].float(),
             "cls_prior": d["cls_prior"].float(),
@@ -208,4 +229,5 @@ class CachedPairDataset(Dataset):
             "change_group_id": d["change_group_id"],
             "pair_id": d["pair_id"],
             "rotation_k": self.rotation_k,
+            "flip_horizontal": self.flip_horizontal,
         }

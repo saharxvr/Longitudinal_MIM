@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from datasets.pair_dataset import _norm01, _to_chw
+from datasets.pair_dataset import _norm01, _to_chw, orient_tensor
 
 
 PHYSICIANS = ("Avi", "Benny", "Sigal", "Smadar", "Nitzan")
@@ -50,18 +50,18 @@ def discover_cases(clinical_root, count=100):
     return cases
 
 
-def prepare_image(array, size, rotation_k):
+def prepare_image(array, size, rotation_k, flip_horizontal=False):
     array = np.asarray(array, dtype=np.float32).squeeze()
     if array.ndim != 2 or not np.isfinite(array).all():
         raise ValueError("Expected a finite 2D clinical image")
     image = _norm01(_to_chw(array, size))
-    return torch.rot90(image, rotation_k, (-2, -1)).contiguous()
+    return orient_tensor(image, rotation_k, flip_horizontal)
 
 
-def restore_prediction(prediction, shape, rotation_k):
+def restore_prediction(prediction, shape, rotation_k, flip_horizontal=False):
     prediction = torch.as_tensor(prediction).detach().float().cpu()
     prediction = prediction.reshape(1, 1, *prediction.shape[-2:])
-    prediction = torch.rot90(prediction, -rotation_k, (-2, -1))
+    prediction = orient_tensor(prediction, rotation_k, flip_horizontal, inverse=True)
     return F.interpolate(prediction, size=shape, mode="bilinear",
                          align_corners=False)[0, 0].numpy()
 
@@ -230,6 +230,7 @@ def run(args):
     config = state.get("run_config", {})
     checkpoint_epoch = state.get("epoch")
     rotation = int(config.get("rotation_k", 0))
+    flip_horizontal = bool(config.get("flip_horizontal", False))
     threshold = float(config.get("eval_threshold", 0.1) if args.threshold is None else args.threshold)
     if rotation not in (0, 1, 2, 3) or not 0 < threshold < 1:
         raise ValueError("Invalid checkpoint rotation or prediction threshold")
@@ -249,9 +250,11 @@ def run(args):
     args.out_dir.mkdir(parents=True, exist_ok=True)
     metadata = dict(checkpoint_sha256=digest, head_spec=spec, run_config=config,
                     rotation_k=rotation, prediction_threshold=threshold,
+                    flip_horizontal=flip_horizontal,
                     clinical_root=str(args.clinical_root.resolve()), num_pairs=len(cases),
                     coordinate_space="original NIfTI array; output shape/affine match current",
-                    preprocessing="training resize/minmax/rotation, no transpose/crop/sharpening",
+                    preprocessing=("training resize/minmax/rotation/horizontal-flip, no crop/sharpening"
+                                   if flip_horizontal else "training resize/minmax/rotation, no transpose/crop/sharpening"),
                     postprocessing="none; mask thresholded AFTER restoration to source resolution",
                     scan_order="lexicographic, matching existing clinical evaluator",
                     evaluation="exploratory transfer; clinician ellipses are not dense pathology GT")
@@ -264,11 +267,11 @@ def run(args):
     size = int(spec["kwargs"].get("out_size", settings.IMG_SIZE))
     for case in cases:
         prior, current, current_nifti, annotations = load_case(case, tools)
-        inputs = [prepare_image(image, size, rotation) for image in (prior, current)]
+        inputs = [prepare_image(image, size, rotation, flip_horizontal) for image in (prior, current)]
         features = [backbone(image[None].to(args.device)) for image in inputs]
         prediction, _ = head(features[0]["patch_tokens"], features[1]["patch_tokens"],
                              features[0]["cls_token"], features[1]["cls_token"])
-        scores = restore_prediction(prediction[0, 0], current.shape, rotation)
+        scores = restore_prediction(prediction[0, 0], current.shape, rotation, flip_horizontal)
         rows.extend(export_case(case, scores, prior, current, inputs[1][0].numpy(),
                                 current_nifti, annotations, args.out_dir, threshold))
         print(f"[clinical] {case['pair_id']} complete", flush=True)

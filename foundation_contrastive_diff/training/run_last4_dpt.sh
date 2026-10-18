@@ -18,6 +18,7 @@ case "$cache_layers" in
 esac
 export CACHE_LAYERS="$cache_layers"
 export ROTATION_K="$(python -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1])).get("rotation_k", 0))' "$HEAD_CONFIG")"
+export FLIP_HORIZONTAL="$(python -c 'import sys,yaml; print(int(bool(yaml.safe_load(open(sys.argv[1])).get("flip_horizontal", False))))' "$HEAD_CONFIG")"
 mkdir -p "$RUN"
 exec 9>"$RUN/.train.lock"
 flock -n 9 || { echo "A DPT run already holds the lock in $RUN"; exit 1; }
@@ -40,12 +41,15 @@ if not records:
     raise SystemExit('Empty split manifest')
 print('manifest SHA256:', hashlib.sha256(payload).hexdigest(), flush=True)
 rotation_k = int(os.environ.get('ROTATION_K', '0'))
+flip_horizontal = bool(int(os.environ.get('FLIP_HORIZONTAL', '0')))
 metadata = Path(os.environ['CACHE_DIR']) / 'cache_config.json'
-if rotation_k or metadata.is_file():
+if rotation_k or flip_horizontal or metadata.is_file():
     if not metadata.is_file():
         raise SystemExit('Rotated run requires cache_config.json from native extraction')
     cache_config = json.loads(metadata.read_text())
+    cache_config.setdefault('flip_horizontal', False)
     for key, expected in (('rotation_k', rotation_k),
+                          ('flip_horizontal', flip_horizontal),
                           ('last_n_layers', int(os.environ['CACHE_LAYERS'])),
                           ('manifest_sha256', hashlib.sha256(payload).hexdigest())):
         if cache_config.get(key) != expected:
@@ -86,6 +90,8 @@ for split in ('train', 'val', 'test'):
         cached = torch.load(path, map_location='cpu', weights_only=False)
         if cached.get('rotation_k', 0) != rotation_k:
             raise SystemExit(f'Cache rotation mismatch in {path}')
+        if cached.get('flip_horizontal', False) != flip_horizontal:
+            raise SystemExit(f'Cache horizontal flip mismatch in {path}')
         for key, shape in (('p_prior', (1369, patch_dim)), ('p_curr', (1369, patch_dim)),
                            ('cls_prior', (768,)), ('cls_curr', (768,)),
                            ('gt_diff', (1, 512, 512))):

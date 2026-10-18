@@ -4,6 +4,95 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Corrected DRR/GT Orientation
+
+`last1_upright_mask_thr0p0001_fp075.yaml` is an orientation-only follow-up to the
+latest cutoff0.0001 experiment. Clockwise90 plus a horizontal flip equals the
+normalized/resized raw-array transpose, matching the conventional chest display.
+Prior, current and continuous signed GT receive the SAME transform. The frozen
+RAD-DINO features must be regenerated in `fcd_cache_last1_upright_inference`;
+flipping old tokens or reusing the old cache is not valid. The head starts fresh in
+`run_last1_upright_mask_thr0p0001_fp075`; resume is only within that corrected run.
+Loss, target cutoff0.0001, foreground11/background0.75, head, seed42,60epochs,
+checkpoint selection and clinical prediction threshold0.5 are unchanged.
+
+Phase1 checks every train/val prior/current/GT for finite2D arrays, identical source
+shape/affine, unchanged signs/locations through the forward/inverse transform, and
+exact equality to the intended transpose. It exports stratified GT-on-DRR overlays
+with the ACTUAL0.0001 training target mask. No held-out synthetic test is evaluated.
+It also checks all100 clinical pairs, their input transpose/inverse placement, source
+hashes and the same500 reference annotations. Automated checks cannot prove that a
+synthetic lesion is biologically correct, so the actual DRR/GT overlays MUST be
+visually reviewed before training. The phase1 artifacts are automatically committed
+and pushed through Git for that review, without feature extraction or training.
+
+Complete campus phase1 command:
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_mask_thr0p0001_fp075
+mkdir -p "$RUN"
+touch "$RUN/orientation_preflight.log"
+nohup python -u -m training.run_upright_clinical --preflight-only >> "$RUN/orientation_preflight.log" 2>&1 &
+tail -f "$RUN/orientation_preflight.log"
+```
+
+Wait for `[publish] pushed` and `Approval SHA256`. Ctrl+C stops tail, not the job.
+Failed audits also push their reports for investigation, but never issue approval
+or start training. Check the log for an exception, not only a successful Git push.
+Pull the published `results/orientation_preflight_<timestamp>` locally and inspect
+its `index.md`, report, and all GT overlays. Only after approval, use that exact
+directory and printed provenance hash in phase2 below. Do not approve a preview
+only because it looks upright: check signed GT overlays against the DRRs too.
+Changed configuration, source manifest, audited preprocessing code, report or
+preview images invalidate approval. Clinical source scans/annotations are rehashed
+after training and must match phase1. Grid checks do not establish anatomical
+laterality for unmarked images or exclude every source-generation labeling error.
+
+Complete campus phase2 template (fill the reviewed directory/hash, never guess):
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_mask_thr0p0001_fp075
+export PREFLIGHT="/cs/labs/josko/sahar_aharon/repos/foundation_contrastive_diff/results/orientation_preflight_REVIEWED_TIMESTAMP"
+export APPROVED_SHA256="REVIEWED_APPROVAL_SHA256"
+mkdir -p "$RUN"
+touch "$RUN/pipeline.log"
+python -c "import torch; assert torch.cuda.is_available(); print(torch.cuda.mem_get_info())"
+nohup python -u -m training.run_upright_clinical \
+	--preflight-dir "$PREFLIGHT" --approved-preflight-sha256 "$APPROVED_SHA256" \
+	>> "$RUN/pipeline.log" 2>&1 &
+tail -f "$RUN/pipeline.log"
+```
+
+Phase2 automatically rebuilds frozen features, trains/resumes ONLY the corrected
+head, checks training reached60epochs, and predicts all100 clinical pairs using
+the new best.pt. Prediction restoration reverses the horizontal flip BEFORE
+undoing the rotation; output shape and affine must match each original current
+NIfTI. All100 raw maps and signed masks are validated, including finite/range and
+exact strict+/-0.5 mask checks. The existing no-CC-filter one-pixel detection F1
+protocol runs afterward, without tuning. After all checks succeed, the pipeline
+automatically commits/pushes exactly `results/clinical100_upright_cutoff0001_<timestamp>`:
+100 output.nii.gz,100 mask.nii.gz,source JSONs,clinical CSV/report/metadata,
+per-clinician F1,checkpoint/prediction hashes,training config/metrics,best/final
+diagnostic summaries and corrected training-input preview. It does not upload
+source clinical scans,clinical review PNGs,encoder/checkpoint weights or cache.
+Clinical review images remain under the campus run directory and can be rebuilt
+locally from the published maps plus the existing clinical images. Both publication
+steps stage/commit exact artifact paths only, never unrelated work. Git/network
+failure exits nonzero and preserves artifacts; do not regenerate predictions just
+to retry publication. No actual campus execution is implied by these local changes.
+
 ## GT Cutoff 0.0001 Ablation
 
 User-selected follow-up: `last1_rot90cw_mask_thr0p0001_fp075.yaml` changes the training

@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from nibabel.filebasedimages import ImageFileError
 
-from datasets.pair_dataset import LongitudinalPairDataset, _load_nii_2d, _to_chw
+from datasets.pair_dataset import LongitudinalPairDataset, _load_nii_2d, _to_chw, _norm01, orient_tensor
 from evaluation.training_diagnostics import gt_statistics, ratio
 
 
@@ -35,7 +35,36 @@ def component_statistics(values, thresholds):
     return result
 
 
-def render_overlay(sample, destination, pair_id):
+def verify_alignment(dataset, index):
+    import nibabel as nib
+
+    record = dataset.records[index]
+    sources = [nib.load(dataset._abspath(record, key, filename)) for key, filename in
+               (("prior_path", "prior.nii.gz"), ("current_path", "current.nii.gz"),
+                ("diff_map_path", "diff_map.nii.gz"))]
+    arrays = [np.asarray(source.dataobj, dtype=np.float32).squeeze() for source in sources]
+    if any(array.ndim != 2 or not np.isfinite(array).all() for array in arrays):
+        raise ValueError("DRRs and GT must be finite 2D arrays")
+    if any(array.shape != arrays[1].shape for array in arrays):
+        raise ValueError("DRR/GT source shape mismatch")
+    if any(not np.allclose(source.affine, sources[1].affine, rtol=0, atol=1e-5)
+           for source in sources):
+        raise ValueError("DRR/GT source affine mismatch")
+    if np.abs(arrays[2]).max() > 1:
+        raise ValueError("Source GT exceeds [-1,1]; clipping would change supervision")
+    sample = dataset[index]
+    for key, array in zip(("img_prior", "img_curr", "gt_diff"), arrays):
+        resized = _to_chw(array, dataset.img_size)
+        expected = resized if key == "gt_diff" else _norm01(resized)
+        corrected = sample[key]
+        if dataset.rotation_k == 3 and dataset.flip_horizontal:
+            torch.testing.assert_close(corrected, expected.transpose(-2, -1), rtol=0, atol=0)
+        restored = orient_tensor(corrected, dataset.rotation_k, dataset.flip_horizontal, inverse=True)
+        torch.testing.assert_close(restored, expected, rtol=0, atol=0)
+    return sample
+
+
+def render_overlay(sample, destination, pair_id, target_threshold=0.05):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -54,18 +83,20 @@ def render_overlay(sample, destination, pair_id):
     figure.colorbar(scaled, ax=axes[3], fraction=0.046)
     axes[4].imshow(current, cmap="gray", vmin=0, vmax=1)
     axes[4].imshow(np.ma.masked_where(gt == 0, gt), cmap="bwr", vmin=-scale, vmax=scale, alpha=0.55)
-    masks = (np.sign(gt), np.where(np.abs(gt) > 0.05, np.sign(gt), 0),
-             np.where((gt != 0) & (np.abs(gt) <= 0.05), np.sign(gt), 0))
+    masks = (np.sign(gt), np.where(np.abs(gt) > target_threshold, np.sign(gt), 0),
+             np.where((gt != 0) & (np.abs(gt) <= target_threshold), np.sign(gt), 0))
     for axis, mask in zip(axes[5:], masks):
         axis.imshow(current, cmap="gray", vmin=0, vmax=1)
         axis.imshow(np.ma.masked_where(mask == 0, mask), cmap="bwr", vmin=-1, vmax=1, alpha=0.55)
     titles = ("Prior", "Current", "Raw GT [-1,1]", f"Raw GT only: +/-{scale:.5g}",
               "Continuous GT overlay (GT-only scale)", "Sign GT: no amplitude cutoff",
-              "Signed GT: abs(GT)>0.05", "Nonzero support removed at 0.05")
+              f"Signed training GT: abs(GT)>{target_threshold:g}",
+              f"Nonzero support removed at {target_threshold:g}")
     for axis, title in zip(axes, titles):
         axis.set_title(title, fontsize=10)
         axis.axis("off")
-    figure.suptitle(f"{pair_id}\nRed=positive; blue=negative; peak={peak:.6g}; training input coordinates")
+    figure.suptitle(f"{pair_id}\nRed=positive; blue=negative; peak={peak:.6g}; training input coordinates; "
+                   f"rotation={sample['rotation_k']}; horizontal flip={sample.get('flip_horizontal', False)}")
     figure.tight_layout(rect=(0, 0, 1, 0.94))
     figure.savefig(destination, dpi=110)
     plt.close(figure)
@@ -124,7 +155,8 @@ def run(args):
            for value in [*args.thresholds, *args.component_thresholds]):
         raise ValueError("Thresholds must be finite and in [0,1)")
     dataset = LongitudinalPairDataset(str(args.dataset_root), img_size=args.img_size,
-                                      rotation_k=args.rotation_k)
+                                      rotation_k=args.rotation_k,
+                                      flip_horizontal=getattr(args, "flip_horizontal", False))
     indices = [index for index, record in enumerate(dataset.records) if record.get("split") in args.splits]
     if not indices:
         raise ValueError("No matching split records; a split manifest is required")
@@ -140,6 +172,7 @@ def run(args):
     gallery = args.out_dir / "cases"
     gallery.mkdir()
     rows, invalid, previews = [], [], []
+    aligned_pairs = 0
     preview_counts = Counter()
     histogram_edges = np.concatenate(([0.], np.logspace(-12, 0, 49), [np.finfo(np.float32).max]))
     histograms = defaultdict(lambda: np.zeros(len(histogram_edges) - 1, dtype=np.int64))
@@ -150,11 +183,15 @@ def run(args):
         split = record["split"]
         path = Path(dataset._abspath(record, "diff_map_path", "diff_map.nii.gz"))
         try:
+            aligned_sample = None
+            if getattr(args, "verify_alignment", False):
+                aligned_sample = verify_alignment(dataset, index)
+                aligned_pairs += 1
             native = _load_nii_2d(str(path))
             if native.ndim != 2 or not np.isfinite(native).all():
                 raise ValueError("GT must be a finite 2D array before clipping/resizing")
             resized = _to_chw(native, args.img_size).clamp(-1, 1)
-            resized = torch.rot90(resized, args.rotation_k, (-2, -1)).contiguous()
+            resized = orient_tensor(resized, args.rotation_k, dataset.flip_horizontal)
             processed = resized[0].numpy()
             quantized = resized.half().float()[0].numpy()
             for stage, values in (("native", native), ("training_float32", processed),
@@ -176,15 +213,17 @@ def run(args):
                 histograms[(split, anomaly, stage)] += np.histogram(magnitude[magnitude > 0], bins=histogram_edges)[0]
             category = ("empty" if not np.any(processed) else "below_005" if np.abs(processed).max() <= .05
                         else "above_005")
-            key = (split, anomaly, category)
+            direction = "mixed" if np.any(processed > 0) and np.any(processed < 0) else (
+                "positive" if np.any(processed > 0) else "negative" if np.any(processed < 0) else "empty")
+            key = (split, anomaly, category, direction)
             if preview_counts[key] < args.overlays_per_group:
                 try:
-                    sample = dataset[index]
+                    sample = aligned_sample if aligned_sample is not None else dataset[index]
                     np.testing.assert_array_equal(sample["gt_diff"].numpy(), resized.numpy())
                     filename = hashlib.sha256(pair_id.encode()).hexdigest()[:16] + ".png"
-                    render_overlay(sample, gallery / filename, pair_id)
+                    render_overlay(sample, gallery / filename, pair_id, getattr(args, "target_threshold", 0.05))
                     preview = dict(pair_id=pair_id, split=split, anomaly_type=anomaly,
-                                   category=category, panel=f"cases/{filename}")
+                                   category=category, direction=direction, panel=f"cases/{filename}")
                     if getattr(args, "save_arrays", True):
                         array_file = Path(filename).with_suffix(".npz").name
                         np.savez_compressed(gallery / array_file, gt_native=native,
@@ -196,7 +235,7 @@ def run(args):
                     preview_counts[key] += 1
                 except (OSError, ValueError, AssertionError, ImageFileError) as error:
                     invalid.append(dict(pair_id=pair_id, stage="overlay", error=str(error)))
-        except (OSError, ValueError, RuntimeError, ImageFileError) as error:
+        except (OSError, ValueError, RuntimeError, AssertionError, ImageFileError) as error:
             invalid.append(dict(pair_id=pair_id, stage="gt", error=str(error)))
         if (position + 1) % 100 == 0 or position + 1 == len(indices):
             print(f"[GT audit] {position + 1}/{len(indices)}; overlays={len(previews)}; issues={len(invalid)}", flush=True)
@@ -229,6 +268,7 @@ def run(args):
     report = dict(parameters={key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
                   manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
                   selected_pairs=len(indices), audited_pairs=len({row["pair_id"] for row in rows}),
+                  alignment_verified_pairs=aligned_pairs,
                   effective_thresholds=thresholds,
                   summaries=summaries, issues=invalid, previews=previews,
                   histogram_edges=histogram_edges.tolist(),
@@ -278,6 +318,9 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--img-size", type=int, default=512)
     parser.add_argument("--rotation-k", type=int, choices=[0, 1, 2, 3], default=3)
+    parser.add_argument("--flip-horizontal", action="store_true")
+    parser.add_argument("--verify-alignment", action="store_true")
+    parser.add_argument("--target-threshold", type=float, default=0.05)
     parser.add_argument("--thresholds", type=float, nargs="+", default=DEFAULT_THRESHOLDS)
     parser.add_argument("--component-thresholds", type=float, nargs="+", default=[0., .05])
     parser.add_argument("--overlays-per-group", type=int, default=2)

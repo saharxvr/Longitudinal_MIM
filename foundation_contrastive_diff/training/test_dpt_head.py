@@ -103,6 +103,27 @@ class TrainingDiagnosticsTests(unittest.TestCase):
             self.assertEqual(summary["cutoff_0.05_entirely_removed_pairs"], 1)
             with self.assertRaisesRegex(ValueError, "new output directory"):
                 run(args)
+            corrected_args = SimpleNamespace(**{**vars(args), "out_dir": root / "corrected",
+                                                 "flip_horizontal": True, "verify_alignment": True,
+                                                 "target_threshold": 0.0001})
+            corrected = run(corrected_args)
+            self.assertEqual(corrected["alignment_verified_pairs"], 2)
+            self.assertFalse(corrected["issues"])
+            preview = corrected["previews"][0]
+            with np.load(corrected_args.out_dir / preview["arrays"], allow_pickle=False) as arrays:
+                expected = torch.nn.functional.interpolate(
+                    torch.from_numpy(arrays["gt_native"])[None, None], (16, 16),
+                    mode="bilinear", align_corners=False)[0, 0].numpy().T
+                np.testing.assert_array_equal(arrays["gt_training_float32"], expected)
+            wrong_affine = np.eye(4)
+            wrong_affine[0, 3] = 2
+            native_path = root / "data/train/diff_map.nii.gz"
+            native = np.asarray(nib.load(native_path).dataobj)
+            nib.save(nib.Nifti1Image(native, wrong_affine), native_path)
+            corrected_args.out_dir = root / "misaligned"
+            broken = run(corrected_args)
+            self.assertEqual(broken["alignment_verified_pairs"], 1)
+            self.assertTrue(any("affine mismatch" in issue["error"] for issue in broken["issues"]))
 
     def test_diagnostics_do_not_change_optimizer_update(self):
         class TinyHead(torch.nn.Module):
@@ -348,11 +369,16 @@ class ClinicalInferenceTests(unittest.TestCase):
         original_display = _norm01(_to_chw(array, 32))[0].numpy().T
         np.testing.assert_array_equal(prepare_image(array, 32, 3)[0].numpy(),
                           np.fliplr(original_display))
+        np.testing.assert_array_equal(prepare_image(array, 32, 3, True)[0].numpy(),
+                                      original_display)
         landmarks = np.zeros((17, 29), dtype=np.float32)
         landmarks[2, 5], landmarks[14, 24] = 1, -1
         for rotation in range(4):
             rotated = torch.rot90(torch.from_numpy(landmarks), rotation, (-2, -1))
             np.testing.assert_array_equal(restore_prediction(rotated, landmarks.shape, rotation),
+                                          landmarks)
+            flipped = torch.flip(rotated, (-1,))
+            np.testing.assert_array_equal(restore_prediction(flipped, landmarks.shape, rotation, True),
                                           landmarks)
 
     def test_signed_metrics_and_empty_references(self):
@@ -420,6 +446,147 @@ class ClinicalInferenceTests(unittest.TestCase):
             self.assertEqual(json.loads((args.out_dir / "report.json").read_text())["pairs_completed"], 1)
             self.assertTrue((args.out_dir / "pair1" / "review.png").is_file())
             self.assertEqual(len((args.out_dir / "per_pair.csv").read_text().splitlines()), 7)
+            state = torch.load(checkpoint, weights_only=False)
+            state["run_config"]["flip_horizontal"] = True
+            torch.save(state, checkpoint)
+            args.out_dir = root / "corrected"
+            with patch.object(clinical, "discover_cases", return_value=[case]), \
+                 patch.object(clinical, "clinical_tools", return_value=tools), \
+                 patch("models.FrozenCXRBackbone", TinyBackbone), \
+                 patch("models.build_change_head", return_value=TinyHead()), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                clinical.run(args)
+            corrected = nib.load(args.out_dir / "pair1/output.nii.gz")
+            np.testing.assert_allclose(np.asarray(corrected.dataobj), np.asarray(output.dataobj), atol=1e-6)
+            np.testing.assert_allclose(corrected.affine, affine)
+            self.assertTrue(json.loads((args.out_dir / "metadata.json").read_text())["flip_horizontal"])
+
+
+class UprightPipelineTests(unittest.TestCase):
+    def test_failed_audit_publishes_evidence_without_training_or_approval(self):
+        from training import run_upright_clinical as pipeline
+
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary)
+            pipeline.write_json(destination / "report.json", dict(issues=["GT affine mismatch"]))
+            arguments = ["pipeline", "--preflight-only", "--preflight-dir", str(destination)]
+            with patch.object(sys, "argv", arguments), \
+                 patch.object(pipeline, "preflight", side_effect=ValueError("GT affine mismatch")), \
+                 patch.object(pipeline, "publish") as publish, \
+                 patch.object(pipeline, "train_and_predict") as train:
+                with self.assertRaisesRegex(ValueError, "GT affine mismatch"):
+                    pipeline.main()
+                publish.assert_called_once_with(destination)
+                train.assert_not_called()
+            self.assertFalse(json.loads((destination / "preflight_failure.json").read_text())["training_allowed"])
+            self.assertFalse((destination / "orientation_provenance.json").exists())
+
+    def test_orientation_only_recipe_and_approval_guards(self):
+        from training import run_upright_clinical as pipeline
+
+        config = pipeline.load_config(pipeline.DEFAULT_CONFIG)
+        self.assertTrue(config["flip_horizontal"])
+        self.assertEqual(config["rotation_k"], 3)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = root / "config.yaml"
+            config_path.write_text("flip_horizontal: true\n")
+            manifest = root / "manifest_split.jsonl"
+            manifest.write_text("{}\n")
+            report = root / "report.json"
+            report.write_text("{}\n")
+            code = root / "code.py"
+            code.write_text("value = 1\n")
+            panel = root / "panel.png"
+            panel.write_bytes(b"reviewed panel")
+            provenance = dict(config_sha256=pipeline.sha256(config_path),
+                              audit_sha256=pipeline.sha256(report),
+                              manifest_sha256=pipeline.sha256(manifest),
+                              code_sha256={str(code): pipeline.sha256(code)},
+                              panels_sha256={"panel.png": pipeline.sha256(panel)})
+            pipeline.write_json(root / "orientation_provenance.json", provenance)
+            digest = pipeline.approval_hash(provenance)
+            with patch.object(pipeline, "load_config", return_value=dict(dataset_root=str(root))):
+                self.assertEqual(pipeline.validate_approval(config_path, root, digest), provenance)
+                with self.assertRaisesRegex(ValueError, "approval hash"):
+                    pipeline.validate_approval(config_path, root, "wrong")
+                panel.write_bytes(b"changed panel")
+                with self.assertRaisesRegex(ValueError, "overlay changed"):
+                    pipeline.validate_approval(config_path, root, digest)
+                panel.write_bytes(b"reviewed panel")
+                code.write_text("value = 2\n")
+                with self.assertRaisesRegex(ValueError, "code changed"):
+                    pipeline.validate_approval(config_path, root, digest)
+                code.write_text("value = 1\n")
+                manifest.write_text("changed dataset\n")
+                with self.assertRaisesRegex(ValueError, "manifest changed"):
+                    pipeline.validate_approval(config_path, root, digest)
+
+    def test_all100_predictions_require_original_geometry_and_signed_masks(self):
+        import nibabel as nib
+        import numpy as np
+        from training import run_upright_clinical as pipeline
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            current = root / "current.nii.gz"
+            affine = np.diag([.7, .9, 1, 1])
+            values = np.zeros((7, 11), dtype=np.float32)
+            values[1, 3], values[5, 8] = .8, -.9
+            mask = (values > .5).astype(np.int8) - (values < -.5).astype(np.int8)
+            nib.save(nib.Nifti1Image(np.zeros_like(values), affine), current)
+            pipeline.write_json(root / "metadata.json", dict(num_pairs=100, prediction_threshold=.5,
+                                                            rotation_k=3, flip_horizontal=True))
+            pipeline.write_json(root / "report.json", dict(pairs_completed=100))
+            cases = []
+            for number in range(1, 101):
+                folder = root / f"pair{number}"
+                folder.mkdir()
+                nib.save(nib.Nifti1Image(values, affine), folder / "output.nii.gz")
+                nib.save(nib.Nifti1Image(mask, affine), folder / "mask.nii.gz")
+                cases.append(dict(pair_id=folder.name, current=str(current)))
+            hashes = pipeline.verify_predictions(root, cases)
+            self.assertEqual(len(hashes), 100)
+            with self.assertRaisesRegex(ValueError, "exact clinical100"):
+                pipeline.verify_predictions(root, cases[:-1])
+            wrong = affine.copy()
+            wrong[0, 3] = 10
+            nib.save(nib.Nifti1Image(values, wrong), root / "pair100/output.nii.gz")
+            with self.assertRaisesRegex(ValueError, "original image coordinates"):
+                pipeline.verify_predictions(root, cases)
+            nib.save(nib.Nifti1Image(values, affine), root / "pair100/output.nii.gz")
+            nib.save(nib.Nifti1Image(-mask, affine), root / "pair100/mask.nii.gz")
+            with self.assertRaises(AssertionError):
+                pipeline.verify_predictions(root, cases)
+
+    def test_publication_is_scoped_and_training_failure_prevents_prediction(self):
+        from training import run_upright_clinical as pipeline
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "study"
+            destination = root / "results/approved_export"
+            destination.mkdir(parents=True)
+            (destination / "report.json").write_text("{}\n")
+            (root / "unrelated.txt").write_text("do not stage")
+            with patch.object(pipeline, "ROOT", root), \
+                 patch.object(pipeline.subprocess, "check_output", return_value="main\n"), \
+                 patch.object(pipeline.subprocess, "run") as execute:
+                pipeline.publish(destination)
+            commands = [call.args[0] for call in execute.call_args_list]
+            self.assertEqual(commands[1], ["git", "add", "-f", "--", "study/results/approved_export/report.json"])
+            self.assertEqual(commands[-1], ["git", "push", "origin", "HEAD:main"])
+            self.assertNotIn("unrelated.txt", str(commands))
+            config = dict(save_folder=str(root / "run/checkpoints"), dataset_root="data", cache_dir="cache")
+            with patch.object(pipeline, "load_config", return_value=config), \
+                 patch.object(pipeline, "validate_approval", return_value={}), \
+                 patch.object(pipeline.subprocess, "check_output", return_value="commit\n"), \
+                 patch.object(pipeline.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "train")), \
+                 patch.object(pipeline.evaluate_clinical, "run") as predict, \
+                 patch.object(pipeline, "publish") as publish:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    pipeline.train_and_predict(root / "config.yaml", destination, "approved", root)
+                predict.assert_not_called()
+                publish.assert_not_called()
 
 
 class RotatedMaskRunTests(unittest.TestCase):
@@ -512,7 +679,8 @@ class RotatedMaskRunTests(unittest.TestCase):
                  patch.object(cache_features, "LongitudinalPairDataset", return_value=[sample]) as dataset, \
                  patch.object(cache_features, "_build_backbone", return_value=TinyBackbone()):
                 self.assertEqual(cache_features.main(), 0)
-                dataset.assert_called_with(str(root), split=None, img_size=512, rotation_k=3)
+                dataset.assert_called_with(str(root), split=None, img_size=512, rotation_k=3,
+                                           flip_horizontal=False)
                 self.assertEqual(cache_features.main(), 0)
             self.assertTrue(preview.is_file())
             metadata = json.loads((cache / "cache_config.json").read_text())
@@ -522,6 +690,28 @@ class RotatedMaskRunTests(unittest.TestCase):
             torch.testing.assert_close(cached[0]["gt_diff"], sample["gt_diff"], atol=1e-4, rtol=0)
             with self.assertRaisesRegex(ValueError, "rotation"):
                 CachedPairDataset(str(root), str(cache), rotation_k=0)
+            with self.assertRaisesRegex(ValueError, "horizontal flip"):
+                CachedPairDataset(str(root), str(cache), rotation_k=3, flip_horizontal=True)
+            with patch.object(sys, "argv", arguments + ["--flip_horizontal"]), \
+                 self.assertRaisesRegex(ValueError, "configuration differs"):
+                cache_features.main()
+            corrected_arguments = list(arguments) + ["--flip_horizontal"]
+            corrected_cache = root / "corrected_cache"
+            corrected_arguments[corrected_arguments.index("--cache_dir") + 1] = str(corrected_cache)
+            corrected_sample = dict(sample, flip_horizontal=True)
+            with patch.object(sys, "argv", corrected_arguments), \
+                 patch.object(cache_features, "LongitudinalPairDataset", return_value=[corrected_sample]), \
+                 patch.object(cache_features, "_build_backbone", return_value=TinyBackbone()):
+                self.assertEqual(cache_features.main(), 0)
+            corrected = CachedPairDataset(str(root), str(corrected_cache), rotation_k=3, flip_horizontal=True)
+            self.assertTrue(corrected[0]["flip_horizontal"])
+            self.assertTrue(json.loads((corrected_cache / "cache_config.json").read_text())["flip_horizontal"])
+            cache_path = Path(corrected.paths[0])
+            payload = torch.load(cache_path, weights_only=False)
+            payload["flip_horizontal"] = False
+            torch.save(payload, cache_path)
+            with self.assertRaisesRegex(ValueError, "horizontal flip mismatch"):
+                corrected[0]
             arguments[arguments.index("--rotation_k") + 1] = "0"
             with patch.object(sys, "argv", arguments), self.assertRaisesRegex(ValueError, "configuration differs"):
                 cache_features.main()
@@ -580,6 +770,13 @@ class RotatedMaskRunTests(unittest.TestCase):
                 for key in ("img_prior", "img_curr", "gt_diff"):
                     torch.testing.assert_close(rotated[key], torch.rot90(original[key], rotation, (-2, -1)))
                 self.assertEqual(rotated["rotation_k"], rotation)
+            corrected = LongitudinalPairDataset(str(root), img_size=4, rotation_k=3,
+                                                flip_horizontal=True)[0]
+            from evaluation.evaluate_clinical import prepare_image
+            for key in ("img_prior", "img_curr", "gt_diff"):
+                torch.testing.assert_close(corrected[key], original[key].transpose(-2, -1))
+            torch.testing.assert_close(corrected["img_curr"], prepare_image(prior + gt, 4, 3, True))
+            self.assertTrue(corrected["flip_horizontal"])
             with self.assertRaises(ValueError):
                 LongitudinalPairDataset(str(root), rotation_k=4)
 

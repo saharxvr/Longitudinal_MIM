@@ -111,20 +111,23 @@ def prepare_native_cache(args):
         manifest = Path(args.dataset_root) / "manifest.jsonl"
     expected = dict(backbone=C.RAD_DINO_MODEL, last_n_layers=args.last_n_layers,
                     rotation_k=args.rotation_k, image_size=C.IMG_SIZE,
+                    flip_horizontal=args.flip_horizontal,
                     manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest())
     metadata = cache_dir / "cache_config.json"
     if metadata.is_file():
-        if json.loads(metadata.read_text()) != expected:
+        actual = json.loads(metadata.read_text())
+        actual.setdefault("flip_horizontal", False)
+        if actual != expected:
             raise ValueError("Cache configuration differs; use a new cache directory")
     elif any(cache_dir.iterdir()):
-        if args.rotation_k:
+        if args.rotation_k or args.flip_horizontal:
             raise ValueError("Rotated cache requires a new empty directory or matching cache_config.json")
     else:
         metadata.write_text(json.dumps(expected, indent=2), encoding="utf-8")
     return cache_dir
 
 
-def save_input_preview(dataset, path):
+def save_input_preview(dataset, path, target_threshold=0.05):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -146,15 +149,17 @@ def save_input_preview(dataset, path):
     for row, index in enumerate(indices):
         sample = dataset[index]
         gt = sample["gt_diff"][0]
-        mask = torch.where(gt.abs() > 0.05, gt.sign(), torch.zeros_like(gt))
+        mask = torch.where(gt.abs() > target_threshold, gt.sign(), torch.zeros_like(gt))
         for axis, values, title in zip(axes[row],
                                       (sample["img_prior"][0], sample["img_curr"][0], gt, mask),
-                                      ("Prior encoder input", "Current encoder input", "Continuous GT", "Signed GT mask @0.05")):
+                                      ("Prior encoder input", "Current encoder input", "Continuous GT",
+                                       f"Signed GT mask @{target_threshold:g}")):
             axis.imshow(values, cmap="gray" if "input" in title else "bwr",
                         vmin=0 if "input" in title else -1, vmax=1)
             axis.set_title(title)
             axis.axis("off")
-    figure.suptitle(f"Dataset inputs before frozen-backbone resize/normalization; rotation_k={sample['rotation_k']}")
+    figure.suptitle(f"Dataset inputs before frozen-backbone resize/normalization; rotation_k={sample['rotation_k']}; "
+                   f"horizontal flip={sample.get('flip_horizontal', False)}")
     figure.tight_layout()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,7 +179,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--last_n_layers", type=int, default=C.LAST_N_LAYERS,
                    help="concat the last N backbone layers (4 for the DPT/multi-scale cache)")
     p.add_argument("--rotation_k", type=int, choices=[0, 1, 2, 3], default=0)
+    p.add_argument("--flip_horizontal", action="store_true")
     p.add_argument("--preview_path", default="", help="Save dataset input/GT preview before feature extraction")
+    p.add_argument("--preview_threshold", type=float, default=0.05)
     p.add_argument("--preview_only", action="store_true", help="Save preview without loading the backbone")
     p.add_argument("--slice_last_layer_from", default="",
                    help="CPU-only: copy final 768 dims from this last-four cache; requires --last_n_layers 1")
@@ -185,7 +192,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.slice_last_layer_from:
-        if args.rotation_k:
+        if args.rotation_k or args.flip_horizontal:
             raise SystemExit("Rotated scans require native feature extraction, not cache slicing")
         if not args.cache_dir or args.last_n_layers != 1:
             raise SystemExit("Cache slicing requires explicit --cache_dir and --last_n_layers 1")
@@ -195,9 +202,9 @@ def main() -> int:
     cache_dir = str(prepare_native_cache(args))
 
     ds = LongitudinalPairDataset(args.dataset_root, split=args.split, img_size=C.IMG_SIZE,
-                                 rotation_k=args.rotation_k)
+                                 rotation_k=args.rotation_k, flip_horizontal=args.flip_horizontal)
     if args.preview_path or args.preview_only:
-        save_input_preview(ds, args.preview_path or Path(cache_dir) / "input_preview.png")
+        save_input_preview(ds, args.preview_path or Path(cache_dir) / "input_preview.png", args.preview_threshold)
     if args.preview_only:
         return 0
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
@@ -233,6 +240,7 @@ def main() -> int:
                     "change_group_id": batch["change_group_id"][i],
                     "pair_id": pid,
                     "rotation_k": args.rotation_k,
+                    "flip_horizontal": args.flip_horizontal,
                 }
             with tempfile.NamedTemporaryFile(dir=os.path.dirname(out_path), suffix=".tmp", delete=False) as temporary:
                 temporary_path = Path(temporary.name)

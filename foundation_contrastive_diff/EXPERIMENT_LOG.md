@@ -35,6 +35,44 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Corrected-orientation retraining and DRR/GT approval gate prepared.**
+  User requested retraining with correct positions, explicitly including DRRs AND
+  GT, followed automatically by all100 clinical predictions and a Git push.
+  Added opt-in flip_horizontal after rotation3: this equals the conventional raw
+  array transpose. Prior/current/signed GT share the exact transform; clinical
+  restoration unflips before inverse rotation. Old defaults remain unchanged.
+  Separate last1_upright_mask_thr0p0001_fp075 config/cache/run retains the latest
+  target0.0001 recipe,seed42,60epochs,head,loss and thresholds. Encoder stays frozen;
+  old mirrored features cannot be reused or fixed by flipping tokens. Cache metadata
+  and every loaded record, checkpoint resume and evaluation carry flip guards.
+  Existing GT audit now supports exhaustive source-grid/finite checks and exact
+  transpose/inverse alignment of all three tensors. Selected corrected overlays
+  show continuous GT AND the actual0.0001 signed training mask, stratified by
+  pathology/sign/support category in train/val, never synthetic held-out test.
+  Added training.run_upright_clinical: phase1 publishes this real campus audit and
+  checks all100 clinical input transforms/source hashes/500 original annotations.
+  Phase2 requires the reviewed provenance hash, rejects changed code/config/report/
+  panels/manifest, rebuilds features, trains only the corrected run, then evaluates
+  the new best checkpoint on the same100 clinical pairs at0.5. Before automatic
+  exact-folder Git commit/push it verifies all100 output/mask shapes,affines,signed
+  values and mask thresholds, and runs existing per-clinician component F1.
+  Publishes derived maps/masks,reports,provenance,metrics and input preview, not
+  source clinical scans,clinical review PNGs,weights or the100GB feature cache.
+  Failed preflights also publish their diagnostic evidence but never approve or
+  train. Initial full47CPUtests passed40.037s, including a deliberately shifted GT
+  affine rejected by the source-grid audit, exact corrected signed-GT arrays,
+  old/new clinical inference original-space parity, all100 export guards and scoped
+  Git publication. Actual local clinical preprocessing preflight passed ALL100
+  pairs/200source scan hashes/500matching annotations: every corrected input equals
+  the conventional resized display, with exact signed-landmark inverse placement.
+  No inference weights were loaded in that real-data preprocessing check.
+  Final full regression suite:48CPUtests passed16.790s; touched-file diagnostics
+  clean. The new failed-preflight test confirms evidence publication without
+  approval or any training call. Campus DRR/GT audit and GPU execution are pending.
+  Shape/affine/transform checks alone do not establish anatomical laterality or
+  biological GT correctness; real corrected DRR/GT overlays still need campus
+  export and visual approval BEFORE training. No campus training launched here.
+
 - **2026-10-18 - Fresh campus training samples retrieved and inspected.**
   Pulled campus commit245c65ed, containing only results/
   fcd_orientation_20261018_100044/training_inputs.png (512560 bytes).

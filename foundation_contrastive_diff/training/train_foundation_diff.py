@@ -305,16 +305,16 @@ def make_loaders(args, device):
         ).to(device)
         backbone.eval()
         train_ds = LongitudinalPairDataset(args.dataset_root, split="train", img_size=C.IMG_SIZE,
-                          rotation_k=args.rotation_k)
+                                                    rotation_k=args.rotation_k, flip_horizontal=args.flip_horizontal)
         val_ds = LongitudinalPairDataset(args.dataset_root, split="val", img_size=C.IMG_SIZE,
-                        rotation_k=args.rotation_k)
+                                                rotation_k=args.rotation_k, flip_horizontal=args.flip_horizontal)
         labels = [train_ds._anomaly_index(r) for r in train_ds.records]  # enables --balanced
     else:
         backbone = None
         train_ds = CachedPairDataset(args.dataset_root, args.cache_dir, split="train",
-                        rotation_k=args.rotation_k)
+                                                rotation_k=args.rotation_k, flip_horizontal=args.flip_horizontal)
         val_ds = CachedPairDataset(args.dataset_root, args.cache_dir, split="val",
-                      rotation_k=args.rotation_k)
+                                            rotation_k=args.rotation_k, flip_horizontal=args.flip_horizontal)
         labels = train_ds.labels
 
     # Overfit sanity test: train AND eval on the same N change pairs (is_pathology==1).
@@ -367,6 +367,7 @@ def parse_args():
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--device", default=C.DEVICE)
     p.add_argument("--rotation_k", type=int, choices=[0, 1, 2, 3], default=0)
+    p.add_argument("--flip_horizontal", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--seed", type=int, default=None)
     # loss hyperparameters
     p.add_argument("--tau", type=float, default=0.02, help="|GT| threshold for change pixels")
@@ -482,7 +483,7 @@ def main():
     if ckpt_path and os.path.isfile(ckpt_path):
         ck = torch.load(ckpt_path, map_location=device)
         saved_config = ck.get("run_config", {})
-        for key, default in (("rotation_k", 0), ("target_mode", "continuous"),
+        for key, default in (("rotation_k", 0), ("flip_horizontal", False), ("target_mode", "continuous"),
                              ("target_threshold", 0.05), ("background_weight", 1.0),
                              ("eval_gt_threshold", None)):
             if saved_config.get(key, default) != getattr(args, key):
