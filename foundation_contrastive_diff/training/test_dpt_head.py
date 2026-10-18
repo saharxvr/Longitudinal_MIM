@@ -3,6 +3,8 @@
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -129,6 +131,35 @@ class TrainingDiagnosticsTests(unittest.TestCase):
 
 
 class ClinicalInferenceTests(unittest.TestCase):
+    def test_clinical_launcher_checkpoint_hash_override(self):
+        git_bash = Path("C:/Program Files/Git/bin/bash.exe")
+        bash = (str(git_bash) if git_bash.is_file() else None) if os.name == "nt" else shutil.which("bash")
+        if bash is None:
+            self.skipTest("Native Bash is required to exercise the clinical launcher")
+        launcher = Path(__file__).resolve().with_name("run_clinical100.sh")
+        with tempfile.TemporaryDirectory() as temporary:
+            venv = Path(temporary) / "venv"
+            (venv / "bin").mkdir(parents=True)
+            (venv / "bin" / "activate").write_text("")
+            environment = dict(os.environ, FCD_VENV=venv.as_posix(),
+                               RUN="/tmp/clinical-test-run", OUT="/tmp/clinical-test-out")
+            environment.pop("EXPECTED_SHA256", None)
+            for override in (None, "1" * 64):
+                with self.subTest(override=override):
+                    if override is not None:
+                        environment["EXPECTED_SHA256"] = override
+                    result = subprocess.run(
+                        [bash, "-c", 'python() { printf "%s\\n" "$@"; }; source "$1"',
+                         "clinical-launcher-test", launcher.as_posix()],
+                        env=environment, capture_output=True, text=True, check=True)
+                    arguments = result.stdout.splitlines()
+                    expected = override or "0b7b49cc916806453ae5a2348e8b0546dd59dfbe5ff0449c034ba43d214a8053"
+                    self.assertEqual(arguments[arguments.index("--expected_sha256") + 1], expected)
+                    self.assertEqual(arguments[arguments.index("--threshold") + 1], "0.5")
+                    self.assertEqual(arguments[arguments.index("--num_pairs") + 1], "100")
+                    self.assertEqual(arguments[arguments.index("--ckpt") + 1],
+                                     "/tmp/clinical-test-run/checkpoints/best.pt")
+
     def test_legacy_original_and_square_crop_coordinates(self):
         import nibabel as nib
         import numpy as np

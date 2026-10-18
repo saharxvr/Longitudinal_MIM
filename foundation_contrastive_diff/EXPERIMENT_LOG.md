@@ -35,6 +35,25 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Clinical evaluation of cutoff.0001 best checkpoint approved/prepared.**
+  User approved the next step after final-run review. Reuse evaluate_clinical and
+  run_clinical100.sh for expected epoch49 in run_last1_rot90cw_mask_thr0p0001_fp075.
+  Existing launcher was pinned to the old epoch45 hash; added an explicit
+  EXPECTED_SHA256 override while preserving that default, threshold.5 and100 cases.
+  Focused native-Bash test confirms both default and overridden hash argument paths.
+  Documented full campus launch in configs/README.md: verify epoch49, signed target
+  .0001, identical head/rotation3/prediction.5, and all500 annotation hashes against
+  review_outputs/clinical100_20261017_112038/metadata.json, then pin checkpoint SHA256,
+  run data preflight and start inference in a fresh clinical100_cutoff0001_epoch49
+  output directory. No clinical tuning, preprocessing, postprocessing, model or loss
+  change. Known local checkpoint locations have no new weights; campus verification
+  and inference remain pending. Do not claim clinical scores or checkpoint hash yet.
+  Validation: all6 clinical tests passed, both documented-launch/launcher Bash syntax
+  checks and inline-guard Python parse passed, touched files have no editor errors.
+  Fresh local DNS check cannot resolve cas703, so campus execution requires the user.
+  Keep medical NIfTI/PNG outputs private; return only report/per-pair metrics/metadata
+  for comparison. Do not stage unrelated clinician/LLM work or whole review folders.
+
 - **2026-10-18 - Cutoff.0001 run completed60 epochs; next candidate is logged best49.**
   Pulled5dda4d5a, results/cutoff0001_final_20261018_082525: validation JSON and sweeps
   38-60, train JSON60, metrics.csv exactly1-60. Combined the earlier snapshots for1-37.

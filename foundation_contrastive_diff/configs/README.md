@@ -158,13 +158,77 @@ tail -f "$RUN/train.log"
 Do not run alongside another GPU job without checking memory. Audit results should
 guide the next loss ablation before launching another full training run.
 
+## Clinical Cutoff0.0001 Best-Checkpoint Evaluation
+
+The completed cutoff0.0001 run selects epoch49 by the unchanged original-reference
+validation Dice. Evaluate that stored best checkpoint, not last.pt, with the same
+100 cases, five observers, prediction threshold0.5, geometry and postprocessing as
+the earlier clinical run. The command below verifies checkpoint epoch/config/head
+and all500 annotation hashes against the earlier metadata before preflight. It pins
+the verified new checkpoint bytes via EXPECTED_SHA256; the old launcher default is
+unchanged. No clinical threshold tuning or training is performed.
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CLINICAL_ROOT="/cs/labs/josko/sahar_aharon/repos/python_files/annotation tool"
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_rot90cw_mask_thr0p0001_fp075
+export OUT="$PWD/review_outputs/clinical100_cutoff0001_epoch49_$(date +%Y%m%d_%H%M%S)"
+export LOG="${OUT}.log"
+if EXPECTED_SHA256=$(python - <<'PY'
+import hashlib, io, json, os
+from pathlib import Path
+import torch
+from evaluation.evaluate_clinical import discover_cases, PHYSICIANS
+
+reference = json.loads(Path("review_outputs/clinical100_20261017_112038/metadata.json").read_text())
+payload = (Path(os.environ["RUN"]) / "checkpoints/best.pt").read_bytes()
+state = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=False)
+config = state["run_config"]
+assert state["epoch"] == 49, "Expected the selected epoch49 checkpoint"
+assert config["target_mode"] == "signed_mask" and config["target_threshold"] == 0.0001
+assert state["head_spec"] == reference["head_spec"], "Head architecture changed"
+assert config["rotation_k"] == reference["rotation_k"] == 3
+assert config["eval_threshold"] == reference["prediction_threshold"] == 0.5
+assert reference["num_pairs"] == 100
+cases = discover_cases(Path(os.environ["CLINICAL_ROOT"]), 100)
+annotation_hashes = {
+	f"{case['pair_id']}/{doctor}": hashlib.sha256(Path(case["annotations"][doctor]).read_bytes()).hexdigest()
+	for case in cases for doctor in PHYSICIANS
+}
+assert len(annotation_hashes) == 500 and annotation_hashes == reference["annotation_sha256"], "Clinical annotation cohort changed"
+print(hashlib.sha256(payload).hexdigest())
+PY
+); then
+	export EXPECTED_SHA256
+	mkdir -p "$(dirname "$OUT")"
+	touch "$LOG"
+	if bash training/run_clinical100.sh --preflight; then
+		nohup bash training/run_clinical100.sh >> "$LOG" 2>&1 &
+		tail -f "$LOG"
+	fi
+fi
+```
+
+The guard loads only this trusted study checkpoint. If epoch/config/cohort validation
+fails, do not bypass it; investigate the mismatch. Ctrl+C exits tail without stopping
+inference. Keep per-case NIfTI/PNG outputs private. Share report.json, per_pair.csv and
+metadata.json for comparison with the earlier clinical run; do not stage the whole
+review directory or publish medical images. Actual campus checkpoint verification,
+GPU inference and clinical comparison remain pending until this command is run there.
+
 ## Clinical 100-Case Inference
 
 `evaluation.evaluate_clinical` applies the frozen encoder and trained head to the100 ICU
 pairs in `python_files/annotation tool/Pairs1..Pairs8`, using Avi, Benny, Sigal, Smadar
 and Nitzan annotations. No training, synthetic GT cutoff, clinical threshold optimization,
-lung cropping, sharpening or component cleanup is performed. The launcher pins the
-verified epoch45 best-checkpoint SHA256 and prediction threshold0.5.
+lung cropping, sharpening or component cleanup is performed. The launcher defaults to
+the verified epoch45 best-checkpoint SHA256 and prediction threshold0.5; an explicit
+EXPECTED_SHA256 override supports a separately verified checkpoint.
 
 Inputs use the SAME raw-NIfTI resize/minmax/rotation sequence as training, NOT the
 legacy predictor's transpose. The prediction is inverse-rotated and resized to the

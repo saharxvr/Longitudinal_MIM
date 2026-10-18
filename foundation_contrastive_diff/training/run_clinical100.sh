@@ -18,5 +18,5 @@ export OUT="${OUT:-$STUDY_ROOT/review_outputs/clinical100_rot90cw_mask_fp075_$(d
 python -u -m evaluation.evaluate_clinical \
     --clinical_root "$CLINICAL_ROOT" \
     --ckpt "$RUN/checkpoints/best.pt" \
-    --expected_sha256 0b7b49cc916806453ae5a2348e8b0546dd59dfbe5ff0449c034ba43d214a8053 \
+    --expected_sha256 "${EXPECTED_SHA256:-0b7b49cc916806453ae5a2348e8b0546dd59dfbe5ff0449c034ba43d214a8053}" \
     --out_dir "$OUT" --device cuda --threshold 0.5 --num_pairs 100 "$@"
