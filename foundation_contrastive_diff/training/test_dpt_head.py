@@ -131,6 +131,95 @@ class TrainingDiagnosticsTests(unittest.TestCase):
 
 
 class ClinicalInferenceTests(unittest.TestCase):
+    def test_detection_only_cli_does_not_require_itamar(self):
+        import contextlib
+        from evaluation import compare_clinical_models as comparison
+
+        arguments = ["compare", "--clinical-run", "saved", "--clinical-root", "clinical",
+                     "--out-dir", "scores"]
+        with patch.object(sys, "argv", arguments + ["--foundation-only"]):
+            args = comparison.parse_args()
+        self.assertTrue(args.foundation_only)
+        self.assertIsNone(args.itamar_preds)
+        with patch.object(sys, "argv", arguments), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                comparison.parse_args()
+        self.assertEqual(caught.exception.code, 2)
+        with patch.object(sys, "argv", arguments + ["--itamar-preds", "baseline"]):
+            self.assertFalse(comparison.parse_args().foundation_only)
+
+    def test_saved_detection_f1_uses_real_legacy_matching_and_checks_inputs(self):
+        import contextlib
+        import csv
+        import hashlib
+        import nibabel as nib
+        import numpy as np
+        from types import SimpleNamespace
+        from evaluation import compare_clinical_models as comparison
+
+        tools = comparison.clinical_tools()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            clinical_root = root / "clinical"
+            pair = clinical_root / "Pairs1" / "pair1"
+            pair.mkdir(parents=True)
+            shape = (24, 24)
+            for filename in ("0_prior.nii.gz", "1_current.nii.gz"):
+                nib.save(nib.Nifti1Image(np.zeros(shape, dtype=np.float32), np.eye(4)), pair / filename)
+            annotations = [{}, dict(cx=5, cy=5, rx=2, ry=2, angle=0, label="Appearance"),
+                           dict(cx=16, cy=5, rx=2, ry=2, angle=0, label="Appearance"),
+                           dict(cx=16, cy=16, rx=2, ry=2, angle=0, label="Disappearance")]
+            hashes = {}
+            for doctor in comparison.PHYSICIANS:
+                path = clinical_root / "Annotations" / doctor / "pair1.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(annotations))
+                hashes[f"pair1/{doctor}"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            positive, negative = tools.load_labels_map(path, shape)
+            scores = np.zeros(shape, dtype=np.float32)
+            scores[tuple(np.argwhere(positive > 0)[0])] = .8
+            scores[tuple(np.argwhere(negative < 0)[0])] = -.8
+            scores[22, 1] = .8
+            clinical_run = root / "predictions"
+            (clinical_run / "pair1").mkdir(parents=True)
+            prediction = clinical_run / "pair1" / "output.nii.gz"
+            nib.save(nib.Nifti1Image(scores, np.eye(4)), prediction)
+            metadata = dict(num_pairs=1, prediction_threshold=.5, checkpoint_epoch=49,
+                            checkpoint_sha256="1" * 64, annotation_sha256=hashes)
+            (clinical_run / "metadata.json").write_text(json.dumps(metadata))
+            args = SimpleNamespace(clinical_run=clinical_run, clinical_root=clinical_root,
+                                   out_dir=root / "scores", num_pairs=1,
+                                   foundation_only=True, itamar_preds=None)
+            with patch.object(comparison, "clinical_tools", return_value=tools), \
+                 patch.object(tools, "plot_matrix"), contextlib.redirect_stdout(io.StringIO()):
+                comparison.run(args)
+            with (args.out_dir / "f1_per_clinician.csv").open(newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual({row["clinician"] for row in rows}, set(comparison.PHYSICIANS))
+            for row in rows:
+                self.assertAlmostEqual(float(row["F1 pos"]), .5)
+                self.assertAlmostEqual(float(row["F1 neg"]), 1.)
+                self.assertAlmostEqual(float(row["F1 all"]), 2 / 3)
+            exported = json.loads((args.out_dir / "metadata.json").read_text())
+            self.assertEqual(exported["annotation_sha256"], hashes)
+            self.assertEqual(exported["prediction_sha256"]["pair1"],
+                             hashlib.sha256(prediction.read_bytes()).hexdigest())
+            self.assertEqual(exported["protocol"]["pairs_processed"], 1)
+            self.assertEqual(exported["protocol"]["model_space"], "original")
+            self.assertEqual(exported["protocol"]["prediction_threshold"], .5)
+            self.assertEqual(exported["protocol"]["min_cc_size"], 0)
+            self.assertEqual(exported["protocol"]["min_cc_intensity"], 0)
+            args.out_dir = root / "changed_annotations"
+            path.write_text("[]")
+            with self.assertRaisesRegex(ValueError, "Changed annotation"):
+                comparison.run(args)
+            self.assertFalse(args.out_dir.exists())
+            path.write_text(json.dumps(annotations))
+            prediction.unlink()
+            with self.assertRaises(FileNotFoundError):
+                comparison.run(args)
+            self.assertFalse(args.out_dir.exists())
+
     def test_documented_clinical_guard_normalizes_checkpoint_spec(self):
         import contextlib
         import hashlib

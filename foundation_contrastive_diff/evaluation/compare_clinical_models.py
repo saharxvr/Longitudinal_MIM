@@ -220,16 +220,22 @@ def run(args):
         raise ValueError("num_pairs must be between 1 and 100")
     if args.out_dir.exists():
         raise ValueError("Use a new output directory to preserve previous comparisons")
+    foundation_only = getattr(args, "foundation_only", False)
     metadata = read_json(args.clinical_run / "metadata.json")
     if metadata["prediction_threshold"] != 0.5:
         raise ValueError("This comparison requires the fixed clinical threshold 0.5")
+    if metadata["num_pairs"] < args.num_pairs:
+        raise ValueError("Requested more pairs than the saved clinical run contains")
     cases = discover_cases(args.clinical_root, args.num_pairs)
     tools = clinical_tools()
     for case in cases:
         number = int(case["pair_id"][4:])
-        for filename in ("output.nii.gz", "crop_info.json"):
-            if not (args.itamar_preds / f"pair{number}" / filename).is_file():
-                raise FileNotFoundError(args.itamar_preds / f"pair{number}" / filename)
+        if not foundation_only:
+            for filename in ("output.nii.gz", "crop_info.json"):
+                if not (args.itamar_preds / f"pair{number}" / filename).is_file():
+                    raise FileNotFoundError(args.itamar_preds / f"pair{number}" / filename)
+        if not (args.clinical_run / case["pair_id"] / "output.nii.gz").is_file():
+            raise FileNotFoundError(args.clinical_run / case["pair_id"] / "output.nii.gz")
         for doctor, path in case["annotations"].items():
             payload = Path(path).read_bytes()
             expected = metadata["annotation_sha256"][f"{case['pair_id']}/{doctor}"]
@@ -237,6 +243,41 @@ def run(args):
                                hashlib.sha256(payload.replace(b"\r\n", b"\n")).hexdigest()):
                 raise ValueError(f"Changed annotation: {case['pair_id']}/{doctor}")
     args.out_dir.mkdir(parents=True)
+    if foundation_only:
+        destination = args.out_dir / f"foundation_{args.num_pairs}"
+        print(f"[detection] scoring {args.num_pairs} saved pairs; threshold0.5, no CC filtering", flush=True)
+        run_legacy(tools, args.clinical_run, args.clinical_root, destination,
+                   args.num_pairs, "original", 0.5)
+        matrices = read_json(destination / "agreement_matrices.json")
+        model_index = matrices["observers"].index("Model")
+        rows = []
+        for doctor in PHYSICIANS:
+            doctor_index = matrices["observers"].index(doctor)
+            row = dict(cohort=args.num_pairs, model="foundation", clinician=doctor)
+            for sign in ("pos", "neg", "all"):
+                row[f"F1 {sign}"] = matrices[f"per_label_{sign}"][model_index][doctor_index]
+            rows.append(row)
+            print(f"[detection] {doctor}: F1+={row['F1 pos']:.6f} "
+                  f"F1-={row['F1 neg']:.6f} F1all={row['F1 all']:.6f}", flush=True)
+        write_csv(args.out_dir / "f1_per_clinician.csv", rows)
+        write_json(args.out_dir / "report.json", dict(
+            matching="legacy greedy one-to-one 8-connected components; same-sign overlap >=1 pixel",
+            formula="2M / (2M + U); combined F1 pools positive and negative counts",
+            observers=rows))
+        write_json(args.out_dir / "metadata.json", dict(
+            checkpoint_sha256=metadata["checkpoint_sha256"],
+            checkpoint_epoch=metadata.get("checkpoint_epoch"),
+            clinical_run=str(args.clinical_run.resolve()),
+            num_pairs=args.num_pairs, prediction_threshold=0.5,
+            annotation_sha256={f"{case['pair_id']}/{doctor}":
+                               metadata["annotation_sha256"][f"{case['pair_id']}/{doctor}"]
+                               for case in cases for doctor in PHYSICIANS},
+            prediction_sha256={case["pair_id"]: hashlib.sha256(
+                (args.clinical_run / case["pair_id"] / "output.nii.gz").read_bytes()).hexdigest()
+                for case in cases},
+            protocol=read_json(destination / "protocol.json")))
+        print(f"[detection] complete: {args.out_dir}", flush=True)
+        return
     cohorts = (98, 100) if args.num_pairs == 100 else (args.num_pairs,)
     summaries = {}
     parity = {}
@@ -346,12 +387,17 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clinical-run", type=Path, required=True)
     parser.add_argument("--clinical-root", type=Path, required=True)
-    parser.add_argument("--itamar-preds", type=Path, required=True)
+    parser.add_argument("--itamar-preds", type=Path)
+    parser.add_argument("--foundation-only", action="store_true",
+                        help="Score saved foundation predictions with legacy clinician detection F1 only")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--legacy-reference-100", type=Path)
     parser.add_argument("--legacy-reference-98", type=Path)
     parser.add_argument("--num-pairs", type=int, default=100)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.foundation_only and args.itamar_preds is None:
+        parser.error("--itamar-preds is required unless --foundation-only is set")
+    return args
 
 
 if __name__ == "__main__":

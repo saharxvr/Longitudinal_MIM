@@ -221,6 +221,64 @@ metadata.json for comparison with the earlier clinical run; do not stage the who
 review directory or publish medical images. Actual campus checkpoint verification,
 GPU inference and clinical comparison remain pending until this command is run there.
 
+## One-Pixel Clinical Detection F1
+
+Score already-saved original-space predictions, without retraining, encoder loading or
+another inference pass. This uses the unchanged legacy greedy one-to-one matcher on
+8-connected components: at least one same-sign overlapping pixel qualifies, with
+threshold0.5 and no component filtering. Combined F1 pools positive/negative counts;
+it is not pixel Dice or the boosted legacy per-pair agreement. Reports are against each
+of the five clinicians, not a pixelwise consensus. Lower Dice does not establish lower
+detection F1. The command selects the completed epoch49 clinical run, checking its
+published metadata before scoring. If the run was moved elsewhere, set CLINICAL_RUN
+to the private directory containing metadata.json and pair1/output.nii.gz.
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+set -o pipefail
+export CLINICAL_ROOT="/cs/labs/josko/sahar_aharon/repos/python_files/annotation tool"
+export CLINICAL_RUN="$PWD/review_outputs/clinical100_cutoff0001_epoch49_20261018_085458"
+if [ ! -f "$CLINICAL_RUN/pair1/output.nii.gz" ]; then
+	export CLINICAL_RUN="$PWD/results/clinical100_cutoff0001_epoch49_20261018_085458"
+fi
+export OUT="$PWD/results/clinical100_f1_cutoff0001_epoch49_$(date +%Y%m%d_%H%M%S)"
+export LOG="${OUT}.log"
+mkdir -p "$(dirname "$OUT")"
+if python - <<'PY'
+import json, os
+from pathlib import Path
+run = Path(os.environ["CLINICAL_RUN"])
+published = Path("results/clinical100_cutoff0001_epoch49_20261018_085458/metadata.json")
+actual = json.loads((run / "metadata.json").read_text())
+assert actual == json.loads(published.read_text()), "Saved run differs from published clinical provenance"
+assert actual["checkpoint_epoch"] == 49 and actual["run_config"]["target_threshold"] == .0001, "Wrong experiment"
+assert actual["num_pairs"] == 100 and actual["prediction_threshold"] == .5, "Clinical protocol changed"
+PY
+then
+	if python -u -m evaluation.compare_clinical_models \
+		--foundation-only --clinical-run "$CLINICAL_RUN" \
+		--clinical-root "$CLINICAL_ROOT" --num-pairs 100 \
+		--out-dir "$OUT" 2>&1 | tee -a "$LOG"
+	then
+		git add -- "$OUT/f1_per_clinician.csv" "$OUT/report.json" "$OUT/metadata.json"
+		git commit -m "Publish cutoff 0.0001 epoch49 clinical detection F1"
+		git push
+	fi
+fi
+```
+
+The scorer verifies all requested annotations against inference-time SHA256 values,
+requires every saved output and rejects a reused output directory. It fails if the
+legacy evaluator skips a case. The printed scores and f1_per_clinician.csv give F1+,
+F1- and pooled F1all for each clinician. metadata.json records checkpoint identity,
+annotation/prediction hashes and the actual legacy protocol. Share only the three
+files explicitly staged above. Raw NIfTI, case images and logs remain private;
+per-case overlays are disabled. This is a CPU scoring pass, not a GPU training job.
+
 ## Clinical 100-Case Inference
 
 `evaluation.evaluate_clinical` applies the frozen encoder and trained head to the100 ICU

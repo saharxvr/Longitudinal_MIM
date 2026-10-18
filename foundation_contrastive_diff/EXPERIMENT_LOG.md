@@ -35,6 +35,26 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - One-pixel clinical detection F1 requested; campus scorer prepared.**
+  User requested actual detection F1 for cutoff.0001 epoch49, not pixel Dice. Added
+  --foundation-only to evaluation.compare_clinical_models: reuse the unchanged
+  run_legacy/OV matcher at prediction.5, original coordinates,8-connectivity, no CC
+  filtering. Any same-sign pixel overlap qualifies for a greedy one-to-one component
+  match; pooled F1all uses combined positive/negative counts, not mean directional F1
+  or boosted per-pair PAI. No Itamar files needed in this mode. Preserve the existing
+  full-comparison CLI's Itamar requirement. Verify annotation hashes/all saved maps,
+  requested cohort size and complete legacy processing; use a fresh output directory.
+  Export f1_per_clinician.csv, report.json and metadata.json with checkpoint identity,
+  annotation/prediction hashes and actual protocol. No medical images in those exports.
+  Nine clinical tests pass, including real legacy scoring on synthetic saved NIfTI:
+  one-pixel hits, FP/FN components yield F1+=.5,F1-=1,F1all=2/3; changed annotations and
+  missing predictions are rejected before output creation. Documented guarded campus
+  command and scalar-only publication in configs/README.md. Actual new-model F1 is
+  STILL PENDING: new raw maps are on campus, not in the local scalar upload; this
+  session cannot execute there. No inference, training, threshold tuning or fabricated
+  clinical F1. The prior clinical comparison establishes worse pixel overlap/FP area,
+  not worse detection F1. Defer that metric's conclusion until campus scores arrive.
+
 - **2026-10-18 - Clinical cutoff.0001 epoch49 completed; no clinical Dice improvement.**
   Pulled7d7bb709, results/clinical100_cutoff0001_epoch49_20261018_085458: metadata.json,
   per_pair.csv and report.json. Supersedes the pending-inference notes below. Reported
