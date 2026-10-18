@@ -131,6 +131,48 @@ class TrainingDiagnosticsTests(unittest.TestCase):
 
 
 class ClinicalInferenceTests(unittest.TestCase):
+    def test_documented_clinical_guard_normalizes_checkpoint_spec(self):
+        import contextlib
+        import hashlib
+        from evaluation import evaluate_clinical as clinical
+
+        study_root = Path(__file__).resolve().parents[1]
+        instructions = (study_root / "configs" / "README.md").read_text(encoding="utf-8")
+        section = instructions.split("## Clinical Cutoff0.0001 Best-Checkpoint Evaluation", 1)[1]
+        guard = section.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            annotation = root / "annotation.json"
+            annotation.write_text("[]")
+            cases = [dict(pair_id=f"pair{index}", annotations={
+                doctor: str(annotation) for doctor in clinical.PHYSICIANS})
+                for index in range(1, 101)]
+            spec = head_spec(768, "dpt_cross_attention", 96)
+            reference = dict(head_spec=json.loads(json.dumps(spec)), rotation_k=3,
+                             prediction_threshold=0.5, num_pairs=100, annotation_sha256={
+                f"{case['pair_id']}/{doctor}": hashlib.sha256(annotation.read_bytes()).hexdigest()
+                for case in cases for doctor in clinical.PHYSICIANS})
+            metadata = root / "review_outputs" / "clinical100_20261017_112038" / "metadata.json"
+            metadata.parent.mkdir(parents=True)
+            metadata.write_text(json.dumps(reference))
+            checkpoint = root / "run" / "checkpoints" / "best.pt"
+            checkpoint.parent.mkdir(parents=True)
+            torch.save(dict(epoch=49, head_spec=spec, run_config=dict(
+                target_mode="signed_mask", target_threshold=0.0001,
+                rotation_k=3, eval_threshold=0.5)), checkpoint)
+            with contextlib.chdir(root), \
+                 patch.dict(os.environ, RUN=str(root / "run"), CLINICAL_ROOT=str(root)), \
+                 patch.object(clinical, "discover_cases", return_value=cases):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    exec(compile(guard, "documented_clinical_guard", "exec"), {})
+                self.assertEqual(output.getvalue().strip(),
+                                 hashlib.sha256(checkpoint.read_bytes()).hexdigest())
+                reference["head_spec"]["kwargs"]["channels"] = 97
+                metadata.write_text(json.dumps(reference))
+                with self.assertRaisesRegex(AssertionError, "Head architecture changed"):
+                    exec(compile(guard, "documented_clinical_guard", "exec"), {})
+
     def test_clinical_launcher_checkpoint_hash_override(self):
         git_bash = Path("C:/Program Files/Git/bin/bash.exe")
         bash = (str(git_bash) if git_bash.is_file() else None) if os.name == "nt" else shutil.which("bash")

@@ -190,11 +190,11 @@ payload = (Path(os.environ["RUN"]) / "checkpoints/best.pt").read_bytes()
 state = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=False)
 config = state["run_config"]
 assert state["epoch"] == 49, "Expected the selected epoch49 checkpoint"
-assert config["target_mode"] == "signed_mask" and config["target_threshold"] == 0.0001
-assert state["head_spec"] == reference["head_spec"], "Head architecture changed"
-assert config["rotation_k"] == reference["rotation_k"] == 3
-assert config["eval_threshold"] == reference["prediction_threshold"] == 0.5
-assert reference["num_pairs"] == 100
+assert config["target_mode"] == "signed_mask" and config["target_threshold"] == 0.0001, "Training target changed"
+assert json.loads(json.dumps(state["head_spec"])) == reference["head_spec"], "Head architecture changed after JSON normalization"
+assert config["rotation_k"] == reference["rotation_k"] == 3, "Rotation changed"
+assert config["eval_threshold"] == reference["prediction_threshold"] == 0.5, "Prediction threshold changed"
+assert reference["num_pairs"] == 100, "Reference cohort size changed"
 cases = discover_cases(Path(os.environ["CLINICAL_ROOT"]), 100)
 annotation_hashes = {
 	f"{case['pair_id']}/{doctor}": hashlib.sha256(Path(case["annotations"][doctor]).read_bytes()).hexdigest()

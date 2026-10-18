@@ -35,6 +35,21 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Fixed clinical launch guard's checkpoint/JSON spec comparison.**
+  Campus user hit an unlabelled AssertionError at line11 of the supplied guard before
+  inference. In that command, line11 directly compares native checkpoint head_spec to
+  exported JSON. Trainer uses DECODER_OUT_RANGE=(-1.0,1.0), while JSON restores that
+  tuple as a list; direct dictionary equality rejects an otherwise identical head.
+  Normalize checkpoint spec through json.dumps/loads before equality, retaining the
+  real architecture check. Added descriptive messages for every other config/cohort
+  assertion. Regression executes the actual README guard with a saved native checkpoint
+  and500 synthetic annotation references: matching normalized spec passes, changing
+  head channels96->97 still fails. Focused regression and all7 clinical tests passed.
+  This fixes the local
+  reproduction, not proof of the uninspected campus checkpoint's contents. Retry the
+  corrected guarded launch; do not bypass epoch/config/cohort/hash verification.
+  Campus verification and clinical inference remain pending; no clinical results yet.
+
 - **2026-10-18 - Clinical evaluation of cutoff.0001 best checkpoint approved/prepared.**
   User approved the next step after final-run review. Reuse evaluate_clinical and
   run_clinical100.sh for expected epoch49 in run_last1_rot90cw_mask_thr0p0001_fp075.
