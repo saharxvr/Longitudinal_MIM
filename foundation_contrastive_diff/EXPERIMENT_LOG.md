@@ -35,6 +35,108 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Requested0.001/0.01/0.02 GT component/target comparison.**
+  Extended audit_gt sign-separated8-connected component statistics with per-sign
+  pixel area, tiny-component pixel mass, largest-component fraction, and each
+  threshold's float16 support flips. New evaluation/compare_gt_thresholds.py
+  summarizes existing full train/val audit CSVs, explicitly marks missing CC
+  columns, and verifies actual cached-example GT against fresh float16 before
+  rendering paired cutoff overlays. No source images/masks are modified.
+  Local report: results/gt_threshold_comparison_20261018_001_01_02_final/index.md.
+  Full18572train/val audit: active train9508 ->9508/9466/9426, validation1293
+  ->1293/1284/1279 at0.001/0.01/0.02. Thus erased maps0/42/82 train and0/9/14
+  val. Validation absolute mass retained99.937/98.631/94.808%, support retained
+  85.821/72.559/60.377%. All9 and14 erased validation maps at0.01/0.02 are
+  pneumothorax; this does not prove all their signal is biological rather than
+  residual. Exact three TRAIN-example positive/negative CC counts:
+  DRR1 2/0 ->5/0 ->2/0; DRR2 3/13 ->3/13 ->7/33;
+  DRR3 18/5 ->4/1 ->5/1. Higher cutoffs can split regions, not just remove
+  fragments. These example CC counts are NOT cohort estimates: old full audit
+  measured CC only at0 and0.05. Candidate0.001 preserves all nonempty maps;
+  defer final selection until full-cohort per-sign CC statistics are available.
+  configs/README has full CPU-only GT-audit command at the three candidates
+  plus current0.0001 baseline; no alignment re-audit, overlays, arrays, test
+  data, cache rebuild, encoder inference or active-job changes. A dedicated
+  fresh audit/comparison parent can be published with --publish using existing
+  exact-folder publisher; unrelated contents reject publication before writing.
+  Cross-entropy explanation/migration checklist documented:3logits for mutually
+  exclusive unchanged/positive/negative, integer thresholded targets, CE on raw
+  logits, nonzero background weight, optional later classwiseDice, signed export
+  p_positive-p_negative plus retained probability maps. Frozen encoder/cache
+  unchanged; new head/run and checkpoint guards required, no CE enabled yet.
+  Two focused CPU tests passed including boundary/diagonal/fragment/empty masks,
+  actual NIfTI end-to-end old/new audit schemas, held-out split exclusion and
+  scoped publisher invocation/rejection. Campus full-cohort CC execution remains
+  pending; do not claim all requested component measurements are complete.
+
+- **2026-10-18 - Current upright run epoch44/60, user-supplied console log.**
+  Config remains signed_mask cutoff0.0001, L1=L2=1, Dice=sign=0,
+  foreground11/background0.75; learning rate5.29e-5. Online sampled train
+  batch-mean loss0.253945 (L1 .118063, L2 .135881); fixed-head validation
+  loss0.912615 (L1 .420428, L2 .492186). Optional Dice/sign numbers are
+  diagnostics, not active objective terms. At prediction0.5 and matched raw
+  GT0.0001, validation1293pathology pairs: macro supportDice0.6767,
+  signedDice0.6526, micro signed precision0.7147/recall0.8169. Train matched
+  signedDice0.8004, precision0.7608/recall0.9779; online sampled training is
+  not a fixed-checkpoint evaluation of the whole train set. Validation815
+  nuisance pairs: FP area mean1.50%, p95 10.69%, max48.12%; train3344 sampled
+  nuisance occurrences: mean0.09%, p95 zero, max19.95%. Invalid pairs zero
+  in reported summaries; this does not certify every numerical health field.
+  Compared with this run's epoch12, validation matched signedDice0.6345 to
+  0.6526 (+0.0181), nuisance mean6.10% to1.50%, but loss0.825217 to0.912615.
+  Fits improving background suppression alongside a foreground/generalization
+  warning, not all-zero collapse or clear late-stage overall improvement.
+  Raw GT0.05 is a DIFFERENT reference: checkpoint supportDice0.3736,
+  active-reference signedDice0.3679, micro precision0.3066/recall0.9581,
+  component signed F1 .1555. Do not compare that F1 with matched-target pixel
+  Dice or infer clinical F1. Current epoch44 matched signedDice0.6526 is close
+  to previous non-upright run's epoch49 .654103, but nuisance mean1.50% is
+  above its1.10598%; different epochs, not an isolated orientation effect or
+  final best-checkpoint comparison. No evidence here for promoting the upright
+  run over the previous run. Continue only to the planned60 if budget permits;
+  no extension, mid-run target/loss changes, or clinical claims. Checkpoint
+  identity/best epoch and full diagnostic artifacts not independently inspected.
+
+- **2026-10-18 - Primary-paper loss review and current cached-GT threshold sweep.**
+  Read Lin et al., Robust Scene Change Detection Using Visual Foundation Models
+  and Cross-Attention Mechanisms, sections IV-C and V-C:
+  https://arxiv.org/html/2409.16850v2 . Frozen DINOv2, two directional
+  cross-attention comparators, two-class change/unchanged logits, weighted softmax
+  cross-entropy; change weight0.975, unchanged0.025 (ratio39:1). No L1/L2 or Dice
+  in the stated training objective. This is binary scene segmentation, not signed
+  clinical change regression. Li et al., BAN, section III-D:
+  https://arxiv.org/html/2312.01163v2 uses pixel-wise cross-entropy and a frozen
+  foundation model PLUS a trainable image-processing Bi-TAB branch; not a
+  cached-latent-only architecture. Neither paper validates a DRR noise cutoff.
+  Independently measured abs(cached_continuous_gt)>cutoff from all three actual
+  results/cache_input_evidence_20261018_160345/drr_*/exact_tensors.npz files:
+
+  | Cutoff | DRR1 area % | DRR2 area % | DRR3 area % |
+  |---|---|---|---|
+  | 0.0001 | 42.205 | 30.255 | 40.361 |
+  | 0.001 | 40.855 | 30.255 | 29.763 |
+  | 0.005 | 38.816 | 30.255 | 25.182 |
+  | 0.01 | 36.255 | 30.255 | 20.956 |
+  | 0.02 | 32.813 | 26.379 | 16.024 |
+  | 0.05 | 25.843 | 9.893 | 10.969 |
+
+  These are three selected TRAIN examples, not full-split estimates or proof
+  that excluded pixels are noise. Proposed next candidate:0.01, subject to
+  paired visual review and existing full train/val audit; faint real changes can
+  also disappear. Avoid per-image max/minmax GT normalization, which can amplify
+  residuals and destroy amplitude comparability. Current change_map_loss signs
+  every retained pixel, then uses foreground11/background0.75 pixel-weighted
+  L1+L2; its optional Dice is unsigned abs(pred) support Dice, not signed Dice.
+  First isolate target cutoff with that loss unchanged. Then compare a proposed
+  three-class negative/unchanged/positive cross-entropy formulation, optionally
+  adding classwise Dice as a separate ablation. This requires three logits and
+  an explicit signed-score export rule, not CE applied to existing tanh scores;
+  it is not a paper-exact reproduction or a pure loss-only change. Do not copy
+  Lin's39:1 weighting without testing nuisance false positives. Preserve nonzero
+  background supervision, frozen RAD-DINO, split/cache/input orientation, fixed
+  evaluation reference and prediction protocol. No code/config/cache/checkpoint
+  changes, new training, or interruption of the current upright run performed.
+
 - **2026-10-18 - Fresh model-free cache-input/GT evidence exporter requested.**
   User correctly distinguished the morning epoch49 clinical collage from the
   current upright-cache run; old-model predictions are NOT evidence of current

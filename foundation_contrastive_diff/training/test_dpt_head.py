@@ -115,6 +115,34 @@ class TrainingDiagnosticsTests(unittest.TestCase):
             expected, _ = tools.get_pairwise_detections(reference, pred)
             self.assertEqual(component_counts(pred, reference)["matched"], expected)
 
+    def test_candidate_cutoff_components_signs_strict_boundary_and_fragmentation(self):
+        import numpy as np
+        from evaluation.audit_gt import component_statistics
+
+        values = np.zeros((8, 12), dtype=np.float32)
+        values[1:3, 1:3] = .03
+        values[1:3, 4:6] = .03
+        values[1, 3] = .005
+        values[5, 8] = -.03
+        values[6, 9] = -.03
+        values[7, 0] = .01
+        stats = component_statistics(values, [.001, .01, .02])
+        self.assertEqual(stats["components_0.001_positive_count"], 2)
+        self.assertEqual(stats["components_0.01_positive_count"], 2)
+        self.assertEqual(stats["components_0.001_positive_pixels"], 10)
+        self.assertEqual(stats["components_0.01_positive_pixels"], 8)
+        self.assertEqual(stats["components_0.001_positive_under_5px"], 1)
+        self.assertEqual(stats["components_0.001_positive_under_5px_pixels"], 1)
+        self.assertEqual(stats["components_0.01_positive_under_5px_pixels"], 8)
+        self.assertEqual(stats["components_0.02_negative_count"], 1)
+        self.assertEqual(stats["components_0.02_negative_pixels"], 2)
+        self.assertEqual(stats["components_0.02_negative_under_50px_pixel_fraction"], 1)
+        self.assertAlmostEqual(stats["components_0.02_positive_area"], 8 / 96)
+        self.assertEqual(stats["components_0.02_positive_largest_component_pixel_fraction"], .5)
+        empty = component_statistics(np.zeros_like(values), [.001])
+        self.assertEqual(empty["components_0.001_negative_count"], 0)
+        self.assertIsNone(empty["components_0.001_negative_under_50px_pixel_fraction"])
+
     def test_gt_audit_end_to_end_and_split_exclusion(self):
         import nibabel as nib
         import numpy as np
@@ -151,14 +179,42 @@ class TrainingDiagnosticsTests(unittest.TestCase):
             summary = next(row for row in report["summaries"] if row["split"] == "train" and
                            row["stage"] == "training_float32" and row["anomaly_type"] == "overall")
             self.assertEqual(summary["cutoff_0.05_entirely_removed_pairs"], 1)
+            from evaluation.compare_gt_thresholds import run as compare_targets
+            comparison = compare_targets(SimpleNamespace(audit_dir=args.out_dir, evidence_dir=None,
+                                                         out_dir=root / "comparison",
+                                                         thresholds=[.001, .01, .02]))
+            self.assertEqual(len(comparison["summaries"]), 12)
+            self.assertFalse(any(row["component_metrics_available"] for row in comparison["summaries"]))
+            with self.assertRaisesRegex(ValueError, "new output directory"):
+                compare_targets(SimpleNamespace(audit_dir=args.out_dir, evidence_dir=None,
+                                                out_dir=root / "comparison", thresholds=[.001, .01, .02]))
             with self.assertRaisesRegex(ValueError, "new output directory"):
                 run(args)
-            corrected_args = SimpleNamespace(**{**vars(args), "out_dir": root / "corrected",
+            corrected_args = SimpleNamespace(**{**vars(args), "out_dir": root / "publication" / "audit",
                                                  "flip_horizontal": True, "verify_alignment": True,
-                                                 "target_threshold": 0.0001})
+                                                 "target_threshold": 0.0001,
+                                                 "component_thresholds": [.001, .01, .02]})
             corrected = run(corrected_args)
             self.assertEqual(corrected["alignment_verified_pairs"], 2)
             self.assertFalse(corrected["issues"])
+            with patch("training.run_upright_clinical.publish") as publisher:
+                comparison = compare_targets(SimpleNamespace(audit_dir=corrected_args.out_dir, evidence_dir=None,
+                                                             out_dir=root / "publication" / "comparison",
+                                                             thresholds=[.001, .01, .02], publish=True))
+                publisher.assert_called_once_with(root / "publication")
+            with patch("training.run_upright_clinical.publish") as publisher:
+                with self.assertRaisesRegex(ValueError, "dedicated parent"):
+                    compare_targets(SimpleNamespace(audit_dir=corrected_args.out_dir, evidence_dir=None,
+                                                    out_dir=root / "publication" / "another_comparison",
+                                                    thresholds=[.001, .01, .02], publish=True))
+                publisher.assert_not_called()
+            self.assertTrue(all(row["component_metrics_available"] for row in comparison["summaries"]))
+            train_target = next(row for row in comparison["summaries"] if row["split"] == "train" and
+                                row["anomaly_type"] == "overall" and row["threshold"] == .01)
+            self.assertEqual(train_target["positive_components"], 1)
+            self.assertEqual(train_target["negative_components"], 0)
+            self.assertEqual(train_target["mixed_sign_pairs"], 0)
+            self.assertAlmostEqual(train_target["background_area"] + train_target["positive_area"], 1)
             preview = corrected["previews"][0]
             with np.load(corrected_args.out_dir / preview["arrays"], allow_pickle=False) as arrays:
                 expected = torch.nn.functional.interpolate(

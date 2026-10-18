@@ -27,11 +27,18 @@ def component_statistics(values, thresholds):
             labels, count = label(mask, structure=np.ones((3, 3)))
             sizes = np.bincount(labels.ravel())[1:]
             prefix = f"components_{threshold:g}_{sign}"
+            pixels = int(sizes.sum())
+            result[f"{prefix}_pixels"] = pixels
+            result[f"{prefix}_area"] = float(mask.mean())
             result[f"{prefix}_count"] = count
             result[f"{prefix}_under_5px"] = int((sizes < 5).sum())
             result[f"{prefix}_under_50px"] = int((sizes < 50).sum())
+            result[f"{prefix}_under_5px_pixels"] = int(sizes[sizes < 5].sum())
+            result[f"{prefix}_under_50px_pixels"] = int(sizes[sizes < 50].sum())
+            result[f"{prefix}_under_50px_pixel_fraction"] = ratio(sizes[sizes < 50].sum(), pixels)
             result[f"{prefix}_median_size"] = float(np.median(sizes)) if count else None
             result[f"{prefix}_max_size"] = int(sizes.max()) if count else None
+            result[f"{prefix}_largest_component_pixel_fraction"] = ratio(sizes.max(), pixels) if count else None
     return result
 
 
@@ -209,6 +216,9 @@ def run(args):
                 if stage == "training_float16_simulated":
                     row["nonzero_pixels_lost_to_float16"] = int(((processed != 0) & (values == 0)).sum())
                     row["cutoff_005_flips_from_float32"] = int(((np.abs(processed) > .05) != (magnitude > .05)).sum())
+                    for threshold in thresholds:
+                        row[f"cutoff_{threshold:g}_flips_from_float32"] = int(
+                            ((np.abs(processed) > threshold) != (magnitude > threshold)).sum())
                 rows.append(row)
                 histograms[(split, anomaly, stage)] += np.histogram(magnitude[magnitude > 0], bins=histogram_edges)[0]
             category = ("empty" if not np.any(processed) else "below_005" if np.abs(processed).max() <= .05

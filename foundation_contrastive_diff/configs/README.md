@@ -4,6 +4,82 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Candidate Threshold Components
+
+The local comparison of0.001,0.01,0.02 is in
+../results/gt_threshold_comparison_20261018_001_01_02_final/index.md.
+Full train/val support and amplitude retention come from the saved18572pair audit;
+exact sign-separated component counts/overlays currently cover only three actual
+cached TRAIN examples. The old full-cohort audit lacks CC counts at these cutoffs.
+Do not mistake example component counts for full-cohort measurements.
+
+This CPU-only campus command fills that gap without model inference, cache reads,
+new training, an alignment re-audit, or held-out test evaluation. It reads GT maps,
+applies the current512/k3/horizontal-flip preprocessing and simulated cache float16,
+and measures positive/negative area, components, tiny components under5/50pixels,
+lost signs/maps, mixed-sign pairs, class balance, quantization changes, and per-type
+summaries. Components are8-connected and sign-separated; exact-cutoff values are
+background. The0.0001 component measurements retain a current-target baseline.
+No components are removed and no normalization/targets on disk are modified.
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+AUDIT_OUT="$PWD/results/gt_cc_thresholds_$(date +%Y%m%d_%H%M%S)"
+python -u -m evaluation.audit_gt \
+	--dataset-root /cs/labs/josko/sahar_aharon/fcd_train \
+	--out-dir "$AUDIT_OUT/audit" --splits train val \
+	--img-size 512 --rotation-k 3 --flip-horizontal \
+	--thresholds 0.001 0.01 0.02 \
+	--component-thresholds 0.0001 0.001 0.01 0.02 \
+	--overlays-per-group 0 --no-save-arrays && \
+python -u -m evaluation.compare_gt_thresholds \
+	--audit-dir "$AUDIT_OUT/audit" --out-dir "$AUDIT_OUT/comparison" \
+	--thresholds 0.001 0.01 0.02 --publish
+```
+
+Run in a separate terminal while existing training continues. Audit issues stop
+the comparison/publication. The publisher requires a dedicated parent containing
+only its source audit and new comparison; it publishes ONLY that parent, not all
+results. It rejects artifacts at/above95MB and requires main. No source scans,
+source NIfTIs, clinical annotations, arrays, caches or checkpoints are uploaded.
+The CSV contains source paths/hashes and measurements, not source image arrays.
+No GPU allocation is needed, though shared-storage I/O may compete with training.
+After the command pushes, pull locally and inspect comparison/index.md and
+comparison/summary.csv. Do not select a cutoff using the held-out test split.
+
+### Three-Class Cross-Entropy
+
+Cross-entropy penalizes assigning low probability to the correct pixel class:
+`loss(pixel) = -log(p_correct)` (optionally class-weighted). Correct-class
+probabilities0.9 and0.1 give losses approximately0.105 and2.303. Softmax converts
+three unrestricted model logits to probabilities summing to1. Train with logits,
+not pre-softmaxed probabilities or the existing signed tanh score.
+
+For a chosen threshold t, map the existing continuous GT to integer classes:
+0=unchanged when abs(GT)<=t, 1=positive when GT>t, 2=negative when GT<-t.
+Use the existing sign convention; these are change directions, not pathology
+types. This requires a three-logit final projection without tanh, class targets
+of shape[B,H,W], CrossEntropyLoss with nonzero background supervision, and new
+checkpoint/config/resume guards. Start with an explicit CE-only baseline; set
+any class weights from training data only. Do not copy Lin's39:1 ratio blindly.
+Optionally compare classwise Dice later, separately from threshold selection.
+
+Keep RAD-DINO frozen and reuse the unchanged input-feature cache. Use a fresh
+head/run, not a mid-run target swap or overwritten regression checkpoint. Retain
+all three probabilities for review; an explicit signed export can be
+`p_positive - p_negative` in[-1,1]. Unchanged and uncertain opposite directions
+can both produce a near-zero signed score, so review probabilities too. Preserve
+the existing inverse-coordinate transform and fixed comparison references; a0.5
+cutoff on this new score is not guaranteed to match the old false-positive rate.
+Test class boundaries, both signs, all-background samples, finite loss/gradients,
+frozen-encoder invariance, and native-coordinate export before campus training.
+No cross-entropy training implementation has been enabled by this audit.
+
 ## Exact Input And GT Export
 
 This is a fresh, model-free check of the CURRENT corrected cache configuration,
