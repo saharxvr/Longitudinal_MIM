@@ -35,6 +35,55 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Fresh campus training samples retrieved and inspected.**
+  Pulled campus commit245c65ed, containing only results/
+  fcd_orientation_20261018_100044/training_inputs.png (512560 bytes).
+  This is the requested split=train export using rotation_k=3. Inspected all
+  three prior/current rows and compared with the actual clinical encoder-input
+  panel in review_outputs/clinical100_cutoff0001_epoch49_20261018/pair1/review.png.
+  Training samples show the same visually mirrored appearance relative to the
+  conventional chest display, including left-sided cardiac silhouettes. No
+  training laterality markers are visible; this does not establish every case's
+  anatomical orientation. Decoded RGBA pixels are EXACTLY identical to the earlier
+  epoch45 cache input_preview.png (1080x1440). Fresh PNG SHA256:
+  784bc5daf0a7ce1dbdc7fb5045249e62d17bc271805a15827ee92e0fcf0d0c08.
+  Both epoch45 and epoch49 metadata specify the same rotated cache, so these
+  observations support shared training/clinical input orientation in the inspected
+  examples, not an epoch49-only flip or demonstrated train/clinical mismatch.
+  A possible frozen-encoder orientation effect remains unmeasured and cannot alone
+  explain the old/new performance difference. GT preview mask is explicitly @0.05,
+  not the new target cutoff. No preprocessing, cached features, weights, prediction
+  coordinates or metrics were changed. Earlier fresh-preview transfer-pending
+  notes are superseded by this completed retrieval and inspection.
+
+- **2026-10-18 - Campus artifact transfer must use Git; training preview upload authorized.**
+  User explicitly requires artifacts needed from campus to be pushed to Git for
+  local retrieval, rather than requested as private chat attachments. Saved this
+  workflow preference in persistent user memory. This explicitly supersedes the
+  earlier private-only instruction for the new fcd_orientation_*/training_inputs.png
+  preview. Prepared exact-file staging/commit/push commands, excluding unrelated
+  files. Actual campus push and fresh-preview inspection remain pending.
+
+- **2026-10-18 - Training-orientation preview found; previous epoch45 shares epoch49 inputs.**
+  Inspected the existing campus-exported review_outputs/
+  rot90cw_mask_fp075_val_best_20261017_102112/input_preview.png: three paired
+  dataset inputs rendered directly, without display transpose, at rotation_k=3.
+  Several cardiac silhouettes appear on the image left, consistent with mirroring
+  relative to the conventional chest display; no laterality markers are visible,
+  so this is not definitive anatomical left/right verification. The preview alone
+  does not identify its split or individual pair IDs. Old epoch45 clinical metadata
+  and new epoch49 metadata both record no_cache=false, rotation_k=3 and the same
+  fcd_cache_last1_rot90cw_inference cache. Thus the previous foundation model used
+  the same input-orientation convention, not a new epoch49-only transformation.
+  Earlier unrotated models and Itamar are not covered by this comparison.
+  Prepared a campus command using LongitudinalPairDataset(split="train",
+  rotation_k=3) and the existing save_input_preview helper to export three distinct
+  training cases privately, without loading the encoder or modifying the cache.
+  Fresh campus execution and transfer remain pending; do not commit preview images.
+  The helper's GT mask column is explicitly thresholded at0.05, not the new
+  epoch49 training cutoff0.0001; the scan inputs are common to both models.
+  No preprocessing, predictions, evaluation metrics or trained weights changed.
+
 - **2026-10-18 - New epoch49 visual reviews rendered; mirrored encoder input identified.**
   User requested the same visual reviews as old epoch45, then noticed mirroring in
   the new image. Generated all100 local cases in review_outputs/
