@@ -22,6 +22,56 @@ from training.cache_features import slice_last_layer_cache
 
 
 class TrainingDiagnosticsTests(unittest.TestCase):
+    def test_validation_total_matches_active_training_objective(self):
+        class FixedHead(torch.nn.Module):
+            def forward(self, *inputs):
+                return torch.tensor([[[[.8, .7, -.2, .1]]]]), None
+
+        gt = torch.tensor([[[[.04, -.2, .00001, 0.]]]])
+        batch = dict(p_prior=torch.zeros(1, 1, 1), p_curr=torch.zeros(1, 1, 1),
+                     cls_prior=torch.zeros(1, 1), cls_curr=torch.zeros(1, 1),
+                     gt_diff=gt, is_pathology=[1])
+        options = dict(target_mode="signed_mask", target_threshold=.0001,
+                       background_weight=.75, tau=.02, pos_weight=10.,
+                       w_l1=.7, w_l2=1.3, w_dice=.2, w_sign=.4)
+        head = FixedHead()
+        _, expected = change_map_loss(head()[0], gt, **options)
+        actual = trainer.evaluate(head, None, [batch], "cpu", threshold=.5,
+                                  gt_threshold=.05, **options)
+        for key in ("total", "dice", "sign"):
+            self.assertAlmostEqual(actual[f"loss_{key}"], expected[key])
+        self.assertAlmostEqual(actual["l1"], expected["l1"])
+        self.assertAlmostEqual(actual["l2"], expected["l2"])
+
+    def test_printed_metrics_distinguish_sign_cutoffs_and_empty_references(self):
+        from evaluation.training_diagnostics import PredictionDiagnostics
+
+        diagnostics = PredictionDiagnostics([.5], [.0001, .05], target_mode="signed_mask",
+                                            target_threshold=.0001, components=True)
+        gt = torch.tensor([[[[.04, -.2, 0., 0.]]], [[[0., 0., 0., 0.]]]])
+        pred = torch.tensor([[[[-1., 1., 0., 0.]]], [[[.8, 0., 0., 0.]]]])
+        diagnostics.update(pred, gt, dict(is_pathology=[1, 0], pair_id=["change", "empty"]))
+        stream = io.StringIO()
+        with patch("sys.stdout", stream):
+            trainer.print_prediction_metrics(diagnostics, "train", .0001)
+            trainer.print_prediction_metrics(None, "val")
+        text = stream.getvalue()
+        self.assertIn("[train online sampled]", text)
+        self.assertIn("raw_gt_abs>0.05", text)
+        self.assertIn("raw_gt_abs>0.0001", text)
+        self.assertIn("support_dice=1.0000 support_iou=1.0000 signed_dice=0.0000", text)
+        self.assertIn("nuisance_pairs=1 fp_area_mean=0.2500", text)
+        self.assertIn("pooled_signed_F1=0.0000", text)
+        self.assertIn("[val fixed head] overlap diagnostics not collected", text)
+        empty = PredictionDiagnostics([.5], [.05])
+        with patch("sys.stdout", stream):
+            trainer.print_prediction_metrics(empty, "val")
+        self.assertIn("support_dice=n/a", stream.getvalue())
+        with patch.object(sys, "argv", ["train", "--target_mode", "signed_mask",
+                                        "--target_threshold", ".0001"]):
+            args = parse_args()
+        self.assertIn(.0001, trainer.make_diagnostics(args).gt_thresholds)
+
     def test_signed_overlap_empty_references_and_exports(self):
         import csv
         import gzip
@@ -1032,16 +1082,26 @@ class DPTHeadTests(unittest.TestCase):
                          "--plots_folder", str(root / "plots"), "--batch_size", "2",
                          "--accum", "1", "--num_workers", "0", "--device", "cpu",
                          "--dpt_channels", "8"]
-            with patch.multiple(trainer.C, BACKBONE_DIM=16, FEATURE_GRID=5,
-                                IMG_SIZE=32, EMBED_DIM=12), \
-                    patch.object(trainer, "plot_curves"), \
-                    patch.object(trainer, "save_sample_plots"):
+            training_output = io.StringIO()
+            with (
+                patch.multiple(trainer.C, BACKBONE_DIM=16, FEATURE_GRID=5,
+                               IMG_SIZE=32, EMBED_DIM=12),
+                patch.object(trainer, "plot_curves"),
+                patch.object(trainer, "save_sample_plots"),
+                patch("sys.stdout", training_output),
+            ):
                 with patch.object(sys, "argv", arguments + ["--epochs", "1"]):
                     trainer.main()
                 first = torch.load(root / "checkpoints" / "last.pt", weights_only=True)
                 self.assertEqual(first["best_dice"], first["val"]["dice"])
                 with patch.object(sys, "argv", arguments + ["--epochs", "2", "--resume"]):
                     trainer.main()
+            output = training_output.getvalue()
+            self.assertIn("[train online sampled] loss_batch_mean total=", output)
+            self.assertIn("[val fixed head] loss_batch_mean total=", output)
+            self.assertIn("[val checkpoint metric] change_only_support_dice=", output)
+            self.assertIn("[train online sampled] pred_abs>", output)
+            self.assertIn("[val fixed head] pred_abs>", output)
             checkpoint = torch.load(root / "checkpoints" / "last.pt", weights_only=True)
             self.assertEqual(checkpoint["epoch"], 2)
             self.assertEqual(checkpoint["best_dice"], max(first["best_dice"], checkpoint["val"]["dice"]))
@@ -1053,6 +1113,7 @@ class DPTHeadTests(unittest.TestCase):
                     diagnostics = json.loads(report.read_text())
                     self.assertEqual(diagnostics["groups"]["overall"]["pairs"], 2)
                     self.assertEqual(diagnostics["metadata"]["training_health"]["optimizer_steps"], 1)
+                    self.assertIn("total", diagnostics["metadata"]["loss_batch_means"][split])
 
 
 class DPTCrossAttentionTests(DPTHeadTests):

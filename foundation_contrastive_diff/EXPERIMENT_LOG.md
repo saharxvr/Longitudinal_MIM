@@ -35,6 +35,31 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Explicit train/validation objective and metric reporting.**
+  User requested correct losses and metrics printed for BOTH train and val.
+  Validation now computes/reports total and all components with the actual train
+  coefficients, including effective Dice warmup, target cutoff and pixel weights.
+  Epoch headers state the objective; component values are pre-coefficient and
+  loss aggregation is explicitly batch-mean. Detached train/val diagnostics print
+  active-reference pathology macro support Dice/IoU and signed Dice, pooled signed
+  pixel precision/recall, nuisance predicted-area mean/p95/max, sample counts and
+  invalid counts; optional connected-component signed detection F1 is separate.
+  Both primary raw-GT cutoff and signed-mask target cutoff are shown/collected;
+  target0.0001 is NOT mislabeled as checkpointGT0.05. Train is explicitly online
+  sampled/updating-head (not whole-train fixed-head); val is fixed-head. Undefined
+  metrics are n/a, and skipped diagnostic epochs are not reported as zero. Total/
+  component loss summaries persist in diagnostic JSON metadata and val checkpoints;
+  existing metrics.csv schema is preserved for resume compatibility. No loss,
+  gradient, sampling, encoder or best-checkpoint decision changed. Trainer source
+  edits invalidate old orientation approvals: pull before fresh phase1 audit.
+  All seven focused CPU checks passed: active-loss-weight parity; sign reversal,
+  target-cutoff labels, nuisance separation and undefined-reference handling;
+  cached-training/output/resume for last4 DPT, last4 cross-attention and last1
+  cross-attention; diagnostics leave optimizer updates exactly unchanged; original
+  mask-target/raw-GT validation behavior preserved. Touched-file diagnostics clean.
+  Campus execution remains pending; already running trainers do not acquire these
+  logging changes by pulling Git and must not be stopped solely for prettier logs.
+
 - **2026-10-18 - User authorized removal of obsolete last-four/last-one latents.**
   Campus cleanup scope is exactly /cs/labs/josko/sahar_aharon/ directories:
   fcd_cache_last4,fcd_cache_last1,fcd_cache_last1_from_last4,

@@ -168,11 +168,13 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
 @torch.no_grad()
 def evaluate(head, backbone, loader, device, threshold=0.1, tau=0.02, pos_weight=10.0,
              gt_threshold=None, target_mode="continuous", target_threshold=0.05,
-             background_weight=1.0, diagnostics=None):
+             background_weight=1.0, diagnostics=None, w_l1=1.0, w_l2=0.0,
+             w_dice=1.0, w_sign=0.5):
     head.eval()
     gt_threshold = threshold if gt_threshold is None else gt_threshold
     dices, ious, spos, sneg, nuis_fp = [], [], [], [], []
     l1s, l2s, l1ms, l2ms = [], [], [], []
+    loss_components = {key: [] for key in ("total", "dice", "sign")}
     for batch in loader:
         p_prior, p_curr, cls_prior, cls_curr = _tokens_from_batch(batch, backbone, device)
         gt = batch["gt_diff"].to(device)
@@ -185,8 +187,11 @@ def evaluate(head, backbone, loader, device, threshold=0.1, tau=0.02, pos_weight
         gm = (gt.abs() > gt_threshold).float()
         _, comp = change_map_loss(pred, gt, tau=tau, pos_weight=pos_weight,
                                   target_mode=target_mode, target_threshold=target_threshold,
-                                  background_weight=background_weight)
+                                  background_weight=background_weight, w_l1=w_l1, w_l2=w_l2,
+                                  w_dice=w_dice, w_sign=w_sign)
         l1s.append(comp["l1"]); l2s.append(comp["l2"])
+        for key in loss_components:
+            loss_components[key].append(comp[key])
         target = (torch.where(gt.abs() > target_threshold, gt.sign(), torch.zeros_like(gt))
                   if target_mode == "signed_mask" else gt)
         m = target.abs() > tau
@@ -216,7 +221,48 @@ def evaluate(head, backbone, loader, device, threshold=0.1, tau=0.02, pos_weight
             "nuis_fp95": float(torch.quantile(torch.tensor(nuis_fp), 0.95)) if nuis_fp else 0.0,
             "nuis_fp_max": max(nuis_fp, default=0.0),
             "l1": mean(l1s), "l2": mean(l2s),
-            "l1_ch": mean(l1ms), "l2_ch": mean(l2ms)}
+            "l1_ch": mean(l1ms), "l2_ch": mean(l2ms),
+            **{f"loss_{key}": mean(values) for key, values in loss_components.items()}}
+
+
+def print_prediction_metrics(diagnostics, split, target_threshold=None):
+    label = "train online sampled" if split == "train" else "val fixed head"
+    if diagnostics is None:
+        print(f"[{label}] overlap diagnostics not collected this epoch", flush=True)
+        return
+    summary = diagnostics.summary()
+    sweeps = {(row["group"], row["gt_threshold"], row["sign"]): row
+              for row in diagnostics.sweep_rows()
+              if row["prediction_threshold"] == diagnostics.primary_prediction}
+    cutoffs = [diagnostics.primary_gt]
+    if target_threshold is not None and target_threshold not in cutoffs:
+        cutoffs.append(target_threshold)
+
+    def display(value):
+        return "n/a" if value is None else f"{value:.4f}"
+
+    nuisance = summary["groups"]["nuisance"]
+    nuisance_area = nuisance.get("predicted_area", {}).get("mean")
+    for cutoff in cutoffs:
+        support = sweeps.get(("pathology", cutoff, "support"), {})
+        signed = sweeps.get(("pathology", cutoff, "signed"), {})
+        print(f"[{label}] pred_abs>{diagnostics.primary_prediction:g} raw_gt_abs>{cutoff:g} | "
+              f"pathology_pairs={support.get('pairs', 0):g} "
+              f"active_gt_pairs={support.get('active_reference_pairs', 0):g} | "
+              f"macro_active_gt support_dice={display(support.get('macro_dice'))} "
+              f"support_iou={display(support.get('macro_iou'))} "
+              f"signed_dice={display(signed.get('macro_dice'))} | "
+              f"micro_signed precision={display(signed.get('micro_precision'))} "
+              f"recall={display(signed.get('micro_recall'))} | "
+              f"nuisance_pairs={nuisance['pairs']} fp_area_mean={display(nuisance_area)} "
+              f"fp_area_p95={display(nuisance.get('predicted_area_p95'))} "
+              f"fp_area_max={display(nuisance.get('predicted_area_max'))} "
+              f"invalid_pairs={summary['invalid_pairs']}", flush=True)
+    if diagnostics.components:
+        pathology = summary["groups"]["pathology"]
+        print(f"[{label}] component_detection raw_gt_abs>{diagnostics.primary_gt:g} "
+              f"pooled_signed_F1={display(pathology.get('component_all_pooled_f1'))} "
+              f"invalid_pairs={summary['invalid_pairs']}", flush=True)
 
 
 @torch.no_grad()
@@ -421,8 +467,11 @@ def parse_args():
 
 
 def make_diagnostics(args):
+    gt_thresholds = list(args.diagnostics_gt_thresholds)
+    if args.target_mode == "signed_mask":
+        gt_thresholds.append(args.target_threshold)
     return PredictionDiagnostics(
-        args.diagnostics_pred_thresholds, args.diagnostics_gt_thresholds,
+        args.diagnostics_pred_thresholds, gt_thresholds,
         primary_prediction=args.eval_threshold,
         primary_gt=args.eval_threshold if args.eval_gt_threshold is None else args.eval_gt_threshold,
         target_mode=args.target_mode, target_threshold=args.target_threshold,
@@ -518,9 +567,14 @@ def main():
         va = evaluate(head, backbone, val_loader, device, threshold=args.eval_threshold,
                       tau=args.tau, pos_weight=args.pos_weight, gt_threshold=args.eval_gt_threshold,
                       target_mode=args.target_mode, target_threshold=args.target_threshold,
-                      background_weight=args.background_weight, diagnostics=val_diagnostics)
+                      background_weight=args.background_weight, diagnostics=val_diagnostics,
+                      w_l1=args.w_l1, w_l2=args.w_l2, w_dice=w_dice_eff, w_sign=args.w_sign)
         if track:
             metadata = dict(run_config=vars(args), effective_w_dice=w_dice_eff,
+                            loss_batch_means={
+                                "train": {key: tr[key] for key in ("total", "l1", "l2", "dice", "sign")},
+                                "val": dict(total=va["loss_total"], l1=va["l1"], l2=va["l2"],
+                                            dice=va["loss_dice"], sign=va["loss_sign"])},
                             learning_rate=optimizer.param_groups[0]["lr"],
                             training_health=tr["health"], epoch_seconds=time.perf_counter() - epoch_started,
                             cuda_peak_allocated_bytes=(torch.cuda.max_memory_allocated(device)
@@ -531,12 +585,22 @@ def main():
             print(f"[diagnostics] epoch {epoch}: {len(train_diagnostics.rows)} online train / "
                   f"{len(val_diagnostics.rows)} validation pairs; {directory}", flush=True)
         lr_now = optimizer.param_groups[0]["lr"]
-        print(f"epoch {epoch:03d}/{args.epochs} | lr {lr_now:.2e} | w_dice {w_dice_eff:.2f} | "
-              f"train total {tr['total']:.4f} (l1 {tr['l1']:.4f} l2 {tr['l2']:.4f} dice {tr['dice']:.4f} sign {tr['sign']:.4f}) | "
-              f"val dice {va['dice']:.4f} iou {va['iou']:.4f} l1ch {va['l1_ch']:.4f} l2ch {va['l2_ch']:.4f} "
-              f"sens+ {va['sens_pos']:.3f} sens- {va['sens_neg']:.3f} fp {va['nuis_fp']:.4f} "
-              f"fp95 {va['nuis_fp95']:.4f} fpmax {va['nuis_fp_max']:.4f}",
-              flush=True)
+        print(f"epoch {epoch:03d}/{args.epochs} | lr {lr_now:.2e} | "
+              f"target={args.target_mode} cutoff={args.target_threshold:g} | "
+              f"weights l1={args.w_l1:g} l2={args.w_l2:g} dice={w_dice_eff:g} sign={args.w_sign:g} "
+              f"foreground={1 + args.pos_weight:g} background={args.background_weight:g}", flush=True)
+        for split, values in (("train online sampled", tr), ("val fixed head", va)):
+            print(f"[{split}] loss_batch_mean total={values.get('loss_total', values.get('total')):.6f} "
+                f"weighted_l1={values['l1']:.6f} weighted_l2={values['l2']:.6f} "
+                f"dice_loss={values.get('loss_dice', values.get('dice')):.6f} "
+                f"sign_loss={values.get('loss_sign', values.get('sign')):.6f}", flush=True)
+        primary_gt = args.eval_threshold if args.eval_gt_threshold is None else args.eval_gt_threshold
+        print(f"[val checkpoint metric] change_only_support_dice={va['dice']:.4f} "
+              f"iou={va['iou']:.4f} pred_abs>{args.eval_threshold:g} raw_gt_abs>{primary_gt:g} "
+              f"sensitivity_positive={va['sens_pos']:.4f} sensitivity_negative={va['sens_neg']:.4f}", flush=True)
+        metric_target = args.target_threshold if args.target_mode == "signed_mask" else None
+        print_prediction_metrics(train_diagnostics, "train", metric_target)
+        print_prediction_metrics(val_diagnostics, "val", metric_target)
 
         # Mid-training tracking: append a CSV row + redraw curves every epoch.
         log_metrics_row(metrics_csv, {

@@ -4,6 +4,37 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Epoch Reporting
+
+Each epoch prints train/validation total loss and pixel-weighted L1/L2, soft-Dice
+loss and sign penalty, using the SAME active coefficients (including Dice warmup),
+target transform and foreground/background weights. Coefficients are printed in
+the epoch header; the component numbers are before multiplying by those
+coefficients. Losses are means of batch losses, not sample-weighted epoch means.
+Total/component losses are also saved in diagnostic JSON metadata and validation
+checkpoint statistics. The existing metrics.csv column schema stays unchanged.
+
+When diagnostics are enabled for an epoch, both splits print pathology-only macro
+support Dice/IoU and signed Dice over pairs with active reference support, pooled
+signed pixel precision/recall, and nuisance predicted-area mean/p95/max. Undefined
+ratios print `n/a`; empty-reference pairs never earn a perfect diagnostic Dice.
+Connected-component signed detection F1 is printed when components are enabled;
+this is not pixel F1. Train values are ONLINE SAMPLED observations from updating
+weights (with sampler repeats), NOT a fixed-head evaluation of the whole train set.
+Validation uses the fixed end-of-epoch head. Disabled/skipped diagnostics are
+explicitly marked as not collected, never printed as zero.
+
+Prediction and raw-GT cutoffs are printed on every metric line. Signed-mask runs
+always collect and print the target cutoff as well as the primary cutoff. For the
+upright run these are prediction0.5, targetGT0.0001 and primaryGT0.05. The separately
+labeled validation checkpoint metric retains the ORIGINAL change-only support
+Dice definition and raw-GT0.05 threshold, including its existing handling of empty
+pathology references. Reporting does not change losses, gradients, sampling,
+checkpoint selection or the frozen encoder. Because the approved audit hashes the
+trainer code, pull reporting changes BEFORE phase1; any old approval must be
+regenerated/reviewed after a trainer edit. An already running Python trainer will
+not acquire new logging by pulling Git.
+
 ## Remove Obsolete Feature Caches
 
 The user authorized removing old last-four and last-one latent caches with the
