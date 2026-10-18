@@ -35,6 +35,52 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - FULL candidate-threshold CC audit retrieved and verified.**
+  Background watcher detected campus pushd989b2e0; pulled ff-only. Actual
+  results/gt_cc_thresholds_20261018_203559 contains all18572pairs
+  (train16464/val2108),55716native/float32/simulated-float16 rows, issues0.
+  Verified expected split coverage, no invalid/out-of-range values,512/k3/flip
+  configuration, source CSV/report and comparison-code hashes (allowing only
+  Git LF/Windows CRLF byte normalization), and EXACTLY recomputed all36
+  comparison summaries from per_pair.csv. Manifest78d18b1c...54468 matches
+  current study. This is GT-only preprocessing with simulated cache float16,
+  not an independent read of every actual cache record; no alignment re-audit
+  or test-split evaluation. The monitoring process has stopped successfully.
+  Validation sign-separated8-connected CC totals, including current baseline:
+
+  | Cutoff | Positive CC | Negative CC | Total CC | CC per active map | CC under50px | Under50px foreground pixel fraction | Maps erased |
+  |---|---|---|---|---|---|---|---|
+  | 0.0001 | 28471 | 7296 | 35767 | 27.662 | 21785 | 0.2574% | 0 |
+  | 0.001 | 8348 | 4367 | 12715 | 9.834 | 4264 | 0.0703% | 0 |
+  | 0.01 | 3777 | 3984 | 7761 | 6.044 | 745 | 0.0196% | 9 |
+  | 0.02 | 9233 | 10598 | 19831 | 15.505 | 12748 | 0.2794% | 14 |
+
+  Train total CC269053 ->91899/56098/146479 at0.001/0.01/0.02;
+  erased0/42/82 of9508originally nonempty maps. Validation erased0/9/14
+  of1293; all9/14 are pneumothorax. Positive/negative/background PIXEL areas
+  over ALL2108validation images (including815nuisance controls):
+  0.001=7.6234/7.4725/84.9041%;0.01=6.4478/6.3154/87.2369%;
+  0.02=5.4139/5.2064/89.3796%. Train0.001=6.9758/7.1862/85.8379%.
+  Positive/negative pixel classes are broadly balanced with each other, NOT
+  with background. Do not confuse sign-separated CC counts with pixel balance.
+  Validation CC under50px fractions33.535/9.599/64.283%; their corresponding
+  foreground pixel fractions0.0703/0.0196/0.2794% are small. Thus fragmentation
+  can dominate component metrics while barely affecting pixel area; no automatic
+  GT component deletion is justified. Higher cutoff can split broad regions.
+  By type, consolidation and fluid_overload are EXACTLY unchanged between
+  0.001 and0.01; at0.02 validation CC rise2248->4010 and2726->13486.
+  Effusion CC4066->1274->1146; pneumothorax3675->1513->1189. Entire-sign
+  losses also occur before whole-map loss (potential weak tails, not proven
+  disappearance of true lesions); retain paired visual review before choosing.
+  Recommendation:0.001 conservative next target baseline, markedly fewer CC
+  than current0.0001 without erasing any nonempty map.0.01 is a separate
+  cleaner-component ablation with explicit faint-pneumothorax tradeoff; avoid
+  0.02 as default because fragmentation rises and more maps disappear. This
+  is target-quality evidence, NOT proof of improved learned/clinical results.
+  Keep current running training unchanged. Any future three-class CE run must
+  use fresh3-logit head/checkpoint guards, background supervision, frozen
+  encoder/same feature cache and fixed references; no CE implemented/launched.
+
 - **2026-10-18 - Requested0.001/0.01/0.02 GT component/target comparison.**
   Extended audit_gt sign-separated8-connected component statistics with per-sign
   pixel area, tiny-component pixel mass, largest-component fraction, and each
