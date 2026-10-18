@@ -35,6 +35,22 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Campus constants mismatch resolved as comment-only.**
+  Pulledb1a7d951: results/orientation_source_20261018_112551/constants.py and
+  constants.diff. The exported source exactly matches the original preflight's
+  constants SHA256be9e6bc7c28d8d6d2456aa34636eea1f14794bb99500905a5992d0467937931e.
+  Full AST comparison against tracked constants.py is IDENTICAL: only the inline
+  comment beside LAST_N_LAYERS=1 was removed. No parameter/encoder/feature-size
+  change occurred; do not overwrite the campus file to restore a cosmetic comment.
+  This resolves the unexplained constants blocker, not the stale trainer hash.
+  Fresh phase1 is still required after ad10c245 logging changes; preserve the old
+  audit/provenance and withhold phase2 approval until the new artifact is verified.
+  For that next audit, compare constants against this exact reviewed campus
+  snapshot (be9e6bc7...), not only Git's cosmetically different constants blob;
+  remaining code must match the current reviewed trainer/preprocessing files.
+  Existing complete phase1 Bash command syntax verified. No campus audit, feature
+  extraction or training was started from this PC; next user action is phase1.
+
 - **2026-10-18 - Retrieved/reviewed campus upright preflight; approval withheld.**
   Pulled34204688: results/orientation_preflight_20261018_104010. Campus report:
   selected=audited=alignment_verified18572 (train16464,val2108),issues0;
