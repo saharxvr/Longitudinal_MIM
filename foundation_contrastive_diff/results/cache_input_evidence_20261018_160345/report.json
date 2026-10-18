@@ -1,0 +1,230 @@
+{
+  "config_path": "/cs/labs/josko/sahar_aharon/repos/foundation_contrastive_diff/configs/last1_upright_mask_thr0p0001_fp075.yaml",
+  "config_sha256": "0e2f27cbc3154de9fc4eddcf602bd98b7e94f681a46dae8229fe9925f7de5427",
+  "config": {
+    "dataset_root": "/cs/labs/josko/sahar_aharon/fcd_train",
+    "cache_dir": "/cs/labs/josko/sahar_aharon/fcd_cache_last1_upright_inference",
+    "save_folder": "/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_mask_thr0p0001_fp075/checkpoints",
+    "plots_folder": "/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_mask_thr0p0001_fp075/plots",
+    "head": "dpt_cross_attention",
+    "dpt_channels": 96,
+    "feat_last_k": 1,
+    "rotation_k": 3,
+    "flip_horizontal": true,
+    "seed": 42,
+    "epochs": 60,
+    "batch_size": 8,
+    "accum": 4,
+    "lr": 0.0003,
+    "weight_decay": 0.01,
+    "warmup_epochs": 2.0,
+    "grad_clip": 1.0,
+    "num_workers": 0,
+    "balanced": true,
+    "target_mode": "signed_mask",
+    "target_threshold": 0.0001,
+    "background_weight": 0.75,
+    "w_l1": 1.0,
+    "w_l2": 1.0,
+    "w_dice": 0.0,
+    "w_sign": 0.0,
+    "dice_warmup_epochs": 0,
+    "pos_weight": 10.0,
+    "tau": 0.02,
+    "eval_threshold": 0.5,
+    "eval_gt_threshold": 0.05,
+    "diagnostics": true,
+    "diagnostics_every": 1,
+    "diagnostics_gt_thresholds": [
+      0.0,
+      0.0001,
+      0.02,
+      0.05
+    ],
+    "diagnostics_components": true
+  },
+  "cache_config": {
+    "backbone": "microsoft/rad-dino",
+    "last_n_layers": 1,
+    "rotation_k": 3,
+    "image_size": 512,
+    "flip_horizontal": true,
+    "manifest_sha256": "78d18b1c8c6c34aae2023f2c8342fba28b8109ca0343f81be4939ee849c54468"
+  },
+  "cache_config_sha256": "1625c6929a7a326e4049140f0b76b5f07abc764ec88a9b63088fcad69a7c88ed",
+  "active_run_config_sha256": "61120b044da564e471c3318c339b8bfff5bf1c85ce54a27d0e1394bae25e79fb",
+  "encoder_mean": [
+    0.5307000279426575,
+    0.5307000279426575,
+    0.5307000279426575
+  ],
+  "encoder_std": [
+    0.2583000063896179,
+    0.2583000063896179,
+    0.2583000063896179
+  ],
+  "encoder_input_size": 518,
+  "model_weights_loaded": false,
+  "inference_performed": false,
+  "embeddings_created": false,
+  "existing_cache_modified": false,
+  "examples": [
+    {
+      "kind": "drr_train",
+      "pair_id": "train_10193_a_2/pair0/variant0",
+      "manifest_index": 0,
+      "folder": "drr_1",
+      "source_paths": {
+        "prior_path": "/cs/labs/josko/sahar_aharon/fcd_train/train_10193_a_2/pair0/variant0/prior.nii.gz",
+        "current_path": "/cs/labs/josko/sahar_aharon/fcd_train/train_10193_a_2/pair0/variant0/current.nii.gz",
+        "diff_map_path": "/cs/labs/josko/sahar_aharon/fcd_train/train_10193_a_2/pair0/variant0/diff_map.nii.gz"
+      },
+      "source_sha256": {
+        "prior_path": "94810ff02c241f4361482eb2b80652f57ed322e16c7557e8d24f8eaff1429d79",
+        "current_path": "8563aff2bb003869d95cc4bfc6182122c192325c108265c1cd3fb391367cebb7",
+        "diff_map_path": "34ae7b895a1637d30d693a39d2347802ed1ee5fcaeb2b25fd899b902c02410f6"
+      },
+      "cached_gt_matches_fresh_half": true,
+      "cached_record": "/cs/labs/josko/sahar_aharon/fcd_cache_last1_upright_inference/train_10193_a_2/pair0/variant0/feat.pt",
+      "cached_record_sha256": "61492e367a921638b263fc80a014a3a72de2d8883d322ca2fc4baf3cdcb92568",
+      "loss_target_verified_by_actual_loss": true,
+      "loss_target_pixels": 110637,
+      "checkpoint_reference_pixels": 67745
+    },
+    {
+      "kind": "drr_train",
+      "pair_id": "train_110_a_2/pair1/variant0",
+      "manifest_index": 12,
+      "folder": "drr_2",
+      "source_paths": {
+        "prior_path": "/cs/labs/josko/sahar_aharon/fcd_train/train_110_a_2/pair1/variant0/prior.nii.gz",
+        "current_path": "/cs/labs/josko/sahar_aharon/fcd_train/train_110_a_2/pair1/variant0/current.nii.gz",
+        "diff_map_path": "/cs/labs/josko/sahar_aharon/fcd_train/train_110_a_2/pair1/variant0/diff_map.nii.gz"
+      },
+      "source_sha256": {
+        "prior_path": "f5bddcaac2f30ae097ed8978287bf79000187a64b05482dd8e15aa7015c66508",
+        "current_path": "6ba08864c7d5c81ac12ef5465afd32b7252420d7f120fb3ad82381980a8819bb",
+        "diff_map_path": "56f549c092fb616dce5d4fc86c533a0072f2601d108ea751a1c997bb078c6cc2"
+      },
+      "cached_gt_matches_fresh_half": true,
+      "cached_record": "/cs/labs/josko/sahar_aharon/fcd_cache_last1_upright_inference/train_110_a_2/pair1/variant0/feat.pt",
+      "cached_record_sha256": "78a620011d5a9af25439e49212d4db73d997c75d204952d07b6bf6c200e6a579",
+      "loss_target_verified_by_actual_loss": true,
+      "loss_target_pixels": 79311,
+      "checkpoint_reference_pixels": 25934
+    },
+    {
+      "kind": "drr_train",
+      "pair_id": "train_11206_a_2/pair0/variant0",
+      "manifest_index": 90,
+      "folder": "drr_3",
+      "source_paths": {
+        "prior_path": "/cs/labs/josko/sahar_aharon/fcd_train/train_11206_a_2/pair0/variant0/prior.nii.gz",
+        "current_path": "/cs/labs/josko/sahar_aharon/fcd_train/train_11206_a_2/pair0/variant0/current.nii.gz",
+        "diff_map_path": "/cs/labs/josko/sahar_aharon/fcd_train/train_11206_a_2/pair0/variant0/diff_map.nii.gz"
+      },
+      "source_sha256": {
+        "prior_path": "ed134787ea92c4902a02b3ab8a0a264e19f860a4a0ddae23faf4dc31843dec0b",
+        "current_path": "afcfcfa541c811a2278dc2f2498ee4d984be6ad75731cee530624527139ec11e",
+        "diff_map_path": "bd2a4cb46c2183389bdd225230e5314a24e50c04d0ab9693b0d32aad593ba459"
+      },
+      "cached_gt_matches_fresh_half": true,
+      "cached_record": "/cs/labs/josko/sahar_aharon/fcd_cache_last1_upright_inference/train_11206_a_2/pair0/variant0/feat.pt",
+      "cached_record_sha256": "b0c684f226bf119ba32d997bd3de4e53be5d050bf0efa7e52c91ab3726dcadfc",
+      "loss_target_verified_by_actual_loss": true,
+      "loss_target_pixels": 105805,
+      "checkpoint_reference_pixels": 28755
+    },
+    {
+      "kind": "clinical_test",
+      "pair_id": "pair1",
+      "folder": "clinical_pair1",
+      "source_paths": {
+        "prior": "/cs/labs/josko/sahar_aharon/repos/python_files/annotation tool/Pairs1/pair1/4A.nii.gz",
+        "current": "/cs/labs/josko/sahar_aharon/repos/python_files/annotation tool/Pairs1/pair1/4B.nii.gz"
+      },
+      "source_sha256": {
+        "prior": "c998bc334f29907a22d8aa27de37d04db8080e5711677fe984ccfb195204c7f1",
+        "current": "bfac78929ff3d8b033cd028db6df9da6ef949b2ccc055eab68199aaa18edd1e6"
+      },
+      "annotation_sha256": {
+        "Avi": "ddf492e61470a18c92a84a1efa2e758d99f7c40e8930ed4d445c168651cb94a2",
+        "Benny": "56e6a85f2a7aa12d748de51549d4cdd60eff53e0588f9b7a4a051be0c2e7767a",
+        "Sigal": "6c67f049daa9122490ed6b2a6c6b8ef719ef250d38bf0144e6a46ea115edfc5e",
+        "Smadar": "136541a96fffb4528c51a8155a5170aa2ad3c7180639a37e74332c319da74105",
+        "Nitzan": "e1ed132130a0ebe7cab12da0d2937f4a6ceea3659891d1af6a259f2293eba946"
+      },
+      "annotation_warnings": {},
+      "native_measurement_shape": [
+        768,
+        768
+      ],
+      "clinical_loader_matches_cache_transform": true,
+      "model_space_reference_is_display_only": true
+    },
+    {
+      "kind": "clinical_test",
+      "pair_id": "pair2",
+      "folder": "clinical_pair2",
+      "source_paths": {
+        "prior": "/cs/labs/josko/sahar_aharon/repos/python_files/annotation tool/Pairs1/pair2/25A.nii.gz",
+        "current": "/cs/labs/josko/sahar_aharon/repos/python_files/annotation tool/Pairs1/pair2/25B.nii.gz"
+      },
+      "source_sha256": {
+        "prior": "06095c628dcf7d4348a472a27e6830ecda6439afbda413bdcd4a5047b9bc5d8d",
+        "current": "30381784b004d09c68762959a4352726c7f43f1857eb03fc62beb677859f237f"
+      },
+      "annotation_sha256": {
+        "Avi": "4bdabb16b34b6dec899fc4c25aa3a613a7e3062fc415af3a7b0731237ba0864e",
+        "Benny": "6a77b0acbd3c81056f3310ecd19b902d8b1d75d492a488859bbf8f24a0bdc1f4",
+        "Sigal": "8a166d8944da3ae7e7a68ecc158c2cc4bc413bb293ae5727066080f34e8209e1",
+        "Smadar": "9716f0b8fc69712da7e27ae87f8240915816f10903e63e2b98550bb907c20fd3",
+        "Nitzan": "fc6321d59fe15dfab1354e161f215469eeb80784ca9032e891eb90115df06f92"
+      },
+      "annotation_warnings": {},
+      "native_measurement_shape": [
+        768,
+        768
+      ],
+      "clinical_loader_matches_cache_transform": true,
+      "model_space_reference_is_display_only": true
+    },
+    {
+      "kind": "clinical_test",
+      "pair_id": "pair3",
+      "folder": "clinical_pair3",
+      "source_paths": {
+        "prior": "/cs/labs/josko/sahar_aharon/repos/python_files/annotation tool/Pairs1/pair3/B3.nii.gz",
+        "current": "/cs/labs/josko/sahar_aharon/repos/python_files/annotation tool/Pairs1/pair3/B4.nii.gz"
+      },
+      "source_sha256": {
+        "prior": "4ac8f2195d2067b6cd987548e753c70488e61a0f0018a836d08630202810d615",
+        "current": "68912613c19e339d6c606d92a79ce993f5c695bfa15d7c670de8d9af0fc28c04"
+      },
+      "annotation_sha256": {
+        "Avi": "efffa8c9277368eb570a52e87667af36168e91ec4596d7f6479bc1b7ef451b3b",
+        "Benny": "1299c2140cb4f84e6994adfd05be444bbf28094de6863d372b32e5dc88e80f48",
+        "Sigal": "8c1cf8b1d324639c9187fe975e494da975294ab75cff6f7df513d2324cc17065",
+        "Smadar": "80503c9df870e3f0a609aa12d776000a0812a10f2081822c33058433c2f21531",
+        "Nitzan": "5a89628f5e5e8265174ff2f166ce2603e8ce7bcdc0e9b86db2704689f2b826a1"
+      },
+      "annotation_warnings": {},
+      "native_measurement_shape": [
+        768,
+        768
+      ],
+      "clinical_loader_matches_cache_transform": true,
+      "model_space_reference_is_display_only": true
+    }
+  ],
+  "code_sha256": {
+    "training/cache_features.py": "2a047c95d912c3d05abfec64bcc7afe09b936181a8668043cb9ab00f931a9e71",
+    "datasets/pair_dataset.py": "c63d3b1c7c06a02b8e8d5cfa9e7ef3eca525b1d898a1a215fb4857c388a88f1c",
+    "models/backbone.py": "d44c1a5d956605b8217188da91071b1df3dd6063fb68b01d2c16f74b004cc7c5",
+    "evaluation/evaluate_clinical.py": "607a23fbfb5f9b88e580b462d0a1440cd65f68277e49acfc4c5190f9700bdd40",
+    "training/train_foundation_diff.py": "0120a93762b10fe4e1d8960688bfbac7a245fb190076ab6dce9cbbe914a474f7",
+    "losses/change_map_losses.py": "57161dca1f158f5bc22bf5e90160c158f346dbde582d987b77083c333b264a84",
+    "evaluation/export_cache_input_evidence.py": "c220e6c4847f86cb074ed938816028c90b9da320686f733e7438d320c26fe7bf"
+  },
+  "note": "PNG encoder views are de-normalized for visibility; exact normalized tensors are in NPZ. Clinical annotations are native-space references, not dense ground truth. No prediction maps or historical model outputs are used."
+}
