@@ -35,6 +35,32 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Retrieved/reviewed campus upright preflight; approval withheld.**
+  Pulled34204688: results/orientation_preflight_20261018_104010. Campus report:
+  selected=audited=alignment_verified18572 (train16464,val2108),issues0;
+  rotation3+horizontalflipTrue,target0.0001. Provenance records clinical100pairs,
+  200source hashes and500annotation hashes. At training float32, cutoff0.0001
+  retains93.0516%/93.1807% pooled nonzero support (train/val), no nonempty pair
+  entirely removed; cutoff0.05 instead removes430train/56val nonempty pairs.
+  Inspected all37 real previews (all prior/current/continuous overlay/actual
+  signed-target panels via temporary review sheets, plus three originals). No
+  obvious extra transpose/mirror or GT placement mismatch observed. Some cases
+  have severely cropped source fields of view (including train_1022_a_3,
+  train_1022_a_5,train_1022_a_6); targets can be broad or fragmented. This is NOT
+  expert biological-label validation or proof of laterality for unmarked scans.
+  Verified50 published hash checks against exact Git bytes and PNG files:
+  48match, including config/report/all37panels. TWO code mismatches block approval:
+  training/train_foundation_diff.py hash7bb2a6273138c02126bf2a58371c4b95900bc248fbd485a34c17402c4f71fa50
+  matches the pre-ad10c245 trainer (96d61a83/a4f2cd71), not the new logging trainer.
+  constants.py campus hashbe9e6bc7c28d8d6d2456aa34636eea1f14794bb99500905a5992d0467937931e
+  differs from trackedf38f94be2416a6a769f987b9a8a7c0dd8dfb9351f9b2e75c294cd4e2150627bb,
+  and is NOT explained by LF/CRLF conversion of the compared revisions. Actual
+  campus constants contents are not yet available; do not guess or overwrite them.
+  NEXT: exact-path Git export of current campus constants.py and its diff for
+  inspection, then a fresh approved preflight using current trainer/code. Do not
+  patch the old provenance hash or issue phase2 approval from this artifact.
+  No training/cache jobs started/stopped, caches removed or source data modified.
+
 - **2026-10-18 - Explicit train/validation objective and metric reporting.**
   User requested correct losses and metrics printed for BOTH train and val.
   Validation now computes/reports total and all components with the actual train
