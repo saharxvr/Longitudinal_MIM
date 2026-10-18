@@ -35,6 +35,27 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - User explicitly requested skipping repeated audit and moving on.**
+  Reuse the already inspected orientation_preflight_20261018_104010 (18572aligned,
+  zeroissues,all37previews reviewed), not an unaudited run. Added optional explicit
+  --reviewed-code-update plus exact artifact SHA256 to pipeline approval. This
+  binds the original approved preflight digest and exact old/new hashes of ONLY
+  training/train_foundation_diff.py and training/run_upright_clinical.py. Default
+  strict approval behavior is unchanged. Config/manifest/report/panels/all other
+  code remain checked; original audit/provenance stays immutable. Campus constants
+  remain the exact inspected comment-only variant. The separate review artifact
+  results/orientation_code_review_20261018/reviewed_code_update.json documents
+  the decision; its record/digest persists in final clinical verification.json.
+  New focused guard test passes: explicit review accepts precisely reviewed code,
+  rejects mismatched review hash/parent audit/old code or non-trainer overrides,
+  and still rejects config/report/panel/manifest/new-code tampering. Existing
+  default approval guard test also passes. Actual artifact verified against all
+  locally available old/new code/config/report/all37PNG hashes; campus manifest
+  and clinical scans remain runtime checks. README provides exact GPU campus
+  phase2 command: corrected cache then training,clinical100,F1,scopedGitpush. No
+  repeat exhaustive audit required; no encoder fine-tuning or global guard bypass.
+  Campus training has not been launched from this PC.
+
 - **2026-10-18 - Campus constants mismatch resolved as comment-only.**
   Pulledb1a7d951: results/orientation_source_20261018_112551/constants.py and
   constants.diff. The exported source exactly matches the original preflight's

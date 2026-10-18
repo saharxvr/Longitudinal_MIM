@@ -104,7 +104,8 @@ def preflight(config_path, destination, clinical_root):
     return approval_hash(provenance)
 
 
-def validate_approval(config_path, destination, approved_hash):
+def validate_approval(config_path, destination, approved_hash, reviewed_code_update=None,
+                      reviewed_code_update_sha256=None):
     provenance = json.loads((destination / "orientation_provenance.json").read_text())
     if not approved_hash or approval_hash(provenance) != approved_hash:
         raise ValueError("Review the real DRR/GT overlays and supply their exact approval hash before training")
@@ -112,7 +113,22 @@ def validate_approval(config_path, destination, approved_hash):
         raise ValueError("Training configuration changed since the approved audit")
     if sha256(destination / "report.json") != provenance["audit_sha256"]:
         raise ValueError("Approved audit report changed")
-    for name, digest in provenance["code_sha256"].items():
+    expected_code = dict(provenance["code_sha256"])
+    review = None
+    if reviewed_code_update is not None or reviewed_code_update_sha256 is not None:
+        if reviewed_code_update is None or sha256(reviewed_code_update) != reviewed_code_update_sha256:
+            raise ValueError("Reviewed code-update artifact hash mismatch")
+        review = json.loads(Path(reviewed_code_update).read_text())
+        if review["approved_preflight_sha256"] != approved_hash:
+            raise ValueError("Code review belongs to a different preflight")
+        allowed = {"training/train_foundation_diff.py", "training/run_upright_clinical.py"}
+        if not review["code_updates"] or not set(review["code_updates"]).issubset(allowed):
+            raise ValueError("Code review may update only the trainer and pipeline launcher")
+        for name, update in review["code_updates"].items():
+            if expected_code.get(name) != update["previous_sha256"]:
+                raise ValueError(f"Code review does not match audited code: {name}")
+            expected_code[name] = update["reviewed_sha256"]
+    for name, digest in expected_code.items():
         if sha256(ROOT / name) != digest:
             raise ValueError(f"Preprocessing/training code changed after the audit: {name}")
     for name, digest in provenance["panels_sha256"].items():
@@ -121,6 +137,9 @@ def validate_approval(config_path, destination, approved_hash):
     config = load_config(config_path)
     if sha256(Path(config["dataset_root"]) / "manifest_split.jsonl") != provenance["manifest_sha256"]:
         raise ValueError("Dataset manifest changed since approval")
+    if review is not None:
+        provenance = dict(provenance, reviewed_code_update=review,
+                          reviewed_code_update_sha256=reviewed_code_update_sha256)
     return provenance
 
 
@@ -171,9 +190,11 @@ def publish(destination):
     print(f"[publish] pushed only {len(paths)} files under {destination}", flush=True)
 
 
-def train_and_predict(config_path, approved_directory, approved_hash, clinical_root):
+def train_and_predict(config_path, approved_directory, approved_hash, clinical_root,
+                      reviewed_code_update=None, reviewed_code_update_sha256=None):
     config = load_config(config_path)
-    provenance = validate_approval(config_path, approved_directory, approved_hash)
+    provenance = validate_approval(config_path, approved_directory, approved_hash,
+                                   reviewed_code_update, reviewed_code_update_sha256)
     run = Path(config["save_folder"]).parent
     environment = dict(os.environ, HEAD_CONFIG=str(config_path), DATA=config["dataset_root"],
                        CACHE_DIR=config["cache_dir"], RUN=str(run))
@@ -229,6 +250,8 @@ def train_and_predict(config_path, approved_directory, approved_hash, clinical_r
     write_json(destination / "verification.json", dict(
         code_commit=code_commit, approved_preflight=str(approved_directory),
         approved_preflight_sha256=approved_hash, checkpoint_sha256=checkpoint_hash,
+        reviewed_code_update=provenance.get("reviewed_code_update"),
+        reviewed_code_update_sha256=provenance.get("reviewed_code_update_sha256"),
         checkpoint_epoch=best_epoch, prediction_sha256=hashes, pairs_verified=len(hashes),
         geometry="original current-image NIfTI shape and affine; inverse flip before inverse rotation",
         scope="100 clinical transfer pairs; no synthetic held-out test evaluation; no encoder fine-tuning"))
@@ -243,6 +266,8 @@ def main():
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--preflight-dir", type=Path)
     parser.add_argument("--approved-preflight-sha256")
+    parser.add_argument("--reviewed-code-update", type=Path)
+    parser.add_argument("--reviewed-code-update-sha256")
     args = parser.parse_args()
     if args.preflight_only:
         destination = args.preflight_dir or ROOT / "results" / f"orientation_preflight_{datetime.now():%Y%m%d_%H%M%S}"
@@ -263,7 +288,8 @@ def main():
         run.mkdir(parents=True, exist_ok=True)
         with (run / ".upright_pipeline.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            train_and_predict(args.config, args.preflight_dir, args.approved_preflight_sha256, args.clinical_root)
+            train_and_predict(args.config, args.preflight_dir, args.approved_preflight_sha256, args.clinical_root,
+                              args.reviewed_code_update, args.reviewed_code_update_sha256)
 
 
 if __name__ == "__main__":

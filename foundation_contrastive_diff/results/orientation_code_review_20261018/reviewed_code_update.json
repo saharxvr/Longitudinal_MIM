@@ -1,0 +1,25 @@
+{
+  "approved_preflight_sha256": "d43232afe9413a1c7957e83fb2be05f3a640273fd654511b0653da4709fa41e4",
+  "decision": "User authorized skipping the repeated audit. Reuse the reviewed 18572-pair audit and all37 inspected DRR/GT previews. Trainer changes report losses and detached metrics; launcher changes add this hash-bound review and preserve it in clinical verification.",
+  "constants_review": "Audited campus constants match results/orientation_source_20261018_112551/constants.py exactly; executable AST matches tracked constants. Only an inline comment was removed.",
+  "code_updates": {
+    "training/train_foundation_diff.py": {
+      "previous_sha256": "7bb2a6273138c02126bf2a58371c4b95900bc248fbd485a34c17402c4f71fa50",
+      "reviewed_sha256": "0120a93762b10fe4e1d8960688bfbac7a245fb190076ab6dce9cbbe914a474f7"
+    },
+    "training/run_upright_clinical.py": {
+      "previous_sha256": "a60f51708c4e8876adce5407fda5ef0146448232f733820751814095d58b1015",
+      "reviewed_sha256": "9419c78469d969256c4cc3e82988970b8be74f5e5f83f4e9f2ce37f83a88aa13"
+    }
+  },
+  "unchanged_checks": [
+    "configuration",
+    "dataset manifest",
+    "audit report",
+    "all37 overlays",
+    "all other audited code",
+    "clinical source scans and reference annotations",
+    "checkpoint configuration",
+    "all100 output geometry and signed mask checks"
+  ]
+}

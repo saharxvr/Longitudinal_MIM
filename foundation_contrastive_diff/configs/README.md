@@ -32,8 +32,52 @@ Dice definition and raw-GT0.05 threshold, including its existing handling of emp
 pathology references. Reporting does not change losses, gradients, sampling,
 checkpoint selection or the frozen encoder. Because the approved audit hashes the
 trainer code, pull reporting changes BEFORE phase1; any old approval must be
-regenerated/reviewed after a trainer edit. An already running Python trainer will
+regenerated or paired with an explicit hash-bound code review after a trainer edit.
+An already running Python trainer will
 not acquire new logging by pulling Git.
+
+## Reuse Reviewed Audit
+
+The user explicitly authorized skipping the repeated phase1 audit on2026-10-18.
+The actual18572-pair alignment report and ALL37 DRR/GT overlays were already
+reviewed. The campus constants difference was verified comment-only. A separate
+results/orientation_code_review_20261018/reviewed_code_update.json binds this
+decision to the ORIGINAL approval hash and the exact old/new hashes of ONLY the
+trainer reporting change and launcher approval handling. The original report and
+provenance are not rewritten. Configuration, manifest, report, overlays and every
+other code hash must still match; later source changes require a new review.
+Clinical source/annotation checks, checkpoint checks, prediction verification and
+scoped publication remain enabled. The review record is included in the final
+clinical verification.json. No global skip-checks flag is provided.
+
+Run on the campus GPU node to create the corrected cache, train/resume only the
+dedicated upright run, then automatically predict clinical100, evaluate F1 and
+push the derived outputs/reports:
+
+```bash
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_mask_thr0p0001_fp075
+export PREFLIGHT="$PWD/results/orientation_preflight_20261018_104010"
+export REVIEW="$PWD/results/orientation_code_review_20261018/reviewed_code_update.json"
+mkdir -p "$RUN"
+touch "$RUN/pipeline.log"
+python -c "import torch; assert torch.cuda.is_available(); print(torch.cuda.mem_get_info())"
+nohup python -u -m training.run_upright_clinical \
+	--preflight-dir "$PREFLIGHT" \
+	--approved-preflight-sha256 d43232afe9413a1c7957e83fb2be05f3a640273fd654511b0653da4709fa41e4 \
+	--reviewed-code-update "$REVIEW" \
+	--reviewed-code-update-sha256 bb5b6cca6edfd6ca1146c4ccf389dc0477ec8833849238b80c789fdb509a7fa5 \
+	>> "$RUN/pipeline.log" 2>&1 &
+tail -f "$RUN/pipeline.log"
+```
+
+Ctrl+C stops tail, not the job. If a retained evidence/code/data guard fails, inspect
+the exception rather than editing the audit or review hashes to force approval.
 
 ## Remove Obsolete Feature Caches
 

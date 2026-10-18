@@ -513,6 +513,67 @@ class ClinicalInferenceTests(unittest.TestCase):
 
 
 class UprightPipelineTests(unittest.TestCase):
+    def test_reviewed_code_update_keeps_original_evidence_guards(self):
+        from training import run_upright_clinical as pipeline
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "training").mkdir()
+            config_path = root / "config.yaml"
+            config_path.write_text("flip_horizontal: true\n")
+            report = root / "report.json"
+            report.write_text("{}\n")
+            manifest = root / "manifest_split.jsonl"
+            manifest.write_text("{}\n")
+            panel = root / "panel.png"
+            panel.write_bytes(b"reviewed panel")
+            names = ("training/train_foundation_diff.py", "training/run_upright_clinical.py")
+            for name in names:
+                (root / name).write_text("version = 1\n")
+            provenance = dict(config_sha256=pipeline.sha256(config_path),
+                              audit_sha256=pipeline.sha256(report),
+                              manifest_sha256=pipeline.sha256(manifest),
+                              code_sha256={name: pipeline.sha256(root / name) for name in names},
+                              panels_sha256={"panel.png": pipeline.sha256(panel)})
+            pipeline.write_json(root / "orientation_provenance.json", provenance)
+            digest = pipeline.approval_hash(provenance)
+            for name in names:
+                (root / name).write_text("version = 2\n")
+            review = dict(approved_preflight_sha256=digest, code_updates={
+                name: dict(previous_sha256=provenance["code_sha256"][name],
+                           reviewed_sha256=pipeline.sha256(root / name)) for name in names})
+            review_path = root / "review.json"
+            pipeline.write_json(review_path, review)
+            review_hash = pipeline.sha256(review_path)
+            with patch.object(pipeline, "ROOT", root), \
+                    patch.object(pipeline, "load_config", return_value=dict(dataset_root=str(root))):
+                with self.assertRaisesRegex(ValueError, "code changed"):
+                    pipeline.validate_approval(config_path, root, digest)
+                result = pipeline.validate_approval(config_path, root, digest, review_path, review_hash)
+                self.assertEqual(result["reviewed_code_update"], review)
+                self.assertEqual(json.loads((root / "orientation_provenance.json").read_text()), provenance)
+                with self.assertRaisesRegex(ValueError, "artifact hash mismatch"):
+                    pipeline.validate_approval(config_path, root, digest, review_path, "wrong")
+                for path, payload, error in ((config_path, b"changed config", "configuration changed"),
+                                              (report, b"changed report", "report changed"),
+                                              (panel, b"changed panel", "overlay changed"),
+                                              (manifest, b"changed data", "manifest changed"),
+                                              (root / names[0], b"version = 3\n", "code changed")):
+                    original = path.read_bytes()
+                    path.write_bytes(payload)
+                    with self.assertRaisesRegex(ValueError, error):
+                        pipeline.validate_approval(config_path, root, digest, review_path, review_hash)
+                    path.write_bytes(original)
+                for changes, error in ((dict(approved_preflight_sha256="wrong"), "different preflight"),
+                                        (dict(code_updates={"datasets/pair_dataset.py": {}}), "only the trainer"),
+                                        (dict(code_updates={names[0]: dict(previous_sha256="wrong",
+                                                                          reviewed_sha256="new")}),
+                                         "does not match audited code")):
+                    pipeline.write_json(review_path, {**review, **changes})
+                    with self.assertRaisesRegex(ValueError, error):
+                        pipeline.validate_approval(config_path, root, digest, review_path,
+                                                   pipeline.sha256(review_path))
+
     def test_failed_audit_publishes_evidence_without_training_or_approval(self):
         from training import run_upright_clinical as pipeline
 
