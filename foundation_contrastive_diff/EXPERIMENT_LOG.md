@@ -35,6 +35,69 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-18 - Clinical cutoff.0001 epoch49 completed; no clinical Dice improvement.**
+  Pulled7d7bb709, results/clinical100_cutoff0001_epoch49_20261018_085458: metadata.json,
+  per_pair.csv and report.json. Supersedes the pending-inference notes below. Reported
+  checkpoint epoch49, SHA25645a84390eefe4e233bb63ee0de7ba49429684d49ea950b9ab827e69fbd02ee7b.
+  Compare old epoch45 in review_outputs/clinical100_20261017_112038 (SHA2560b7b49cc
+  916806453ae5a2348e8b0546dd59dfbe5ff0449c034ba43d214a8053; concatenate these lines).
+  Verified identical head specs, rotation3, prediction.5, preprocessing, original-space
+  coordinates, no postprocessing and scan ordering, plus all500 annotation hashes.
+  Both exports contain100 pairs/600 unique pair-observer rows (five clinicians and
+  3-of-5 consensus), identical pair IDs/reference-change flags. Recomputed every report
+  mean and valid count from CSV, checked finite0..1 values. Known config differences
+  are target cutoff.05->.0001, output/config paths and added diagnostic settings;
+  active loss weights and model architecture remain unchanged. Metadata does not hash
+  source-image bytes; their identity has not been independently verified here. Actual
+  checkpoint bytes/images stay on campus; this review uses exported provenance/metrics.
+
+  | Observer | Old signed Dice | New signed Dice | Delta | Valid reference pairs | New better/worse/tied |
+  |---|---|---|---|---|---|
+  |Avi|.119250|.109810|-.009441|92|37/37/18|
+  |Benny|.124693|.111020|-.013673|97|35/36/26|
+  |Sigal|.176209|.157974|-.018235|94|31/42/21|
+  |Smadar|.167233|.126348|-.040885|92|26/45/21|
+  |Nitzan|.212946|.257144|+.044198|98|51/32/15|
+  |Consensus3-of-5|.184913|.138688|-.046224|88|23/44/21|
+
+  Equal-weight mean of five clinicians' mean signed Dice .160066->.152459; do not
+  confuse this with consensus or pooled/pixel Dice. Empty-reference pairs have no Dice
+  value and are excluded rather than credited1; FP area is reported separately.
+
+  | Consensus metric | Old | New | Valid pairs |
+  |---|---|---|---|
+  |Positive Dice|.199052|.183930|56|
+  |Negative Dice|.160946|.105274|46|
+  |Positive recall|.330136|.558207|56|
+  |Negative recall|.313608|.441216|46|
+  |FP area on empty-consensus references|.035821|.122080|12|
+  |Mean predicted area over all cases|.060944|.170209|100|
+
+  Median predicted area2.44%->16.60%, max33.49%->49.32%; zero-prediction cases12->14.
+  On the12 empty-consensus cases worst FP area27.13%->47.68%. Such consensus-negative
+  masks mean no qualifying3-of-5 overlap, not proven absence of clinical pathology.
+  Clinical predictions occupy much more area, recall rises but consensus and4/5
+  clinician Dice fall. This supports broader/excess predictions relative to these
+  references, not successful clinical nuisance suppression or an all-zero collapse.
+  Contrast synthetic FP improvement with clinical empty-reference errors cautiously:
+  these are different populations/reference definitions, not interchangeable scores.
+  No threshold sweep, checkpoint selection or training was performed on this cohort.
+  Clinician ellipses are coarse regions, and this is a reused exploratory100-case set,
+  not a fresh confirmatory test. No statistical-significance, anatomical-validity or
+  clinical-outcome claim is made. Different checkpoint epochs/training trajectories
+  also mean the observed result is not an isolated causal proof about cutoff choice.
+  Component detection F1/PAI and the historical Itamar comparison were not included in
+  this new upload; pixel Dice is not a substitute for those detection metrics.
+  Largest consensus signed-Dice drops: pair31(-.548399),85(-.441072),69(-.310513),
+  47(-.297378),95(-.290385); gains34(+.556537),33(+.323282),13(+.256410),89(+.203285),
+  51(+.202386). Useful visual-review targets; new medical images were not uploaded or
+  inspected locally, so do not invent anatomical explanations for individual cases.
+  Decision: do not promote this candidate over the old model on current clinical
+  evidence. Retain the old model as the clinical baseline, inspect the largest failures
+  and synthetic/clinical target mismatch before another full training run. Do not tune
+  thresholds or choose another checkpoint on this cohort and call it an untouched test.
+  No new inference, model/config/annotation changes or medical-image publication here.
+
 - **2026-10-18 - Fixed clinical launch guard's checkpoint/JSON spec comparison.**
   Campus user hit an unlabelled AssertionError at line11 of the supplied guard before
   inference. In that command, line11 directly compares native checkpoint head_spec to
