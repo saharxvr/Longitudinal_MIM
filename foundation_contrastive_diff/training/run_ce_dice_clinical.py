@@ -56,8 +56,13 @@ def run(config_path, clinical_root, publish_results=False):
     if any(config.get(key) != value for key, value in expected.items()):
         raise ValueError("This launcher requires the separate upright .001 CE/classwise-Dice recipe")
     run_dir = Path(config["save_folder"]).parent
-    if run_dir.name != "run_last1_upright_ce_dice_thr0p001":
-        raise ValueError("Use the dedicated CE run directory; do not reuse regression training artifacts")
+    allowed_runs = {"run_last1_upright_ce_dice_thr0p001": .01,
+                    "run_last1_upright_ce_dice_thr0p001_wd0p05": .05}
+    if run_dir.name not in allowed_runs or config.get("weight_decay") != allowed_runs[run_dir.name]:
+        raise ValueError("Use the dedicated CE run directory matching its weight decay")
+    if (Path(config["save_folder"]) != run_dir / "checkpoints"
+            or Path(config["plots_folder"]) != run_dir / "plots"):
+        raise ValueError("Keep CE checkpoints and plots inside their dedicated run directory")
     code_hashes = {name: sha256(ROOT / name) for name in CODE_PATHS}
     config_hash = sha256(config_path)
     manifest = Path(config["dataset_root"]) / "manifest_split.jsonl"
@@ -106,7 +111,8 @@ def run(config_path, clinical_root, publish_results=False):
     compare_clinical_models.run(SimpleNamespace(
         clinical_run=clinical_run, clinical_root=clinical_root, num_pairs=100,
         foundation_only=True, itamar_preds=None, out_dir=f1))
-    destination = ROOT / "results" / f"clinical100_upright_ce_dice_thr0p001_{timestamp}"
+    result_label = run_dir.name.removeprefix("run_last1_")
+    destination = ROOT / "results" / f"clinical100_{result_label}_{timestamp}"
     destination.mkdir()
     for name in ("metadata.json", "report.json", "per_pair.csv"):
         shutil.copy2(clinical_run / name, destination / name)

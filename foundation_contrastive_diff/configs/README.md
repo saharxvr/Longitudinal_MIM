@@ -4,6 +4,108 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Next Run: Weight Decay Only
+
+Run this BEFORE implementing augmentations. The new
+`last1_upright_ce_dice_thr0p001_wd0p05.yaml` differs from the completed CE config
+only in weight_decay=0.05 (previously0.01) and dedicated checkpoint/plot paths.
+Use the SAME existing upright last-layer cache, split, seed42, head, CE/Dice,
+GT0.001, prediction0.5, batch8/accum4, learning-rate schedule and60epochs.
+RAD-DINO stays frozen. Start a fresh head, not the previous best25/last60 weights.
+Keep the60epoch schedule for a controlled comparison; do not add early stopping
+or shorten the cosine schedule in this ablation. Clinical inference uses the
+BEST pooled signed-Dice checkpoint, not necessarily the final epoch.
+
+Run on campus after confirming other sessions/nodes are not using the GPU.
+The process check below sees only this node; it does not terminate any job.
+The existing launcher checks cache provenance, split disjointness and CUDA.
+No cache rebuild or additional orientation audit is requested.
+
+```bash
+set -e
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+if pgrep -af 'training[.]train_foundation_diff|training[.]run_upright_clinical|training[.]run_ce_dice_clinical'; then
+	echo "Existing training/pipeline detected. Wait before launching the weight-decay ablation."
+else
+	RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_ce_dice_thr0p001_wd0p05
+	mkdir -p "$RUN"
+	LOG="$RUN/pipeline_$(date +%Y%m%d_%H%M%S).log"
+	nohup python -u -m training.run_ce_dice_clinical \
+		--config configs/last1_upright_ce_dice_thr0p001_wd0p05.yaml \
+		--publish > "$LOG" 2>&1 < /dev/null &
+	echo "Weight-decay pipeline PID=$! log=$LOG"
+fi
+```
+
+Fresh first launch; later recovery resumes only this dedicated run's last.pt
+with the existing configuration guards. A missing last.pt in a populated run
+fails. The launcher rejects either weight decay in the other variant's run
+directory and rejects plots/checkpoints pointing outside their dedicated run.
+After training, it verifies and publishes only
+`results/clinical100_upright_ce_dice_thr0p001_wd0p05_TIMESTAMP` using the existing
+best-checkpoint clinical100 and per-clinician detection-F1 protocol. No weights,
+feature cache, source scans or review images are published. Preserve the
+original CE run/results. Compare full validation curves, per-sign/per-type
+Dice and nuisance FP tails, not training loss alone. Existing clinical100 is
+exploratory and reused, not a new independent test set; no additional data is
+requested and no thresholds are tuned on clinicians.
+
+## Planned Next: Online Pair Augmentations
+
+PLAN ONLY: do not implement or launch this until the weight-decay-only run
+finishes and is reviewed. Use the existing dataset and unchanged patient/group
+split; no additional patients or clinical data. Select and record the baseline
+weight decay using synthetic validation before the augmentation comparison,
+then keep it fixed between augmented and unaugmented runs.
+
+1. Start with photometric nuisance augmentation on TRAIN images only, after
+	per-image min/max normalization and before RAD-DINO mean/std normalization.
+	Conservative initial candidates: gamma0.9-1.1, contrast0.9-1.1,
+	brightness offset-0.03 to0.03 and Gaussian noise std0-0.005 in[0,1].
+	Initially sample a single perturbation family per pair with probability0.5;
+	otherwise leave the pair unchanged. Use independently drawn mild strengths
+	for prior/current so the head must tolerate acquisition differences, not
+	only a shared appearance change. Clamp images to[0,1]. These ranges are
+	candidates to preview and test, not established clinically safe settings.
+	Leave the signed GT unchanged: these are nuisance appearance transforms,
+	not simulated pathology changes. Do not add devices or erase anatomy.
+2. Use online frozen RAD-DINO features for TRAIN (`--no_cache`); retain eval
+	mode, requires_grad=False and no_grad around feature extraction. Train only
+	the existing head. Existing original-image tokens cannot represent freshly
+	augmented images; do not approximate this with random token perturbations.
+	The trainer supports online input, but the current shell/pipeline is
+	cache-specific and needs a separate guarded online path before launch.
+	Keep VAL/clinical deterministic and unaugmented. An optional unchanged VAL
+	cache is possible only after demonstrating online/cache feature parity;
+	simplest first implementation runs VAL online too.
+3. Preserve pair/sample order and initial head weights across the comparison.
+	Use an augmentation-specific reproducible RNG so augmentations and online
+	backbone construction do not silently change the sampler/head seed.
+	Record augmentation parameters, seeds and run provenance. Benchmark GPU
+	memory/time before a full run; frozen online inference is still extra work.
+	If memory requires microbatch changes, preserve effective batch and account
+	for batchwise Dice being sensitive to microbatch composition.
+4. Before launch: inspect original/augmented pairs with GT, test identity and
+	seeded reproducibility, unchanged signs/GT and empty-map supervision,
+	train-only application, finite image ranges, online/cache parity without
+	augmentation, encoder weights/gradients unchanged and head gradients valid.
+	Match head initialization explicitly for the parity control. Keep all loss,
+	cutoff, checkpoint-selection and clinical-scoring settings fixed.
+5. A later SEPARATE geometric ablation can use a small shared affine (candidate
+	rotation+/-3degrees, translation+/-2%, scale0.98-1.02) applied identically to
+	prior/current/GT. It needs an explicit class-resampling and valid-border
+	policy in BOTH CE and Dice; padding is not automatically valid background.
+	Do not independently warp the two scans against the same dense GT. Exclude
+	left/right flips, large crops, elastic deformation, random erasing and fake
+	devices initially. Photometric augmentation does not reproduce true 3D
+	projection changes; assess it as a limited acquisition-robustness ablation.
+
 ## Next Run: CE And Classwise Dice
 
 The separate `last1_upright_ce_dice_thr0p001.yaml` config uses the existing

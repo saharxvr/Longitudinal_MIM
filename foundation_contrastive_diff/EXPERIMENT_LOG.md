@@ -35,6 +35,41 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-19 - Authorized sequence: weight-decay-only run, THEN augmentation.**
+  User requests augmentations using existing data only, no additional clinical
+  cohort, and to run stronger head regularization before augmentation changes.
+  Prepared configs/last1_upright_ce_dice_thr0p001_wd0p05.yaml: only weight_decay
+  0.01->0.05 plus isolated checkpoint/plot paths differ from the completed CE
+  recipe. Same frozen RAD-DINO upright last1 cache, manifest/splits, seed42,
+  fresh head, CE/classwise-Dice, GT0.001, prediction0.5, batch8/accum4,
+  learning-rate schedule and60epoch budget. No new early stopping or schedule
+  shortening; compare BEST selected checkpoint, not final60. Existing gallery
+  already displays BEST25, so late overfitting alone does not explain its errors.
+  CE pipeline now allowlists the two run names with matching weight decay and
+  contained checkpoint/plot paths; regularized results get a distinct
+  clinical100_upright_ce_dice_thr0p001_wd0p05_TIMESTAMP prefix. Original naming
+  and artifacts preserved. Same completion/provenance/probability/F1 checks and
+  scoped artifact-only publication. No patient images, weights or cache upload.
+  Two focused CPU tests PASS18.647s: both baseline/variant failure gates and
+  complete100pair/300probability packaging, exact config-difference assertions,
+  cross-run weight-decay/path rejection before training. Campus launch command
+  and separate augmentation plan are in configs/README.md. Full61test CPU suite
+  PASS117.995s; actual trainer YAML parsing confirms wd0.05/cached/60epochs,
+  documented campus Bash syntax passes, touched code/config diagnostics clean.
+  No campus job has
+  been started from this local Windows session; actual new results are pending.
+  Augmentation is PLAN ONLY until this ablation finishes: train-only mild
+  independent per-scan photometric changes after min/max normalization, signed
+  GT unchanged, using existing patients. Recompute features online with frozen
+  eval/no_grad RAD-DINO, not random manipulation of cached tokens; trainer has
+  --no_cache but existing launcher needs a guarded online path. Fix validation,
+  head initialization, sampler RNG and evaluation; preview/seed/gradient/parity
+  and memory checks before launch. Shared small geometry only in a later
+  separate ablation with explicit GT interpolation/valid-border loss policy.
+  No claimed simulation of true3D projection by photometric transforms, no
+  invented device overlays or independent geometric warps. Clinical100 remains
+  reused exploratory evidence, no independent-test or threshold-tuning claim.
+
 - **2026-10-19 - Completed CE/classwise-Dice clinical100 results VERIFIED.**
   Pulled de169225, results/clinical100_upright_ce_dice_thr0p001_20261019_091535;
   compared against actual upright regression result

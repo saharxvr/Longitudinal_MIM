@@ -23,6 +23,33 @@ from training.cache_features import slice_last_layer_cache
 
 class TrainingDiagnosticsTests(unittest.TestCase):
     def test_ce_pipeline_failure_gate_and_scoped_complete_artifacts(self):
+        self._check_ce_pipeline_artifacts('last1_upright_ce_dice_thr0p001.yaml',
+                                          'clinical100_upright_ce_dice_thr0p001_')
+
+    def test_ce_weight_decay_pipeline_and_config_isolation(self):
+        import yaml
+        from training import run_ce_dice_clinical as pipeline
+
+        baseline = yaml.safe_load(pipeline.DEFAULT_CONFIG.read_text())
+        variant_path = pipeline.ROOT / 'configs/last1_upright_ce_dice_thr0p001_wd0p05.yaml'
+        variant = yaml.safe_load(variant_path.read_text())
+        self.assertEqual({key for key in baseline if baseline[key] != variant[key]},
+                         {'weight_decay', 'save_folder', 'plots_folder'})
+        self.assertEqual(variant['weight_decay'], .05)
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / 'config.yaml'
+            for changes in ({'save_folder': baseline['save_folder']},
+                            {'weight_decay': .01}, {'plots_folder': baseline['plots_folder']}):
+                with self.subTest(changes=changes):
+                    config_path.write_text(yaml.safe_dump(dict(variant, **changes)))
+                    with patch.object(pipeline.subprocess, 'run') as train:
+                        with self.assertRaisesRegex(ValueError, 'dedicated CE run|inside their dedicated'):
+                            pipeline.run(config_path, Path(temporary))
+                        train.assert_not_called()
+        self._check_ce_pipeline_artifacts('last1_upright_ce_dice_thr0p001_wd0p05.yaml',
+                                          'clinical100_upright_ce_dice_thr0p001_wd0p05_')
+
+    def _check_ce_pipeline_artifacts(self, config_name, result_prefix):
         import nibabel as nib
         import numpy as np
         import yaml
@@ -40,8 +67,8 @@ class TrainingDiagnosticsTests(unittest.TestCase):
                           annotations={doctor: str(annotation) for doctor in ('Avi', 'Benny', 'Sigal', 'Smadar', 'Nitzan')})
                      for number in range(1, 101)]
             (root / 'manifest_split.jsonl').write_text('{}\n')
-            config = yaml.safe_load(pipeline.DEFAULT_CONFIG.read_text())
-            run = root / 'run_last1_upright_ce_dice_thr0p001'
+            config = yaml.safe_load((pipeline.ROOT / 'configs' / config_name).read_text())
+            run = root / Path(config['save_folder']).parent.name
             config.update(dataset_root=str(root), cache_dir=str(root / 'cache'),
                           save_folder=str(run / 'checkpoints'), plots_folder=str(run / 'plots'), epochs=1)
             config_path = root / 'config.yaml'
@@ -98,6 +125,7 @@ class TrainingDiagnosticsTests(unittest.TestCase):
                      patch.object(pipeline.subprocess, 'run', side_effect=finish_training):
                     destination = pipeline.run(config_path, root, True)
                 publish.assert_called_once_with(destination)
+                self.assertTrue(destination.name.startswith(result_prefix))
                 verification = json.loads((destination / 'verification.json').read_text())
                 self.assertEqual(verification['pairs_verified'], 100)
                 self.assertEqual(len(verification['probability_sha256']), 100)
