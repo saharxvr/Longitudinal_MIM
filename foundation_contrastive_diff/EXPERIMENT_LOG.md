@@ -35,6 +35,59 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-19 - Completed CE/classwise-Dice clinical100 results VERIFIED.**
+  Pulled de169225, results/clinical100_upright_ce_dice_thr0p001_20261019_091535;
+  compared against actual upright regression result
+  results/clinical100_upright_cutoff0001_20261018_214717 (not morning epoch49).
+  CE best checkpoint is epoch25, SHA4390c97c8cb114f05b0256ce828da015226af891d3e23863e36db5da9c8be717;
+  regression best is epoch54, SHA8e5e3e913209c10d90e33d3ed9ac6bf6e96ade559a47d3d16783cbaff412509b.
+  Full CE metrics history has exactly epochs1-60; maximum matched-target pooled
+  signed Dice0.8145118753 at25, final0.8041646117 at60. Train loss0.204985->
+  0.131504 while val loss0.679594->0.777921 from25->60: late generalization
+  warning, not reason to extend training. Clinical maps are from BEST25, not60.
+  Independently verified all recorded CE code/config hashes, manifest78d18b1c...
+  54468, three-logit head and frozen-encoder recipe, all200local source hashes,
+  identical500annotation hashes/protocol/cohort across runs, both100map/mask
+  geometry/range/finiteness/exact threshold masks/hashes, and all300CE probability
+  maps' native geometry/range/sum-to-one/signed-score identity/hashes. Known
+  reviewed campus constants snapshot accepted where local comment-only bytes
+  differ. Checkpoint weights remain on campus; no local weight reload/inference.
+  ALL600per-pair overlap rows and EVERY observer-summary field reproduced
+  EXACTLY for EACH run from actual saved maps plus local annotations. Independently
+  reran REAL legacy detection scorer on both100pairs in disposable temp folders;
+  entire F1 reports/CSVs and matching protocols EXACTLY match campus artifacts.
+  Same original-space0.5 threshold, sign-separated8-connected greedy one-to-one
+  overlap>=1pixel, no component filtering; detection F1 is NOT pixel Dice.
+
+  | Clinician | Upright regression F1 all | CE/classwise-Dice F1 all |
+  |---|---|---|
+  | Avi | 0.140021 | 0.299795 |
+  | Benny | 0.152918 | 0.297710 |
+  | Sigal | 0.146751 | 0.305785 |
+  | Smadar | 0.135385 | 0.308911 |
+  | Nitzan | 0.182903 | 0.358209 |
+
+  Equal-weight5clinician mean F1 positive0.133123->0.320778, negative0.191688->
+  0.306636, combined0.151595->0.314082; BOTH signs improve for EVERY clinician.
+  Mean clinician signed pixel Dice0.139293->0.172643, all5 improve. Consensus3/5
+  signed Dice0.129975->0.161313 (same88activepairs); positiveDice0.154194->
+  0.207159, negativeDice0.109455->0.106521 (slightly worse). Positive/negative
+  consensus recall0.476505/0.429886 ->0.578404/0.451668.
+  Predicted components573+/236-=809 ->169+/170-=339; mean predicted area
+  15.3858%->15.1530%, empty predictions21->14. Fewer components without much
+  area shrinkage is consistent with reduced fragmentation, not proof of anatomy.
+  Union-of-any-clinician HMDR+0.230366->0.473373, HMDR-0.305085->0.500000;
+  unmatched detections/pair4.41+1.64=6.05 ->0.89+0.85=1.74. These union metrics
+  are distinct from individual-reader F1. Among12empty-consensus cases mean
+  predicted/FP area10.5947%->9.2229%, max46.5795%->42.7958%; still substantial,
+  and empty coarse annotations do not prove true absence of clinical pathology.
+  Recommendation: CE best25 is the stronger NEXT clinical baseline relative to
+  this upright regression run; do not extend/retrain just for more epochs.
+  Inspect paired false positives/misses before another model change. Improvement
+  cannot be attributed to CE alone: cutoff/loss/head-output/checkpoint criterion
+  changed together. Reused100pair exploratory cohort/coarse ellipses, not fresh
+  held-out confirmation or clinical threshold tuning; no statistical claim.
+
 - **2026-10-18 - Next fresh run: three-class CE plus classwise Dice requested.**
   Added separate configs/last1_upright_ce_dice_thr0p001.yaml and
   training/run_ce_dice_clinical.py. Existing upright frozen-RAD-DINO last1
