@@ -25,6 +25,11 @@ conventions, and key findings so we don't re-derive them each session.
   CUDA memory/speed; read the benchmark log before making runtime claims.
 - Current user-reported campus torch: 2.14.1+cu130; upright last-one cache about
   98.3 GB; recent cached epochs about 11 minutes (older timings below differ).
+- Campus32-batch benchmark: batch8/accum4 17.50pairs/s/2.82GiB;
+  batch16/accum2 20.44pairs/s/5.27GiB; batch32/accum1 18.65pairs/s/10.17GiB.
+  Selected16/2; augmentation config now points to fresh `_aug_b16` directory,
+  preserving the stopped batch8 run. Short-benchmark train-pass estimate13.4min
+  excludes validation/diagnostics; sustained epoch timing remains to be measured.
 
 ## Campus / cluster layout (HUJI josko lab)
 - Nodes: `casNNN` (e.g. `cas703`). **128 GB RAM, ~24 GB GPU.** GPU userspace is at

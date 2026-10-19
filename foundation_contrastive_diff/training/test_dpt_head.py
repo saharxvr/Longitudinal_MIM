@@ -154,11 +154,14 @@ class TrainingDiagnosticsTests(unittest.TestCase):
         baseline = yaml.safe_load(pipeline.DEFAULT_CONFIG.read_text())
         variant = yaml.safe_load((pipeline.ROOT / "configs/last1_upright_ce_dice_thr0p001_aug.yaml").read_text())
         self.assertEqual({key for key in baseline if baseline[key] != variant[key]},
-                         {"save_folder", "plots_folder"})
+                         {"save_folder", "plots_folder", "batch_size", "accum"})
+        self.assertEqual((variant["batch_size"], variant["accum"]), (16, 2))
+        self.assertEqual(variant["batch_size"] * variant["accum"],
+                         baseline["batch_size"] * baseline["accum"])
         self.assertEqual(set(variant) - set(baseline), {"no_cache", "photometric_augmentation"})
         self.assertTrue(variant["no_cache"] and variant["photometric_augmentation"])
         self._check_ce_pipeline_artifacts("last1_upright_ce_dice_thr0p001_aug.yaml",
-                                         "clinical100_upright_ce_dice_thr0p001_aug_")
+                                         "clinical100_upright_ce_dice_thr0p001_aug_b16_")
 
     def test_ce_pipeline_failure_gate_and_scoped_complete_artifacts(self):
         self._check_ce_pipeline_artifacts('last1_upright_ce_dice_thr0p001.yaml',

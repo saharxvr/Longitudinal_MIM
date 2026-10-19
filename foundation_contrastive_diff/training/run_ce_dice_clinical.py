@@ -58,10 +58,12 @@ def run(config_path, clinical_root, publish_results=False):
     run_dir = Path(config["save_folder"]).parent
     allowed_runs = {"run_last1_upright_ce_dice_thr0p001": .01,
                     "run_last1_upright_ce_dice_thr0p001_wd0p05": .05,
-                    "run_last1_upright_ce_dice_thr0p001_aug": .01}
+                    "run_last1_upright_ce_dice_thr0p001_aug": .01,
+                    "run_last1_upright_ce_dice_thr0p001_aug_b16": .01}
     if run_dir.name not in allowed_runs or config.get("weight_decay") != allowed_runs[run_dir.name]:
         raise ValueError("Use the dedicated CE run directory matching its weight decay")
-    augmented = run_dir.name == "run_last1_upright_ce_dice_thr0p001_aug"
+    augmented = run_dir.name in {"run_last1_upright_ce_dice_thr0p001_aug",
+                                "run_last1_upright_ce_dice_thr0p001_aug_b16"}
     if (bool(config.get("photometric_augmentation", False)) != augmented
             or bool(config.get("no_cache", False)) != augmented):
         raise ValueError("Only the dedicated augmentation run may enable online photometric augmentation")

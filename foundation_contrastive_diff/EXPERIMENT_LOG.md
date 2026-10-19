@@ -35,6 +35,18 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-19 - Campus online augmentation batch-size benchmark.**
+  User stopped the initial augmentation run to benchmark sequentially on RTX4090.
+  Each candidate ran32 batches: batch8/accum4 .457s/batch,17.50pairs/s,2.82GiB;
+  batch16/accum2 .783s/batch,20.44pairs/s,5.27GiB;
+  batch32/accum1 1.716s/batch,18.65pairs/s,10.17GiB. Select16/2: about17%
+  more throughput than8/4 and about9% shorter estimated training pass (13.4min
+  versus14.7min) than32/1. Earlier500-batch run took11.2min: do not extrapolate
+  these short warmed benchmarks as guaranteed sustained epoch time or attribute
+  the difference to a specific cause. Preserve old batch8 run and start a fresh
+  `_aug_b16` run. Effective batch32 is unchanged; batchwise Dice/RNG and final
+  drop_last behavior mean this is not numerically identical optimization.
+
 - **2026-10-19 - Stop weight-decay ablation; prepare online augmentation run.**
   User confirmed cas703 launcher2787709 and trainer2787717 terminated (empty
   process listing). Preserve completed checkpoints/logs; automatic clinical

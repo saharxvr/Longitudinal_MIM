@@ -11,6 +11,13 @@ gain. `last1_upright_ce_dice_thr0p001_aug.yaml` starts a fresh head with the
 original wd0.01, same cohort/splits, upright transform, seed,60-epoch schedule
 and CE+positive/negative classwise Dice at target cutoff0.001.
 
+Campus batch benchmark selected batch16/accum2 (effective batch32):20.44pairs/s,
+5.27GiB peak allocated versus batch8/accum4:17.50pairs/s,2.82GiB and
+batch32/accum1:18.65pairs/s,10.17GiB. These are32-batch timings, not sustained
+epoch measurements. Use a fresh `_aug_b16` run directory; preserve the earlier
+batch8 run. Effective batch size is retained, but batchwise Dice, RNG draws and
+the dropped final training samples mean optimization is not exactly equivalent.
+
 Train only: independently for each prior/current image, apply the augmentation
 recipe with probability0.8: brightness offset[-0.05,0.05], mean-centered contrast
 [0.9,1.1], gamma[0.9,1.1] and Gaussian noise with std sampled[0,0.01]. Values
@@ -50,7 +57,7 @@ if pgrep -u "$USER" -af 'training[.]train_foundation_diff|training[.]run_upright
     echo "Existing training/pipeline detected. Do not overlap jobs."
     exit 1
 fi
-export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_ce_dice_thr0p001_aug
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_ce_dice_thr0p001_aug_b16
 mkdir -p "$RUN"
 LOG="$RUN/pipeline_$(date +%Y%m%d_%H%M%S)_$$.log"
 touch "$LOG"
@@ -71,7 +78,7 @@ BASH
 Monitor the latest log:
 
 ```bash
-RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_ce_dice_thr0p001_aug
+RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_ce_dice_thr0p001_aug_b16
 LOG=$(ls -t "$RUN"/pipeline_*.log | head -n 1)
 tail -n 60 -F "$LOG"
 ```
