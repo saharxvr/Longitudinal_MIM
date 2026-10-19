@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "configs/last1_upright_ce_dice_thr0p001.yaml"
 PROBABILITY_FILES = tuple(f"probability_{name}.nii.gz" for name in ("unchanged", "positive", "negative"))
 CODE_PATHS = ("training/run_ce_dice_clinical.py", "training/train_foundation_diff.py",
-              "training/run_last4_dpt.sh", "datasets/pair_dataset.py", "models/__init__.py",
+              "training/run_last4_dpt.sh", "datasets/pair_dataset.py", "datasets/augmentations.py", "models/__init__.py",
               "models/dpt_head.py", "models/backbone.py", "losses/change_map_losses.py",
               "evaluation/training_diagnostics.py", "evaluation/evaluate_clinical.py",
               "evaluation/compare_clinical_models.py", "training/run_upright_clinical.py", "constants.py")
@@ -57,9 +57,14 @@ def run(config_path, clinical_root, publish_results=False):
         raise ValueError("This launcher requires the separate upright .001 CE/classwise-Dice recipe")
     run_dir = Path(config["save_folder"]).parent
     allowed_runs = {"run_last1_upright_ce_dice_thr0p001": .01,
-                    "run_last1_upright_ce_dice_thr0p001_wd0p05": .05}
+                    "run_last1_upright_ce_dice_thr0p001_wd0p05": .05,
+                    "run_last1_upright_ce_dice_thr0p001_aug": .01}
     if run_dir.name not in allowed_runs or config.get("weight_decay") != allowed_runs[run_dir.name]:
         raise ValueError("Use the dedicated CE run directory matching its weight decay")
+    augmented = run_dir.name == "run_last1_upright_ce_dice_thr0p001_aug"
+    if (bool(config.get("photometric_augmentation", False)) != augmented
+            or bool(config.get("no_cache", False)) != augmented):
+        raise ValueError("Only the dedicated augmentation run may enable online photometric augmentation")
     if (Path(config["save_folder"]) != run_dir / "checkpoints"
             or Path(config["plots_folder"]) != run_dir / "plots"):
         raise ValueError("Keep CE checkpoints and plots inside their dedicated run directory")
@@ -75,6 +80,9 @@ def run(config_path, clinical_root, publish_results=False):
                      for case in cases for name in ("prior", "current")}
     environment = dict(os.environ, HEAD_CONFIG=str(config_path), DATA=config["dataset_root"],
                        CACHE_DIR=config["cache_dir"], RUN=str(run_dir))
+    if augmented:
+        subprocess.run(["bash", "training/run_last4_dpt.sh", "--benchmark_batches", "32"],
+                       cwd=ROOT, env=environment, check=True)
     subprocess.run(["bash", "training/run_last4_dpt.sh"], cwd=ROOT, env=environment, check=True)
     checkpoint = run_dir / "checkpoints/best.pt"
     last = torch.load(run_dir / "checkpoints/last.pt", map_location="cpu", weights_only=False)
@@ -126,6 +134,9 @@ def run(config_path, clinical_root, publish_results=False):
         shutil.copy2(f1 / name, destination / "detection_f1" / name)
     for name in ("metrics.csv", "run_config.json"):
         shutil.copy2(run_dir / "checkpoints" / name, destination / name)
+    if augmented:
+        shutil.copy2(run_dir / "checkpoints/benchmark.json", destination / "benchmark.json")
+        shutil.copy2(run_dir / "plots/augmentation_preview.png", destination / "augmentation_preview.png")
     for epoch in sorted({config["epochs"], best_epoch}):
         for split in ("train", "val"):
             name = f"epoch_{epoch:04d}_{split}.json"

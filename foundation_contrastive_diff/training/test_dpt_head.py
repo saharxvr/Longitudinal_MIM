@@ -22,6 +22,144 @@ from training.cache_features import slice_last_layer_cache
 
 
 class TrainingDiagnosticsTests(unittest.TestCase):
+    def test_photometric_images_independent_bounded_and_reproducible(self):
+        from datasets.augmentations import augment_cxr
+
+        image = torch.linspace(0, 1, 64).reshape(1, 1, 8, 8).repeat(12, 1, 1, 1)
+        before = image.clone()
+        torch.manual_seed(42)
+        augmented = augment_cxr(image)
+        torch.manual_seed(42)
+        self.assertTrue(torch.equal(augmented, augment_cxr(image)))
+        self.assertTrue(torch.equal(image, before))
+        self.assertTrue(torch.isfinite(augmented).all())
+        self.assertGreaterEqual(augmented.min().item(), 0)
+        self.assertLessEqual(augmented.max().item(), 1)
+        self.assertEqual(augmented.shape, image.shape)
+        self.assertGreater(torch.unique(augmented.flatten(1), dim=0).shape[0], 1)
+        with self.assertRaisesRegex(ValueError, r"\[0,1\]"):
+            augment_cxr(image + 1)
+
+    def test_online_token_augmentation_train_only_and_gt_unchanged(self):
+        from datasets.augmentations import augment_cxr
+
+        image = torch.full((8, 1, 5, 5), .5)
+        gt = torch.randn_like(image)
+        batch = dict(img_prior=image.clone(), img_curr=image.clone(), gt_diff=gt.clone())
+        observed = []
+
+        def backbone(images):
+            observed.append(images.clone())
+            self.assertFalse(torch.is_grad_enabled())
+            return dict(patch_tokens=images.flatten(2).transpose(1, 2), cls_token=images.mean((2, 3)))
+
+        torch.manual_seed(42)
+        with patch.object(trainer, "augment_cxr", wraps=augment_cxr) as augmentation:
+            trainer._tokens_from_batch(batch, backbone, "cpu", augment=True)
+            self.assertEqual(augmentation.call_count, 2)
+            self.assertFalse(torch.equal(observed[0], observed[1]))
+            trainer._tokens_from_batch(batch, backbone, "cpu")
+            self.assertEqual(augmentation.call_count, 2)
+        self.assertTrue(torch.equal(observed[-1], image))
+        self.assertTrue(torch.equal(batch["img_prior"], image))
+        self.assertTrue(torch.equal(batch["gt_diff"], gt))
+        with self.assertRaisesRegex(ValueError, "cached"):
+            trainer._tokens_from_batch(batch, None, "cpu", augment=True)
+
+    def test_augmentation_cli_guards(self):
+        for flags in (["--photometric_augmentation"],
+                      ["--photometric_augmentation", "--no_cache", "--overfit", "2"],
+                      ["--benchmark_batches", "-1"]):
+            with self.subTest(flags=flags), patch.object(sys, "argv", ["train", *flags]), \
+                 patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+                parse_args()
+
+    def test_online_augmented_benchmark_training_and_resume(self):
+        import nibabel as nib
+        import numpy as np
+
+        class TinyFrozenBackbone(torch.nn.Module):
+            def __init__(self, **kwargs):
+                super().__init__()
+                self.scale = torch.nn.Parameter(torch.ones(()), requires_grad=False)
+                self.frozen = kwargs["freeze"]
+
+            def forward(self, images):
+                self.assertions(images)
+                tokens = torch.nn.functional.adaptive_avg_pool2d(images, (5, 5)).flatten(2).transpose(1, 2)
+                return dict(patch_tokens=tokens.expand(-1, -1, 16) * self.scale,
+                            cls_token=images.mean((2, 3)).expand(-1, 16) * self.scale)
+
+            def assertions(backbone, images):
+                self.assertTrue(backbone.frozen)
+                self.assertFalse(backbone.training)
+                self.assertFalse(torch.is_grad_enabled())
+
+        config = str(Path(__file__).resolve().parents[1] / "configs/last1_upright_ce_dice_thr0p001_aug.yaml")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records = []
+            for split in ("train", "val"):
+                for index in range(2):
+                    pair_id = f"{split}_{index}"
+                    folder = root / pair_id
+                    folder.mkdir()
+                    image = np.linspace(0, 1, 32 * 32, dtype=np.float32).reshape(32, 32)
+                    gt = np.zeros_like(image)
+                    gt[:16] = .2
+                    gt[16:] = -.2
+                    for name, values in (("prior", image), ("current", image), ("diff_map", gt)):
+                        nib.save(nib.Nifti1Image(values, np.eye(4)), folder / f"{name}.nii.gz")
+                    records.append(dict(pair_id=pair_id, split=split, realized_change=True,
+                                        effective_anomaly_type="consolidation"))
+            (root / "manifest_split.jsonl").write_text("\n".join(map(json.dumps, records)))
+            arguments = ["train", "--config", config, "--dataset_root", str(root),
+                         "--cache_dir", str(root / "NONEXISTENT_CACHE"),
+                         "--save_folder", str(root / "checkpoints"), "--plots_folder", str(root / "plots"),
+                         "--batch_size", "2", "--accum", "1", "--num_workers", "0",
+                         "--device", "cpu", "--dpt_channels", "8", "--epochs", "1"]
+            with patch.multiple(trainer.C, BACKBONE_DIM=16, FEATURE_GRID=5, IMG_SIZE=32, EMBED_DIM=12), \
+                 patch("models.FrozenCXRBackbone", TinyFrozenBackbone), \
+                 patch.object(trainer, "plot_curves"), patch.object(trainer, "save_sample_plots"), \
+                 patch("sys.stdout", io.StringIO()):
+                with patch.object(sys, "argv", arguments + ["--benchmark_batches", "1"]):
+                    trainer.main()
+                report = json.loads((root / "checkpoints/benchmark.json").read_text())
+                self.assertEqual(report["batches"], 1)
+                self.assertGreater(report["seconds_per_batch"], 0)
+                self.assertEqual(report["training_health"]["optimizer_steps"], 1)
+                self.assertTrue((root / "plots/augmentation_preview.png").is_file())
+                self.assertFalse((root / "checkpoints/run_config.json").exists())
+                self.assertFalse(list((root / "checkpoints").glob("*.pt")))
+                from datasets.augmentations import augment_cxr
+                with patch.object(trainer, "augment_cxr", wraps=augment_cxr) as augmentation, \
+                     patch.object(sys, "argv", arguments):
+                    trainer.main()
+                    self.assertEqual(augmentation.call_count, 2)
+                state = torch.load(root / "checkpoints/last.pt", weights_only=True)
+                self.assertEqual(state["best_score"], state["val"]["target_signed_dice"])
+                self.assertTrue(state["run_config"]["no_cache"])
+                with patch.object(sys, "argv", arguments + ["--resume", "--no-photometric_augmentation"]), \
+                     self.assertRaisesRegex(ValueError, "photometric_augmentation"):
+                    trainer.main()
+                with patch.object(sys, "argv", arguments + ["--resume", "--epochs", "2"]):
+                    trainer.main()
+                state = torch.load(root / "checkpoints/last.pt", weights_only=True)
+                self.assertEqual(state["epoch"], 2)
+
+    def test_augmented_pipeline_config_and_artifacts(self):
+        import yaml
+        from training import run_ce_dice_clinical as pipeline
+
+        baseline = yaml.safe_load(pipeline.DEFAULT_CONFIG.read_text())
+        variant = yaml.safe_load((pipeline.ROOT / "configs/last1_upright_ce_dice_thr0p001_aug.yaml").read_text())
+        self.assertEqual({key for key in baseline if baseline[key] != variant[key]},
+                         {"save_folder", "plots_folder"})
+        self.assertEqual(set(variant) - set(baseline), {"no_cache", "photometric_augmentation"})
+        self.assertTrue(variant["no_cache"] and variant["photometric_augmentation"])
+        self._check_ce_pipeline_artifacts("last1_upright_ce_dice_thr0p001_aug.yaml",
+                                         "clinical100_upright_ce_dice_thr0p001_aug_")
+
     def test_ce_pipeline_failure_gate_and_scoped_complete_artifacts(self):
         self._check_ce_pipeline_artifacts('last1_upright_ce_dice_thr0p001.yaml',
                                           'clinical100_upright_ce_dice_thr0p001_')
@@ -75,10 +213,18 @@ class TrainingDiagnosticsTests(unittest.TestCase):
             config_path.write_text(yaml.safe_dump(config))
 
             def finish_training(command, **kwargs):
-                self.assertEqual(command, ['bash', 'training/run_last4_dpt.sh'])
                 self.assertEqual(kwargs['env']['CACHE_DIR'], config['cache_dir'])
                 checkpoints = run / 'checkpoints'
-                checkpoints.mkdir(parents=True)
+                if config.get("photometric_augmentation") and "--benchmark_batches" in command:
+                    self.assertEqual(command, ['bash', 'training/run_last4_dpt.sh', '--benchmark_batches', '32'])
+                    checkpoints.mkdir(parents=True)
+                    (checkpoints / 'benchmark.json').write_text('{}')
+                    plots = run / 'plots'
+                    plots.mkdir()
+                    (plots / 'augmentation_preview.png').write_bytes(b'preview')
+                    return
+                self.assertEqual(command, ['bash', 'training/run_last4_dpt.sh'])
+                checkpoints.mkdir(parents=True, exist_ok=True)
                 state = dict(epoch=1, head_spec=dict(kwargs=dict(output_mode='three_class')), run_config=config)
                 for name in ('best.pt', 'last.pt'):
                     torch.save(state, checkpoints / name)
@@ -1746,6 +1892,32 @@ class SingleLayerCrossAttentionTests(DPTCrossAttentionTests):
 
 
 class CacheSliceTests(unittest.TestCase):
+    def test_online_launcher_preflight_without_cache_or_test_images(self):
+        import nibabel as nib
+        import numpy as np
+
+        script = Path(__file__).with_name("run_last4_dpt.sh").read_text()
+        preflight = script.split("python -u - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records = [dict(pair_id=split, split=split, patient_key=split)
+                       for split in ("train", "val", "test")]
+            (root / "manifest_split.jsonl").write_text("\n".join(map(json.dumps, records)))
+            for split in ("train", "val"):
+                folder = root / split
+                folder.mkdir()
+                for name in ("prior", "current", "diff_map"):
+                    nib.save(nib.Nifti1Image(np.zeros((8, 8), dtype=np.float32), np.eye(4)),
+                             folder / f"{name}.nii.gz")
+            with patch.dict(os.environ, DATA=str(root), CACHE_DIR=str(root / "absent"),
+                            CACHE_LAYERS="1", NO_CACHE="1", ROTATION_K="3", FLIP_HORIZONTAL="1"), \
+                 patch.object(torch.cuda, "is_available", return_value=True), \
+                 patch.object(torch.cuda, "mem_get_info", return_value=(12_000_000_000, 24_000_000_000)):
+                exec(compile(preflight, "online_preflight", "exec"), {})
+                (root / "val/current.nii.gz").unlink()
+                with self.assertRaisesRegex(SystemExit, "Missing online input"):
+                    exec(compile(preflight, "online_preflight", "exec"), {})
+
     def test_layer_aware_launcher_preflight(self):
         script = Path(__file__).with_name("run_last4_dpt.sh").read_text()
         preflight = script.split("python -u - <<'PY'\n", 1)[1].split("\nPY", 1)[0]

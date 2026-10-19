@@ -8,6 +8,24 @@ conventions, and key findings so we don't re-derive them each session.
 - Default to implementing; commit + push changes to git (`saharxvr/Longitudinal_MIM`, branch main).
 - Save results with short descriptions under `foundation_contrastive_diff/results/` for backlook.
 
+## Current experiment (2026-10-19; overrides historical recipes below)
+- Completed upright CE + positive/negative classwise Dice baseline: cutoff .001,
+  weight decay .01, best epoch25 target-matched pooled signed Dice .814512.
+- User stopped the wd .05 ablation after late validation plateau/overfitting;
+  process termination confirmed on cas703. Completed checkpoints/logs retained,
+  no automatic clinical evaluation/publication. Actual best requires its full CSV.
+- Next config: `configs/last1_upright_ce_dice_thr0p001_aug.yaml`. Fresh head,
+  original wd .01, same cohort/loss/schedule; online frozen encoder, no feature
+  cache for train OR validation. Train-only independent photometric augmentation,
+  no geometric transforms; GT unchanged. Validation/clinical inference clean.
+- `training.run_ce_dice_clinical` benchmarks 32 batches in a separate process
+  before training, writes `checkpoints/benchmark.json` and
+  `plots/augmentation_preview.png`, then starts fresh/resumes the dedicated run.
+  Benchmark failure prevents training. Local CPU tests do not establish campus
+  CUDA memory/speed; read the benchmark log before making runtime claims.
+- Current user-reported campus torch: 2.14.1+cu130; upright last-one cache about
+  98.3 GB; recent cached epochs about 11 minutes (older timings below differ).
+
 ## Campus / cluster layout (HUJI josko lab)
 - Nodes: `casNNN` (e.g. `cas703`). **128 GB RAM, ~24 GB GPU.** GPU userspace is at
   `/usr/local/APP/nvidia/<driver>/lib`.

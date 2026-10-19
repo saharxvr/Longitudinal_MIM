@@ -17,6 +17,7 @@ case "$cache_layers" in
     *) echo "Expected a one- or four-layer config"; exit 1 ;;
 esac
 export CACHE_LAYERS="$cache_layers"
+export NO_CACHE="$(python -c 'import sys,yaml; print(int(bool(yaml.safe_load(open(sys.argv[1])).get("no_cache", False))))' "$HEAD_CONFIG")"
 export ROTATION_K="$(python -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1])).get("rotation_k", 0))' "$HEAD_CONFIG")"
 export FLIP_HORIZONTAL="$(python -c 'import sys,yaml; print(int(bool(yaml.safe_load(open(sys.argv[1])).get("flip_horizontal", False))))' "$HEAD_CONFIG")"
 mkdir -p "$RUN"
@@ -43,7 +44,8 @@ print('manifest SHA256:', hashlib.sha256(payload).hexdigest(), flush=True)
 rotation_k = int(os.environ.get('ROTATION_K', '0'))
 flip_horizontal = bool(int(os.environ.get('FLIP_HORIZONTAL', '0')))
 metadata = Path(os.environ['CACHE_DIR']) / 'cache_config.json'
-if rotation_k or flip_horizontal or metadata.is_file():
+online = bool(int(os.environ.get('NO_CACHE', '0')))
+if not online and (rotation_k or flip_horizontal or metadata.is_file()):
     if not metadata.is_file():
         raise SystemExit('Rotated run requires cache_config.json from native extraction')
     cache_config = json.loads(metadata.read_text())
@@ -76,16 +78,20 @@ for record in records:
     if pair_id in seen_pairs:
         raise SystemExit(f'Duplicate pair: {pair_id}')
     seen_pairs.add(pair_id)
+    counts[split] += 1
+    if online:
+        continue
     path = Path(os.environ['CACHE_DIR']) / pair_id / 'feat.pt'
     if not path.is_file():
         raise SystemExit(f'Missing cache file: {path}')
     cache_bytes += path.stat().st_size
-    counts[split] += 1
     if len(samples[split]) < 3:
         samples[split].append(path)
 for split in ('train', 'val', 'test'):
     if not counts[split]:
         raise SystemExit(f'Empty split: {split}')
+    if online:
+        continue
     for path in samples[split]:
         cached = torch.load(path, map_location='cpu', weights_only=False)
         if cached.get('rotation_k', 0) != rotation_k:
@@ -98,9 +104,30 @@ for split in ('train', 'val', 'test'):
             tensor = cached[key]
             if tuple(tensor.shape) != shape or not torch.isfinite(tensor).all():
                 raise SystemExit(f'Invalid {key} in {path}: {tuple(tensor.shape)}')
-print('PASS: disjoint manifest, complete cache coverage:', dict(counts), flush=True)
-print('PASS: sampled shapes/finite values (up to three files per split)', flush=True)
-print(f"cache: {os.environ['CACHE_DIR']} ({cache_bytes/1e9:.1f} GB on disk); OS page cache, not forced RAM preload", flush=True)
+if online:
+    from datasets import LongitudinalPairDataset
+    for split in ('train', 'val'):
+        dataset = LongitudinalPairDataset(os.environ['DATA'], split=split, rotation_k=rotation_k,
+                                          flip_horizontal=flip_horizontal)
+        for record in dataset.records:
+            for key, fallback in (('prior_path', 'prior.nii.gz'), ('current_path', 'current.nii.gz'),
+                                  ('diff_map_path', 'diff_map.nii.gz')):
+                path = Path(dataset._abspath(record, key, fallback))
+                if not path.is_file():
+                    raise SystemExit(f'Missing online input: {path}')
+        for index in range(min(3, len(dataset))):
+            sample = dataset[index]
+            for key in ('img_prior', 'img_curr', 'gt_diff'):
+                tensor = sample[key]
+                if tuple(tensor.shape) != (1, 512, 512) or not torch.isfinite(tensor).all():
+                    raise SystemExit(f'Invalid online {key}: {sample["pair_id"]}')
+    print('PASS: disjoint manifest; complete train/val image/GT paths; sampled finite upright tensors:',
+          dict(counts), flush=True)
+    print('Online frozen encoder: no feature cache read; held-out test images not loaded', flush=True)
+else:
+    print('PASS: disjoint manifest, complete cache coverage:', dict(counts), flush=True)
+    print('PASS: sampled shapes/finite values (up to three files per split)', flush=True)
+    print(f"cache: {os.environ['CACHE_DIR']} ({cache_bytes/1e9:.1f} GB on disk); OS page cache, not forced RAM preload", flush=True)
 if not torch.cuda.is_available():
     raise SystemExit('CUDA unavailable; check venv and NVIDIA library path')
 free, total = torch.cuda.mem_get_info()

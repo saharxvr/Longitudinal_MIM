@@ -35,6 +35,35 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-19 - Stop weight-decay ablation; prepare online augmentation run.**
+  User confirmed cas703 launcher2787709 and trainer2787717 terminated (empty
+  process listing). Preserve completed checkpoints/logs; automatic clinical
+  export/publication did not run. Supplied wd.05 epochs37-42 show train loss
+  .165601 -> .154543, validation loss .727785 -> .741115 and target-matched
+  signed Dice .807289-.808999 (epoch42 .808457). Earlier supplied epoch23 was
+  .813015; original wd.01 best epoch25 is .814512. Missing wd epochs28-36:
+  do not claim its actual best epoch or clinical inferiority. No demonstrated
+  synthetic-validation improvement justifies stopping per user's preference.
+  New dedicated `_aug` config returns to wd.01 and retains CE+classwise Dice,
+  cutoff.001, frozen RAD-DINO last-one, upright transform, seed42, batch8/accum4,
+  60 epochs and existing patient splits/data only. Training independently
+  perturbs prior/current with probability.8 per image: additive brightness
+  +/- .05, mean-centered contrast .9-1.1, gamma .9-1.1, Gaussian noise with
+  std sampled0-.01, clamped[0,1]. No spatial or GT transform is added.
+  Both train and validation extract online float32 features (no feature cache);
+  validation and clinical inference receive no augmentation. This changes
+  execution/numerics versus cached extraction, so do not describe it as an
+  exactly identical numerical control. The pipeline first benchmarks32 training
+  batches in an isolated process, saves timings/peak GPU memory and a synthetic
+  image/GT preview, then reinitializes for the real run. Benchmark failure gates
+  training; later clinical export/F1/scoped publication retain existing guards.
+  Campus speed and memory remain unmeasured until that benchmark actually runs.
+  Local validation:67 CPU regression tests passed, including online augmented
+  train/clean-val execution, benchmark without saved training state, resume
+  guards, no-cache train/val preflight without held-out test images, and complete
+  mocked clinical export/publication. Bash syntax and scoped whitespace checks
+  passed. No campus process has been started from this Windows session.
+
 - **2026-10-19 - Authorized sequence: weight-decay-only run, THEN augmentation.**
   User requests augmentations using existing data only, no additional clinical
   cohort, and to run stronger head regularization before augmentation changes.

@@ -4,7 +4,86 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
-## Next Run: Weight Decay Only
+## Next Run: Online Photometric Augmentation
+
+The user stopped the wd0.05 run on2026-10-19 after no demonstrated validation
+gain. `last1_upright_ce_dice_thr0p001_aug.yaml` starts a fresh head with the
+original wd0.01, same cohort/splits, upright transform, seed,60-epoch schedule
+and CE+positive/negative classwise Dice at target cutoff0.001.
+
+Train only: independently for each prior/current image, apply the augmentation
+recipe with probability0.8: brightness offset[-0.05,0.05], mean-centered contrast
+[0.9,1.1], gamma[0.9,1.1] and Gaussian noise with std sampled[0,0.01]. Values
+are clamped[0,1]; no subsequent min-max renormalization undoes the perturbation.
+No geometric augmentation, temporal swap or GT modification. Validation and
+clinical inference are clean. The encoder stays frozen, eval-mode and no-grad.
+
+Both training AND validation run the encoder online, bypassing the feature
+cache. The launcher still audits patient/group separation and all train/val
+image/GT paths, plus sampled upright tensor shapes/finiteness. Held-out test
+images are not loaded. Online float32 versus cached features may introduce
+numerical differences; this is not an exactly identical numerical control.
+
+The pipeline first runs32 training batches in a separate process. It writes
+`checkpoints/benchmark.json` (seconds/batch, estimated training-pass time,
+training health and peak allocated CUDA bytes) and
+`plots/augmentation_preview.png` (two clean/augmented image pairs with unchanged
+GT/targets). The benchmark saves no model/checkpoint/run_config/metrics, and
+failure stops the pipeline. The real run then starts from its original seed,
+not benchmark-trained weights; an interrupted real run resumes only its own
+checkpoint. The benchmark estimate excludes validation/diagnostics and includes
+startup. Campus GPU speed/memory cannot be established from local CPU tests.
+
+Run on cas703 after the previous job has stopped:
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+if pgrep -u "$USER" -af 'training[.]train_foundation_diff|training[.]run_upright_clinical|training[.]run_ce_dice_clinical'; then
+    echo "Existing training/pipeline detected. Do not overlap jobs."
+    exit 1
+fi
+export RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_ce_dice_thr0p001_aug
+mkdir -p "$RUN"
+LOG="$RUN/pipeline_$(date +%Y%m%d_%H%M%S)_$$.log"
+touch "$LOG"
+nohup python -u -m training.run_ce_dice_clinical \
+    --config configs/last1_upright_ce_dice_thr0p001_aug.yaml \
+    --publish >> "$LOG" 2>&1 < /dev/null &
+PID=$!
+echo "PID=$PID log=$LOG"
+sleep 3
+if ! kill -0 "$PID" 2>/dev/null; then
+    tail -n 80 "$LOG"
+    exit 1
+fi
+tail -n 30 "$LOG"
+BASH
+```
+
+Monitor the latest log:
+
+```bash
+RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_last1_upright_ce_dice_thr0p001_aug
+LOG=$(ls -t "$RUN"/pipeline_*.log | head -n 1)
+tail -n 60 -F "$LOG"
+```
+
+Ctrl+C stops the viewer, not training. Wait for `[benchmark]` before estimating
+runtime. After all60 epochs the pipeline evaluates the best target-matched signed
+Dice checkpoint on clinical100, verifies native-space probability maps, computes
+the existing per-clinician F1 and pushes only its dedicated result folder. This
+includes the benchmark/augmentation preview, not weights/cache/source scans.
+Stopping early prevents automatic clinical evaluation/publication.
+
+## Previous Run: Weight Decay Only
 
 Run this BEFORE implementing augmentations. The new
 `last1_upright_ce_dice_thr0p001_wd0p05.yaml` differs from the completed CE config

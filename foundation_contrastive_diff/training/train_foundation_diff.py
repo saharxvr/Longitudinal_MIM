@@ -31,6 +31,7 @@ from models import build_change_head, signed_change_map
 from losses import change_map_loss
 from losses.change_map_losses import three_class_change_map_loss
 from datasets import LongitudinalPairDataset, CachedPairDataset
+from datasets.augmentations import augment_cxr, PHOTOMETRIC_RECIPE
 from evaluation.change_detection_metrics import dice_score, iou_score, directional_sensitivity
 from evaluation.training_diagnostics import PredictionDiagnostics
 
@@ -80,15 +81,21 @@ def build_head(device, patch_dim=None, head_type="dglori", dpt_channels=96):
     return build_change_head(head_spec(patch_dim, head_type, dpt_channels), device)
 
 
-def _tokens_from_batch(batch, backbone, device):
+def _tokens_from_batch(batch, backbone, device, augment=False):
     """Return (p_prior, p_curr, cls_prior, cls_curr) from cached feats or the backbone."""
     if backbone is None:  # cached-feature path
+        if augment:
+            raise ValueError("Image augmentation cannot use cached features")
         pp, pc = batch["p_prior"].to(device), batch["p_curr"].to(device)
         if _FEAT_DIM is not None:                 # slice to last-K layers
             pp, pc = pp[..., -_FEAT_DIM:], pc[..., -_FEAT_DIM:]
         return pp, pc, batch["cls_prior"].to(device), batch["cls_curr"].to(device)
-    fp = backbone(batch["img_prior"].to(device))
-    fc = backbone(batch["img_curr"].to(device))
+    with torch.no_grad():
+        prior, current = batch["img_prior"].to(device), batch["img_curr"].to(device)
+        if augment:
+            prior, current = augment_cxr(prior), augment_cxr(current)
+        fp = backbone(prior)
+        fc = backbone(current)
     return fp["patch_tokens"], fc["patch_tokens"], fp["cls_token"], fc["cls_token"]
 
 
@@ -133,7 +140,8 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
     optimizer_steps, nonfinite_gradients, pending_batches = 0, 0, 0
     optimizer.zero_grad()
     for step, batch in enumerate(loader):
-        p_prior, p_curr, cls_prior, cls_curr = _tokens_from_batch(batch, backbone, device)
+        p_prior, p_curr, cls_prior, cls_curr = _tokens_from_batch(
+            batch, backbone, device, augment=getattr(args, "photometric_augmentation", False))
         gt = batch["gt_diff"].to(device)
 
         output, _ = head(p_prior, p_curr, cls_prior, cls_curr)
@@ -169,6 +177,10 @@ def train_one_epoch(head, backbone, loader, optimizer, scheduler, device, args, 
         n_ok += 1
         for k in totals:
             totals[k] += comp[k]
+        if getattr(args, "no_cache", False) and (step == 0 or (step + 1) % 100 == 0):
+            print(f"[train progress] {step + 1} batches; "
+                  f"elapsed={(time.perf_counter() - started)/60:.1f}min; "
+                  f"mean_loss={totals['total']/n_ok:.6f}", flush=True)
     if n_bad:
         print(f"  [warn] skipped {n_bad} non-finite batches this epoch", flush=True)
     n = max(1, n_ok)
@@ -384,7 +396,7 @@ def make_loaders(args, device):
         backbone = FrozenCXRBackbone(
             name=C.BACKBONE, model_id=C.RAD_DINO_MODEL,
             backbone_img_size=C.BACKBONE_IMG_SIZE, num_patch_tokens=C.NUM_PATCH_TOKENS,
-            last_n_layers=args.feat_last_k or C.LAST_N_LAYERS, freeze=C.FREEZE_BACKBONE,
+            last_n_layers=args.feat_last_k or C.LAST_N_LAYERS, freeze=True,
         ).to(device)
         backbone.eval()
         train_ds = LongitudinalPairDataset(args.dataset_root, split="train", img_size=C.IMG_SIZE,
@@ -439,6 +451,10 @@ def parse_args():
     p.add_argument("--save_folder", default=C.SAVE_FOLDER)
     p.add_argument("--plots_folder", default=C.PLOTS_FOLDER)
     p.add_argument("--no_cache", action="store_true", help="run backbone on the fly (no feature cache)")
+    p.add_argument("--photometric_augmentation", action=argparse.BooleanOptionalAction, default=False,
+                   help="mild independent image-only nuisances during training; requires --no_cache")
+    p.add_argument("--benchmark_batches", type=int, default=0,
+                   help="time this many training batches, save benchmark.json, then exit without checkpoints")
     p.add_argument("--balanced", action="store_true", help="class-balanced sampler over anomaly type")
     p.add_argument("--epochs", type=int, default=C.EPOCHS)
     p.add_argument("--batch_size", type=int, default=C.BATCH_SIZE)
@@ -502,6 +518,10 @@ def parse_args():
             cfg = yaml.safe_load(f) or {}
         p.set_defaults(**cfg)       # config = defaults; anything on the CLI still overrides
     args = p.parse_args()
+    if args.photometric_augmentation and (not args.no_cache or args.overfit > 0):
+        p.error("photometric_augmentation requires no_cache and is incompatible with overfit")
+    if args.benchmark_batches < 0 or (args.benchmark_batches and args.benchmark_batches < args.accum):
+        p.error("benchmark_batches must be zero or at least accum")
     if args.diagnostics_every < 1:
         p.error("diagnostics_every must be positive")
     if any(not 0 <= value < 1 for value in args.diagnostics_pred_thresholds + args.diagnostics_gt_thresholds):
@@ -530,6 +550,32 @@ def make_diagnostics(args):
         target_mode=args.target_mode, target_threshold=args.target_threshold,
         tau=args.tau, pos_weight=args.pos_weight, background_weight=args.background_weight,
         components=args.diagnostics_components)
+
+
+def save_augmentation_preview(dataset, path, target_threshold):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    with torch.random.fork_rng(devices=[]):
+        figure, axes = plt.subplots(2, 6, figsize=(18, 6))
+        for row in range(2):
+            sample = dataset[row % len(dataset)]
+            prior, current, gt = (sample[key] for key in ("img_prior", "img_curr", "gt_diff"))
+            target = torch.where(gt.abs() > target_threshold, gt.sign(), torch.zeros_like(gt))
+            images = (prior, augment_cxr(prior[None])[0], current,
+                      augment_cxr(current[None])[0], gt, target)
+            for column, (title, image) in enumerate(zip(
+                    ("prior clean", "prior augmented", "current clean", "current augmented",
+                     "raw GT (unchanged)", "loss target (unchanged)"), images)):
+                signed = column >= 4
+                axes[row, column].imshow(image[0].cpu(), cmap="bwr" if signed else "gray",
+                                        vmin=-1 if signed else 0, vmax=1)
+                axes[row, column].set_title(title)
+                axes[row, column].axis("off")
+        figure.tight_layout()
+        figure.savefig(path, dpi=110)
+        plt.close(figure)
 
 
 def main():
@@ -582,6 +628,45 @@ def main():
     warmup_steps = int(steps_per_epoch * args.warmup_epochs)
     scheduler = cosine_warmup(optimizer, warmup_steps, total_steps)
 
+    if args.photometric_augmentation:
+        print(f"[augmentation] train only: {PHOTOMETRIC_RECIPE}; "
+              "prior/current independent; GT unchanged; validation clean; encoder frozen/eval", flush=True)
+    if args.benchmark_batches:
+        from itertools import islice
+        batches = min(args.benchmark_batches, len(train_loader))
+        if batches < args.accum:
+            raise ValueError("Benchmark needs at least one complete optimizer step")
+        if args.photometric_augmentation:
+            save_augmentation_preview(train_loader.dataset,
+                                      os.path.join(args.plots_folder, "augmentation_preview.png"),
+                                      args.target_threshold)
+        cuda = torch.cuda.is_available() and str(device).startswith("cuda")
+        if cuda:
+            torch.cuda.synchronize(device)
+            torch.cuda.reset_peak_memory_stats(device)
+        started = time.perf_counter()
+        result = train_one_epoch(head, backbone, islice(train_loader, batches), optimizer,
+                                 scheduler, device, args)
+        if cuda:
+            torch.cuda.synchronize(device)
+        seconds = time.perf_counter() - started
+        health = result["health"]
+        if (health["nonfinite_loss_batches"] or health["nonfinite_gradient_steps"]
+                or not health["optimizer_steps"]):
+            raise ValueError(f"Benchmark failed training health checks: {health}")
+        report = dict(run_config=vars(args), batches=batches, seconds=seconds,
+                      seconds_per_batch=seconds / batches,
+                      estimated_train_pass_seconds=seconds / batches * len(train_loader),
+                      cuda_peak_allocated_bytes=torch.cuda.max_memory_allocated(device) if cuda else None,
+                      training_health=health, photometric_recipe=PHOTOMETRIC_RECIPE
+                      if args.photometric_augmentation else None)
+        with open(os.path.join(args.save_folder, "benchmark.json"), "w") as stream:
+            _json.dump(report, stream, indent=2)
+        print(f"[benchmark] {batches} batches in {seconds:.1f}s; {seconds/batches:.3f}s/batch; "
+              f"estimated train pass {report['estimated_train_pass_seconds']/60:.1f}min "
+              "(excludes validation/diagnostics; includes startup). No checkpoints saved.", flush=True)
+        return
+
     best_dice = -1.0
     start_epoch = 0
     metrics_csv = os.path.join(args.save_folder, "metrics.csv")
@@ -595,7 +680,8 @@ def main():
         for key, default in (("rotation_k", 0), ("flip_horizontal", False), ("target_mode", "continuous"),
                              ("target_threshold", 0.05), ("background_weight", 1.0),
                              ("eval_gt_threshold", None), ("loss_mode", "regression"),
-                             ("checkpoint_metric", "support_dice")):
+                             ("checkpoint_metric", "support_dice"),
+                             ("photometric_augmentation", False), ("no_cache", False)):
             if saved_config.get(key, default) != getattr(args, key):
                 raise ValueError(f"Resume checkpoint differs in {key}; use a new run directory")
         if args.loss_mode == "ce_dice":
