@@ -35,6 +35,26 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-20 - Augmentation best20 clinical100 results pulled and checked.**
+  Campus publication bb606b75 contains
+  results/clinical100_upright_ce_dice_thr0p001_aug_b16_20261020_131848.
+  Verification records early-stop at completed epoch46/60, selected epoch20,
+  synthetic best pooled signed Dice0.812495 versus baseline0.814512.
+  Locally checked all100 signed-output hashes and300 probability hashes,
+  probability geometry/range/sum and signed-score identity, and100 thresholded
+  masks. Clinical source and500 annotation hashes match the baseline exactly.
+  Published OV combined F1 baseline->augmentation:
+  Avi .299795->.295409, Benny .297710->.304833,
+  Sigal .305785->.321285, Smadar .308911->.327553,
+  Nitzan .358209->.356364. Unweighted clinician mean .314082->.321089;
+  positive .320778->.303580, negative .306636->.345320.
+  Consensus signed pixel Dice .161313->.158062; positive .207159->.185962,
+  negative .106521->.115858. Empty-consensus12 mean predicted FP area
+  .092229->.097676. Mixed result: improved negative detection and modest mean
+  component F1, not broad localization/false-positive improvement or evidence
+  of statistical significance. Scores read from published reports; OV matcher
+  not independently rerun in this check. Clinical cohort remains exploratory.
+
 - **2026-10-20 - User authorizes stopping augmentation and clinical export.**
   User reports latest epoch45, best target-matched pooled signed Dice0.812495
   at20, latest0.807493. Original nonaugmented best0.814512: no demonstrated
