@@ -35,6 +35,19 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-20 - Best-filtered clinical heatmap gallery rendered locally.**
+  User requests scans/heatmaps after best tested filtering. Rendered all100pairs,
+  both CE models, threshold0.75/sign-specific area1000 in
+  review_outputs/clinical100_best_filtered_20261020/index.html.
+  Each15panel image includes prior/current, consensus, continuous raw scores,
+  threshold-only and filtered overlays for each model, removed-pixel comparison,
+  and five clinicians. Prediction/annotation hashes checked; all30 rendered-mask
+  directional/combined F1 values exactly reproduce sweep results. Three helper
+  tests passed. Gallery is local-only; no source-scan panels uploaded to Git.
+  First case illustrates complete removal of thresholded predictions; this is
+  not proof of a clinically correct negative. Existing exploratory-tuning and
+  small-change-loss caveats still apply.
+
 - **2026-10-20 - Exploratory postprocessing sweep on both CE clinical100 maps.**
   User requested literal Itamar cleanup, other methods and thresholds against
   clinicians; confirmed both baseline and augmentation. Ran39settings/model:
