@@ -38,6 +38,7 @@ class FrozenCXRBackbone(nn.Module):
         num_patch_tokens: int = 1369,
         last_n_layers: int = 1,
         freeze: bool = True,
+        selected_layer: int | None = None,
     ):
         super().__init__()
         self.name = name
@@ -45,8 +46,14 @@ class FrozenCXRBackbone(nn.Module):
         self.backbone_img_size = int(backbone_img_size)
         self.num_patch_tokens = int(num_patch_tokens)
         self.last_n_layers = int(last_n_layers)
+        self.selected_layer = selected_layer
+        self._layer_parity_checked = False
 
         self.backbone, mean, std = self._build_backbone(name, model_id, checkpoint, config)
+        if selected_layer is not None:
+            self._validate_layers([selected_layer])
+            if last_n_layers != 1:
+                raise ValueError("Selected-layer extraction requires last_n_layers=1")
         # Normalization buffers (move with .to(device)).
         self.register_buffer("_mean", torch.tensor(mean).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("_std", torch.tensor(std).view(1, 3, 1, 1), persistent=False)
@@ -108,6 +115,8 @@ class FrozenCXRBackbone(nn.Module):
             patch_tokens: [B, NUM_PATCH_TOKENS, BACKBONE_DIM * last_n_layers]
             cls_token:    [B, BACKBONE_DIM]
         """
+        if self.selected_layer is not None:
+            return self.forward_layers(img, [self.selected_layer])[self.selected_layer]
         x = self._prep(img)
         need_hidden = self.last_n_layers > 1
         out = self.backbone(pixel_values=x, output_hidden_states=need_hidden)
@@ -123,3 +132,34 @@ class FrozenCXRBackbone(nn.Module):
             patch = hs[:, -n:, :]               # last N tokens = patches (robust to registers)
             cls = hs[:, 0, :]                   # token 0 = [CLS]
         return {"patch_tokens": patch, "cls_token": cls}
+
+    def _validate_layers(self, layers):
+        depth = self.backbone.config.num_hidden_layers
+        if (not layers or len(set(layers)) != len(layers)
+                or any(type(layer) is not int or not 1 <= layer <= depth for layer in layers)):
+            raise ValueError(f"Select unique one-based transformer blocks in [1,{depth}]")
+        if not isinstance(getattr(self.backbone, "layernorm", None), nn.LayerNorm):
+            raise ValueError("Selected-layer extraction requires the DINOv2 final LayerNorm")
+
+    @torch.no_grad()
+    def forward_layers(self, img: torch.Tensor, layers: list[int]) -> dict:
+        """One pass; each selected block uses frozen final LayerNorm and its own CLS."""
+        self._validate_layers(layers)
+        if self.backbone.training or any(parameter.requires_grad for parameter in self.backbone.parameters()):
+            raise ValueError("Layer ablation requires a frozen eval-mode backbone")
+        out = self.backbone(pixel_values=self._prep(img), output_hidden_states=True)
+        depth = self.backbone.config.num_hidden_layers
+        if len(out.hidden_states) != depth + 1:
+            raise ValueError("Expected embedding state followed by one state per transformer block")
+        if not self._layer_parity_checked:
+            normalized = self.backbone.layernorm(out.hidden_states[depth])
+            torch.testing.assert_close(normalized, out.last_hidden_state, rtol=1e-5, atol=1e-6)
+            self._layer_parity_checked = True
+        features = {}
+        for layer in layers:
+            hidden = (out.last_hidden_state if layer == depth
+                      else self.backbone.layernorm(out.hidden_states[layer]))
+            features[layer] = dict(
+                patch_tokens=hidden[:, -self.num_patch_tokens:, :].detach().contiguous(),
+                cls_token=hidden[:, 0, :].detach().contiguous())
+        return features

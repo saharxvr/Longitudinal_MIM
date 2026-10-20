@@ -426,6 +426,11 @@ def main():
     if args.flip_horizontal != run_config.get("flip_horizontal", False):
         raise ValueError("Evaluation horizontal flip differs from the checkpoint")
     feat_dim = spec["kwargs"]["patch_dim"] if spec else None
+    selected_layer = run_config.get("backbone_layer")
+    if selected_layer is not None:
+        if (not args.no_cache or not spec or feat_dim != spec["kwargs"]["backbone_dim"]
+                or run_config.get("feature_normalization") != "final_layernorm"):
+            raise ValueError("Selected-layer evaluation requires no_cache and normalized single-layer features")
 
     if args.no_cache:
         from models import FrozenCXRBackbone
@@ -434,6 +439,7 @@ def main():
             backbone_img_size=C.BACKBONE_IMG_SIZE, num_patch_tokens=C.NUM_PATCH_TOKENS,
             last_n_layers=(feat_dim // spec["kwargs"]["backbone_dim"] if spec else C.LAST_N_LAYERS),
             freeze=C.FREEZE_BACKBONE,
+            selected_layer=selected_layer,
         ).to(device).eval()
         ds = LongitudinalPairDataset(args.dataset_root, split=args.split, img_size=C.IMG_SIZE,
                          rotation_k=args.rotation_k, flip_horizontal=args.flip_horizontal)

@@ -1,6 +1,7 @@
 # Single-layer depth ablation with a shared frozen backbone
 
-Status: proposed implementation; no training launched and no active run changed.
+Status: implemented with config-driven benchmark/training launcher; campus
+benchmark and training have not been launched from this workstation.
 
 ## Question and scope
 
@@ -123,4 +124,40 @@ describe their results as exploratory rather than an untouched clinical test.
 4. Add tests and benchmark/config-driven launch support.
 5. Run benchmark on campus, then launch the fixed 30-epoch experiment.
 
-Do not modify or stop the current augmentation run as part of this plan.
+The preceding augmentation run has since been explicitly stopped and its best
+checkpoint evaluated. This experiment uses a new isolated run directory.
+
+## Implemented launch and outputs
+
+Run `bash training/run_layer_ablation.sh` from the study directory after pulling
+the code and checking no other GPU job is running. It runs the existing manifest
+and train/validation input preflight, then 10 warmup + 100 measured training
+batches with all heads and diagnostics, plus a four-batch clean validation timing
+sample. Benchmark failure prevents training. The real 30-epoch run is a separate
+process with fresh heads/RNG, not benchmark-trained weights.
+
+The dedicated config is
+`configs/layer_depth_6_9_12_aug_30.yaml`. Batch16/accum2 is the starting point,
+not a measured campus memory guarantee. Diagnostic sweeps are restricted to
+prediction0.5 and GT0.001/0.05 to control triple-head CPU overhead; full per-pair
+metrics and connected-component diagnostics remain enabled every epoch.
+
+The launcher auto-resumes the authoritative `checkpoints/shared_last.pt` at a
+completed epoch boundary. Pending accumulation at epoch end is discarded and
+reported, matching the previous trainer. Code, manifest, resolved configuration
+and backbone-config/revision differences block resume. A failure mid-epoch
+replays that epoch; there is no mid-epoch resume.
+
+Each `checkpoints/layer_06`, `layer_09`, `layer_12` contains inference-ready
+`best.pt`/`last.pt`, `metrics.csv`, selected-layer configuration and diagnostics.
+The shared snapshot includes all optimizer/scheduler states, RNG/generator states,
+best weights and history. The shared atomic snapshot is authoritative; resume
+recreates per-layer checkpoints/history from it.
+
+On successful completion, `--publish` packages metrics, diagnostic files,
+configuration and provenance into one timestamped results directory and pushes
+only that directory. No weights or source scans are uploaded. Clinical prediction
+is deliberately separate: choose depths on synthetic validation first. Both
+clinical and synthetic evaluators honor the saved `backbone_layer` and
+`feature_normalization`; synthetic inference requires `--no_cache` for these
+checkpoints.

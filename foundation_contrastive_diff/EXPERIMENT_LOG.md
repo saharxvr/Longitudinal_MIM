@@ -35,6 +35,34 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-20 - Implemented shared-backbone block6/9/12 ablation.**
+  User requests implementation, Git push and campus launch command.
+  New configs/layer_depth_6_9_12_aug_30.yaml and
+  training/run_layer_ablation.sh: online frozen RAD-DINO, identical initialized
+  independent cross-attention+DPT heads, own CLS at each depth, frozen final
+  LayerNorm,30epochs/twoepoch warmup/cosine, batch16/accum2, existing augmentation
+  and CE+classwiseDice. No cross-layer fusion. Sequential branch backward shares
+  one encoder pass per image. Existing manifest/input preflight reused.
+  Gated benchmark10warmup+100measured batches includes all heads/diagnostics,
+  then clean validation timing sample; real training starts in a fresh process.
+  Primary threshold sweeps narrowed to pred0.5 and GT0.001/0.05 to limit CPU
+  overhead; per-pair and component diagnostics remain enabled every epoch.
+  Atomic shared epoch-boundary snapshot stores all optimizer/scheduler states,
+  RNG/generators, histories and best heads. Per-layer best/last inference
+  checkpoints carry explicit backbone_layer/final_layernorm metadata; synthetic
+  and clinical evaluators honor it. Resume rejects config/code/manifest/model
+  identity mismatches. Nonfinite loss/output/gradients fail explicitly.
+  Completion publishes only dedicated metrics/diagnostic/provenance artifacts;
+  clinical inference is separate after synthetic-validation layer selection.
+  Local8new tests pass: cached actual RAD-DINO weights confirm layer indexing,
+  normalization/final-output parity, frozen extraction; miniature real DPT
+  backward, independent heads, shared calls, branch-order/RNG/resume continuity,
+  partial accumulation policy, atomic-save failure, benchmark/train/resume/
+  publication lifecycle and selected-layer clinical inference. Campus GPU speed,
+  memory and scientific results remain unmeasured; no campus job launched here.
+  Final combined regression suite:76tests PASS83.790s; both launch scripts pass
+  Bash syntax checks and scoped staged whitespace checks pass.
+
 - **2026-10-20 - Augmentation best20 clinical100 results pulled and checked.**
   Campus publication bb606b75 contains
   results/clinical100_upright_ce_dice_thr0p001_aug_b16_20261020_131848.

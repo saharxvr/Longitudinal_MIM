@@ -257,10 +257,14 @@ def run(args):
     del state
     width = spec["kwargs"]["backbone_dim"]
     layers = spec["kwargs"]["patch_dim"] // width
+    selected_layer = config.get("backbone_layer")
+    if selected_layer is not None and (layers != 1 or config.get("feature_normalization") != "final_layernorm"):
+        raise ValueError("Selected-layer checkpoint requires one layer and final_layernorm features")
     backbone = FrozenCXRBackbone(
         name=settings.BACKBONE, model_id=settings.RAD_DINO_MODEL,
         backbone_img_size=settings.BACKBONE_IMG_SIZE,
         num_patch_tokens=settings.NUM_PATCH_TOKENS, last_n_layers=layers, freeze=True,
+        selected_layer=selected_layer,
     ).to(args.device).eval()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     metadata = dict(checkpoint_sha256=digest, head_spec=spec, run_config=config,

@@ -4,7 +4,69 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
-## Next Run: Online Photometric Augmentation
+## Next Run: Single-Layer Depth Ablation
+
+See [the experiment plan](../LAYER_DEPTH_ABLATION_PLAN.md). One frozen RAD-DINO
+pass per image supplies blocks6/9/12 to three independent, identically initialized
+cross-attention+DPT heads. Each head sees one depth only, including that depth's
+CLS token; frozen final LayerNorm is applied consistently. Thirty epochs with a
+two-epoch warmup and30-epoch cosine schedule. This is a shorter-budget screening
+experiment, not proof of converged rankings.
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+cd /cs/labs/josko/sahar_aharon/repos
+git pull --ff-only
+cd foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+if pgrep -u "$USER" -af 'training[.](train_foundation_diff|train_layer_ablation|run_ce_dice_clinical|run_upright_clinical)|training/run_layer_ablation[.]sh'; then
+    echo "Existing training/pipeline detected. Do not overlap GPU jobs."
+    exit 1
+fi
+RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_layer_depth_6_9_12_aug_30
+mkdir -p "$RUN"
+LOG="$RUN/pipeline_$(date +%Y%m%d_%H%M%S)_$$.log"
+touch "$LOG"
+nohup bash training/run_layer_ablation.sh >> "$LOG" 2>&1 < /dev/null &
+PID=$!
+echo "PID=$PID log=$LOG"
+sleep 5
+if ! kill -0 "$PID" 2>/dev/null; then
+    tail -n 100 "$LOG"
+    exit 1
+fi
+tail -n 30 "$LOG"
+BASH
+```
+
+The launcher preflights data, benchmarks10warmup+100measured batches, and starts
+fresh30epoch training only after benchmark success. It reports estimated epoch
+time including sampled validation/diagnostics, not a guaranteed speedup.
+Check `checkpoints/benchmark.json`. Do not change batch size mid-run; if the
+benchmark fails due to memory, choose one smaller microbatch for all heads and
+use a new matching run directory/config.
+
+Rerunning the same command resumes `checkpoints/shared_last.pt` if present.
+Resume rejects changes to training code/config/manifest/backbone identity.
+Each `checkpoints/layer_06`, `layer_09`, `layer_12` has separate best/last
+inference checkpoints and diagnostics. At completion the launcher automatically
+publishes only metrics/provenance/diagnostic artifacts, not weights or scans.
+Clinical100 evaluation remains a separate step after synthetic-validation
+selection, not a clinical-driven branch-selection sweep.
+
+Monitor:
+
+```bash
+RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_layer_depth_6_9_12_aug_30
+LOG=$(ls -t "$RUN"/pipeline_*.log | head -n 1)
+tail -n 60 -F "$LOG"
+```
+
+## Previous Run: Online Photometric Augmentation
 
 The user stopped the wd0.05 run on2026-10-19 after no demonstrated validation
 gain. `last1_upright_ce_dice_thr0p001_aug.yaml` starts a fresh head with the

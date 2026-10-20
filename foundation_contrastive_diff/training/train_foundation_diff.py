@@ -443,7 +443,7 @@ def make_loaders(args, device):
 
 
 # ---------------------------------------------------------------------------
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(description="RQ1: train D-GLoRI change-map head on frozen features")
     p.add_argument("--config", default="", help="YAML config; its values become defaults, CLI flags override")
     p.add_argument("-o", "--dataset_root", default=None, help="folder with manifest[_split].jsonl")
@@ -507,9 +507,10 @@ def parse_args():
     # Config file: pre-scan for --config, load it, and make its keys the arg defaults.
     import sys as _sys
     cfg_path = ""
-    for i, a in enumerate(_sys.argv):
-        if a == "--config" and i + 1 < len(_sys.argv):
-            cfg_path = _sys.argv[i + 1]
+    arguments = _sys.argv[1:] if argv is None else argv
+    for i, a in enumerate(arguments):
+        if a == "--config" and i + 1 < len(arguments):
+            cfg_path = arguments[i + 1]
         elif a.startswith("--config="):
             cfg_path = a.split("=", 1)[1]
     if cfg_path:
@@ -517,7 +518,7 @@ def parse_args():
         with open(cfg_path) as f:
             cfg = yaml.safe_load(f) or {}
         p.set_defaults(**cfg)       # config = defaults; anything on the CLI still overrides
-    args = p.parse_args()
+    args = p.parse_args(arguments)
     if args.photometric_augmentation and (not args.no_cache or args.overfit > 0):
         p.error("photometric_augmentation requires no_cache and is incompatible with overfit")
     if args.benchmark_batches < 0 or (args.benchmark_batches and args.benchmark_batches < args.accum):

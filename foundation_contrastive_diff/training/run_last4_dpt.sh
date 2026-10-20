@@ -133,6 +133,9 @@ if not torch.cuda.is_available():
 free, total = torch.cuda.mem_get_info()
 print(f'torch {torch.__version__}; GPU free {free/1e9:.1f} / {total/1e9:.1f} GB', flush=True)
 PY
+if [[ "${PREFLIGHT_ONLY:-0}" == "1" ]]; then
+    exit 0
+fi
 exec python -u -m training.train_foundation_diff --config "$HEAD_CONFIG" \
     --dataset_root "$DATA" --cache_dir "$CACHE_DIR" \
     --save_folder "$RUN/checkpoints" --plots_folder "$RUN/plots" --resume "$@"
