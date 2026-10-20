@@ -36,6 +36,10 @@ CODE_FILES = (
     "evaluation/training_diagnostics.py", "constants.py",
 )
 
+def json_record(value):
+    """Canonicalize JSON key types before comparing in-memory and saved records."""
+    return json.loads(json.dumps(value, allow_nan=False))
+
 
 def atomic_save(state, path):
     temporary = path.with_suffix(".tmp")
@@ -253,8 +257,8 @@ def run(args, publish_results=False, benchmark_warmup=10):
     folder.mkdir(parents=True, exist_ok=True)
     plots = Path(args.plots_folder)
     plots.mkdir(parents=True, exist_ok=True)
-    config = {key: value for key, value in vars(args).items()
-              if key not in ("resume", "benchmark_batches")}
+    config = json_record({key: value for key, value in vars(args).items()
+                          if key not in ("resume", "benchmark_batches")})
     provenance = dict(
         manifest_sha256=hashlib.sha256((Path(args.dataset_root) / "manifest_split.jsonl").read_bytes()).hexdigest(),
         code_sha256={name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in CODE_FILES})
@@ -269,6 +273,7 @@ def run(args, publish_results=False, benchmark_warmup=10):
     provenance.update(model_id=C.RAD_DINO_MODEL,
                       backbone_revision=getattr(backbone.backbone.config, "_commit_hash", None),
                       backbone_config=backbone.backbone.config.to_dict())
+    provenance = json_record(provenance)
     if not len(val_loader) or len(train_loader) < args.accum:
         raise ValueError("Need validation data and at least one complete optimizer update")
     generators = configure_generators(train_loader, val_loader, args.seed)

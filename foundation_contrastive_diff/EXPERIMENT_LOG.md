@@ -35,6 +35,18 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-20 - Fixed benchmark provenance JSON key mismatch.**
+  Campus block6/9/12 benchmark succeeded:1.48615s/shared train batch,
+  1.28124s/sample validation batch, estimated1698.38s/epoch, allocated5.996GB,
+  reserved6.421GB. Real training aborted before epoch1 at provenance equality.
+  Backbone config id2label has integer keys in memory but string keys after
+  JSON serialization. Canonicalize config/provenance through JSON before all
+  comparisons/snapshot storage; retain all config/code/manifest/model checks.
+  Regression fixture now includes integer id2label keys in full benchmark/
+  train/resume lifecycle. No completed training checkpoint is expected from
+  this failed launch. Rerun standard launcher after pull: it repeats benchmark
+  with updated code hashes then starts fresh training; no deletion required.
+
 - **2026-10-20 - Added component cutoff500; compared250/500 at fixed0.75.**
   Expanded exploratory sweep to44settings/model; all30baseline F1 values
   reproduced,3tests pass. Fixed threshold.75, mean clinician detection F1

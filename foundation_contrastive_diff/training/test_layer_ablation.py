@@ -20,7 +20,8 @@ class TinyBackbone(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.calls = 0
-        self.backbone = SimpleNamespace(config=SimpleNamespace(to_dict=lambda: {"model_type": "test"}))
+        self.backbone = SimpleNamespace(config=SimpleNamespace(
+            to_dict=lambda: {"model_type": "test", "id2label": {0: "LABEL_0", 1: "LABEL_1"}}))
 
     def _validate_layers(self, layers):
         if not layers:
