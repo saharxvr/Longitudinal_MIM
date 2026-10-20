@@ -52,7 +52,7 @@ def match_counts(reference_labels, reference_slices, prediction_labels, predicti
 
 def configurations():
     result = []
-    for method in ("raw", "components_50", "components_250", "components_1000",
+    for method in ("raw", "components_50", "components_250", "components_500", "components_1000",
                    "gaussian_1", "gaussian_2", "gaussian_1_components_250"):
         for threshold in (.1, .25, .5, .75, .9):
             result.append(dict(method=method, threshold=threshold))

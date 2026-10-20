@@ -34,7 +34,7 @@ class PostprocessingTests(unittest.TestCase):
         self.assertEqual(negative.sum(), 100)
         self.assertFalse(any(mask.any() for mask in masks_for(scores, "components_250", .5)))
         np.testing.assert_array_equal(scores, before)
-        self.assertEqual(len(configurations()), 39)
+        self.assertEqual(len(configurations()), 44)
 
     def test_literal_legacy_suppresses_high_scores(self):
         import torch

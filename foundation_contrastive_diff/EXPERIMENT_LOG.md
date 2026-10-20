@@ -35,6 +35,19 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-20 - Added component cutoff500; compared250/500 at fixed0.75.**
+  Expanded exploratory sweep to44settings/model; all30baseline F1 values
+  reproduced,3tests pass. Fixed threshold.75, mean clinician detection F1
+  original/augmented: raw .333182/.329690; area250 .437635/.439917;
+  area500 .461260/.457385; area1000 .476557/.488400.
+  Area500 is close to but below historical Itamar100 mean.464630 at this
+  operating point. Augmented500 best tested threshold.9 gives.474662, but this
+  is a different exploratory threshold selection. Mean predicted area changes
+  very little250->1000 (original13.34->13.25%, augmented13.99->13.88%):
+  detection counts sensitive to tiny fragments, not solved broad false positives.
+  Full report/results: results/clinical100_postprocessing_cc500_20261020.
+  No clinically safe cutoff or independent-test improvement claimed.
+
 - **2026-10-20 - Best-filtered clinical heatmap gallery rendered locally.**
   User requests scans/heatmaps after best tested filtering. Rendered all100pairs,
   both CE models, threshold0.75/sign-specific area1000 in
