@@ -35,6 +35,26 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-20 - Exploratory postprocessing sweep on both CE clinical100 maps.**
+  User requested literal Itamar cleanup, other methods and thresholds against
+  clinicians; confirmed both baseline and augmentation. Ran39settings/model:
+  raw, sign-specific area50/250/1000, Gaussian1/2, Gaussian1+area250 at
+  thresholds.1/.25/.5/.75/.9; actual legacy cleanup at0/.1/.25/.5.
+  All input prediction and annotation hashes verified (explicit Windows newline
+  normalization only). Reproduced all30 published baseline clinician F1 values.
+  102 randomized/empty matcher comparisons reproduce reference-first legacy
+  greedy matching;3unit tests passed. Best tested: threshold.75+area1000
+  equivalent512pixels, mean clinician F1 .476557 original/.488400 augmented
+  versus .314082/.321089 raw. Area1000 at unchanged.5 already .471767/.480313.
+  Literal legacy function on restored native maps gives .264976/.260316 at0:
+  not historical full model-space pipeline; high-score suppression unsuitable
+  for CE probability differences. Best empty-consensus mean predicted area
+  still8.01%/8.37%, max40.47%/46.41%. Largest tested cutoff wins: boundary
+  result, not global optimum; potential loss of true small changes and broad
+  any-overlap detections remain concerns. All results exploratory tuning on
+  same reused100cases, no independent-test/statistical-significance claim.
+  Full report/tables: results/clinical100_postprocessing_sweep_20261020_verified.
+
 - **2026-10-20 - Implemented shared-backbone block6/9/12 ablation.**
   User requests implementation, Git push and campus launch command.
   New configs/layer_depth_6_9_12_aug_30.yaml and
