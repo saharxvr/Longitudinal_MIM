@@ -190,7 +190,12 @@ class TrainingDiagnosticsTests(unittest.TestCase):
         self._check_ce_pipeline_artifacts('last1_upright_ce_dice_thr0p001_wd0p05.yaml',
                                           'clinical100_upright_ce_dice_thr0p001_wd0p05_')
 
-    def _check_ce_pipeline_artifacts(self, config_name, result_prefix):
+    def test_ce_early_stopped_evaluation_only(self):
+        self._check_ce_pipeline_artifacts("last1_upright_ce_dice_thr0p001_aug.yaml",
+                                         "clinical100_upright_ce_dice_thr0p001_aug_b16_",
+                                         evaluate_only=True)
+
+    def _check_ce_pipeline_artifacts(self, config_name, result_prefix, evaluate_only=False):
         import nibabel as nib
         import numpy as np
         import yaml
@@ -212,6 +217,8 @@ class TrainingDiagnosticsTests(unittest.TestCase):
             run = root / Path(config['save_folder']).parent.name
             config.update(dataset_root=str(root), cache_dir=str(root / 'cache'),
                           save_folder=str(run / 'checkpoints'), plots_folder=str(run / 'plots'), epochs=1)
+            if evaluate_only:
+                config["epochs"] = 60
             config_path = root / 'config.yaml'
             config_path.write_text(yaml.safe_dump(config))
 
@@ -270,13 +277,30 @@ class TrainingDiagnosticsTests(unittest.TestCase):
                 infer.assert_not_called()
                 f1.assert_not_called()
                 publish.assert_not_called()
-                with patch.object(pipeline, 'ROOT', root), \
-                     patch.object(pipeline.subprocess, 'run', side_effect=finish_training):
-                    destination = pipeline.run(config_path, root, True)
+                if evaluate_only:
+                    environment = dict(CACHE_DIR=config["cache_dir"])
+                    finish_training(['bash', 'training/run_last4_dpt.sh', '--benchmark_batches', '32'],
+                                    env=environment)
+                    finish_training(['bash', 'training/run_last4_dpt.sh'], env=environment)
+                    with patch.object(pipeline.subprocess, 'run') as train:
+                        with self.assertRaisesRegex(ValueError, "epoch budget"):
+                            pipeline.run(config_path, root)
+                    infer.assert_not_called()
+                    with patch.object(pipeline, 'ROOT', root), \
+                         patch.object(pipeline.subprocess, 'run') as train:
+                        destination = pipeline.run(config_path, root, True, evaluate_only=True)
+                    train.assert_not_called()
+                else:
+                    with patch.object(pipeline, 'ROOT', root), \
+                         patch.object(pipeline.subprocess, 'run', side_effect=finish_training):
+                        destination = pipeline.run(config_path, root, True)
                 publish.assert_called_once_with(destination)
                 self.assertTrue(destination.name.startswith(result_prefix))
                 verification = json.loads((destination / 'verification.json').read_text())
                 self.assertEqual(verification['pairs_verified'], 100)
+                self.assertEqual(verification['evaluation_only'], evaluate_only)
+                self.assertEqual(verification['stopped_early'], evaluate_only)
+                self.assertEqual(verification['completed_epoch'], 1)
                 self.assertEqual(len(verification['probability_sha256']), 100)
                 self.assertEqual(len(verification['clinical_source_sha256']), 200)
                 self.assertEqual(len(verification['annotation_sha256']), 500)

@@ -90,6 +90,26 @@ the existing per-clinician F1 and pushes only its dedicated result folder. This
 includes the benchmark/augmentation preview, not weights/cache/source scans.
 Stopping early prevents automatic clinical evaluation/publication.
 
+### Evaluate an explicitly stopped run
+
+After stopping both the original launcher and its trainer, keep the YAML epoch
+budget unchanged and use:
+
+```bash
+python -u -m training.run_ce_dice_clinical \
+    --config configs/last1_upright_ce_dice_thr0p001_aug.yaml \
+    --evaluate-only --publish
+```
+
+Use the same campus environment setup and nohup/logging as above. This mode
+acquires both pipeline and training locks, never launches training/benchmarking,
+and evaluates `best.pt`, not `last.pt`. Missing/corrupt checkpoints or artifacts
+fail explicitly. All original configuration checks and clinical probability/F1
+checks still apply. Publication includes diagnostics from the selected best and
+last completed checkpoint epochs, the unchanged configured budget, and explicit
+early-stop/evaluation-only metadata. It does not relabel the run as completed.
+The default mode still requires the full configured budget.
+
 ## Previous Run: Weight Decay Only
 
 Run this BEFORE implementing augmentations. The new

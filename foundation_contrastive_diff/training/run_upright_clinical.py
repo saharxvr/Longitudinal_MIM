@@ -184,7 +184,8 @@ def publish(destination):
         raise ValueError("Campus publication expects the main branch")
     subprocess.run(["git", "pull", "--ff-only"], cwd=repository, check=True)
     subprocess.run(["git", "add", "-f", "--", *paths], cwd=repository, check=True)
-    subprocess.run(["git", "commit", "-m", f"Publish {destination.name}", "--", *paths],
+    subprocess.run(["git", "commit", "-m", f"Publish {destination.name}", "-m",
+                    "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>", "--", *paths],
                    cwd=repository, check=True)
     subprocess.run(["git", "push", "origin", "HEAD:main"], cwd=repository, check=True)
     print(f"[publish] pushed only {len(paths)} files under {destination}", flush=True)

@@ -35,6 +35,32 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-20 - User authorizes stopping augmentation and clinical export.**
+  User reports latest epoch45, best target-matched pooled signed Dice0.812495
+  at20, latest0.807493. Original nonaugmented best0.814512: no demonstrated
+  gain on this metric; clinical/nuisance comparison remains pending.
+  User requests stop, best-checkpoint clinical100 prediction and Git publication,
+  then a later layer-depth ablation. Added explicit --evaluate-only to the CE
+  pipeline: no training/benchmark subprocess, unchanged60epoch provenance,
+  validated best/last ordering and configuration, actual completed-epoch
+  diagnostics, early-stop metadata, and both pipeline/training locks on CLI.
+  Existing map/probability/F1 validation and scoped publication retained.
+  Local project-venv tests: three targeted tests passed, covering early-stop
+  export/publication, default completion guard and baseline/augmented pipelines.
+  Campus stop/export has NOT been executed from Windows.
+
+- **2026-10-20 - Proposed shared-backbone single-layer depth ablation.**
+  User requested a plan for one job training independent heads at different
+  depths, with fewer epochs. Proposed blocks6/9/12, identical initialized
+  cross-attention+DPT heads, shared augmented inputs and frozen extraction,
+  independent optimizers/checkpoints, and a fixed30epoch screening schedule.
+  Apply the frozen final LayerNorm to each selected hidden state and use that
+  depth's CLS token; require block12 parity with existing final output.
+  Benchmark before predicting runtime. Existing60epoch augmentation run remains
+  unchanged; new block12 head is the matched internal control. Full scope,
+  validation gates and limitations: LAYER_DEPTH_ABLATION_PLAN.md.
+  Planning only: no trainer changes, campus launch or measured speedup.
+
 - **2026-10-19 - Campus online augmentation batch-size benchmark.**
   User stopped the initial augmentation run to benchmark sequentially on RTX4090.
   Each candidate ran32 batches: batch8/accum4 .457s/batch,17.50pairs/s,2.82GiB;

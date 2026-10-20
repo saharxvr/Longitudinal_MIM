@@ -47,7 +47,7 @@ def verify_probabilities(clinical_run, cases):
     return hashes
 
 
-def run(config_path, clinical_root, publish_results=False):
+def run(config_path, clinical_root, publish_results=False, evaluate_only=False):
     config_path = Path(config_path).resolve()
     config = yaml.safe_load(config_path.read_text())
     expected = dict(loss_mode="ce_dice", target_mode="signed_mask", target_threshold=.001,
@@ -82,14 +82,18 @@ def run(config_path, clinical_root, publish_results=False):
                      for case in cases for name in ("prior", "current")}
     environment = dict(os.environ, HEAD_CONFIG=str(config_path), DATA=config["dataset_root"],
                        CACHE_DIR=config["cache_dir"], RUN=str(run_dir))
-    if augmented:
-        subprocess.run(["bash", "training/run_last4_dpt.sh", "--benchmark_batches", "32"],
-                       cwd=ROOT, env=environment, check=True)
-    subprocess.run(["bash", "training/run_last4_dpt.sh"], cwd=ROOT, env=environment, check=True)
+    if not evaluate_only:
+        if augmented:
+            subprocess.run(["bash", "training/run_last4_dpt.sh", "--benchmark_batches", "32"],
+                           cwd=ROOT, env=environment, check=True)
+        subprocess.run(["bash", "training/run_last4_dpt.sh"], cwd=ROOT, env=environment, check=True)
     checkpoint = run_dir / "checkpoints/best.pt"
     last = torch.load(run_dir / "checkpoints/last.pt", map_location="cpu", weights_only=False)
     best = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    if last["epoch"] != config["epochs"]:
+    completed_epoch = last["epoch"]
+    if not 1 <= best["epoch"] <= completed_epoch <= config["epochs"]:
+        raise ValueError("Invalid best/last checkpoint epoch ordering")
+    if not evaluate_only and completed_epoch != config["epochs"]:
         raise ValueError("Training has not completed the configured epoch budget")
     for state in (last, best):
         if state["head_spec"]["kwargs"].get("output_mode") != "three_class":
@@ -139,7 +143,7 @@ def run(config_path, clinical_root, publish_results=False):
     if augmented:
         shutil.copy2(run_dir / "checkpoints/benchmark.json", destination / "benchmark.json")
         shutil.copy2(run_dir / "plots/augmentation_preview.png", destination / "augmentation_preview.png")
-    for epoch in sorted({config["epochs"], best_epoch}):
+    for epoch in sorted({completed_epoch, best_epoch}):
         for split in ("train", "val"):
             name = f"epoch_{epoch:04d}_{split}.json"
             shutil.copy2(run_dir / "checkpoints/diagnostics" / name, destination / name)
@@ -147,6 +151,8 @@ def run(config_path, clinical_root, publish_results=False):
     write_json(destination / "verification.json", dict(
         code_commit=code_commit, code_sha256=code_hashes, config_sha256=config_hash,
         manifest_sha256=manifest_hash, checkpoint_sha256=checkpoint_hash, checkpoint_epoch=best_epoch,
+        evaluation_only=evaluate_only, completed_epoch=completed_epoch,
+        configured_epochs=config["epochs"], stopped_early=completed_epoch < config["epochs"],
         prediction_sha256=prediction_hashes, probability_sha256=probability_hashes,
         clinical_source_sha256=source_hashes, annotation_sha256=annotation_hashes,
         pairs_verified=len(prediction_hashes), class_order=["unchanged", "positive", "negative"],
@@ -163,6 +169,8 @@ def main():
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--clinical-root", type=Path, default=ROOT.parent / "python_files/annotation tool")
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--evaluate-only", action="store_true",
+                        help="Skip training and evaluate the saved best checkpoint, including an early-stopped run")
     args = parser.parse_args()
     config = yaml.safe_load(args.config.read_text())
     run_dir = Path(config["save_folder"]).parent
@@ -170,7 +178,12 @@ def main():
     import fcntl
     with (run_dir / ".ce_pipeline.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        run(args.config, args.clinical_root, args.publish)
+        if args.evaluate_only:
+            with (run_dir / ".train.lock").open("a") as train_lock:
+                fcntl.flock(train_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                run(args.config, args.clinical_root, args.publish, evaluate_only=True)
+        else:
+            run(args.config, args.clinical_root, args.publish)
 
 
 if __name__ == "__main__":
