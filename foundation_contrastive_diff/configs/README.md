@@ -53,8 +53,12 @@ source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
 export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv
-python -c 'import torch; print("PyTorch:", torch.__version__, "CUDA:", torch.cuda.is_available()); assert torch.cuda.is_available(), "CUDA unavailable"; print("GPU:", torch.cuda.get_device_name(0))'
+if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv
+else
+    echo "nvidia-smi is not on PATH (optional diagnostic); checking CUDA with PyTorch."
+fi
+python -c 'import torch; print("PyTorch:", torch.__version__, "CUDA:", torch.cuda.is_available()); assert torch.cuda.is_available(), "CUDA unavailable"; print("GPU:", torch.cuda.get_device_name(0)); free,total=torch.cuda.mem_get_info(); print(f"GPU memory: {free/2**30:.2f} GiB free / {total/2**30:.2f} GiB total")'
 test -f training/run_layer_fusion.sh || { echo "Fusion implementation is not checked out; commit/push it first."; exit 1; }
 if pgrep -u "$USER" -af 'training[.](train_foundation_diff|train_layer_ablation|run_ce_dice_clinical|run_upright_clinical)|training/run_layer_(ablation|fusion)[.]sh'; then
     echo "Existing training/pipeline detected. Do not overlap GPU jobs."
@@ -118,8 +122,12 @@ source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
 export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv
-python -c 'import torch; print("PyTorch:", torch.__version__, "CUDA:", torch.cuda.is_available()); assert torch.cuda.is_available(), "CUDA unavailable"; print("GPU:", torch.cuda.get_device_name(0))'
+if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv
+else
+    echo "nvidia-smi is not on PATH (optional diagnostic); checking CUDA with PyTorch."
+fi
+python -c 'import torch; print("PyTorch:", torch.__version__, "CUDA:", torch.cuda.is_available()); assert torch.cuda.is_available(), "CUDA unavailable"; print("GPU:", torch.cuda.get_device_name(0)); free,total=torch.cuda.mem_get_info(); print(f"GPU memory: {free/2**30:.2f} GiB free / {total/2**30:.2f} GiB total")'
 RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_layer_fusion_6_9_12_ce_30
 LOG=$(find "$RUN" -maxdepth 1 -name 'pipeline_*.log' -type f | sort | tail -n 1)
 test -n "$LOG" || { echo "No fusion pipeline log found."; exit 1; }
