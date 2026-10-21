@@ -1,14 +1,14 @@
 """Models for foundation-based contrastive difference detection."""
 
-from .backbone import FrozenCXRBackbone
+from .backbone import FrozenCXRBackbone, checkpoint_feature_options, concatenate_layer_features
 from .difference_head import DifferenceHead
-from .dpt_head import DPTCrossAttentionHead, DPTDifferenceHead
+from .dpt_head import DPTCrossAttentionHead, DPTDifferenceHead, DPTLayerFusionHead
 from .projection_heads import DisentangledProjectionHeads
 
 
 def build_change_head(spec, device="cpu"):
     head_types = {"dglori": DifferenceHead, "dpt": DPTDifferenceHead,
-                  "dpt_cross_attention": DPTCrossAttentionHead}
+                  "dpt_cross_attention": DPTCrossAttentionHead, "dpt_layer_fusion": DPTLayerFusionHead}
     if spec["type"] not in head_types:
         raise ValueError(f"Unknown head type: {spec['type']}")
     return head_types[spec["type"]](**spec["kwargs"]).to(device)
@@ -29,6 +29,9 @@ __all__ = [
     "DifferenceHead",
     "DPTDifferenceHead",
     "DPTCrossAttentionHead",
+    "DPTLayerFusionHead",
+    "checkpoint_feature_options",
+    "concatenate_layer_features",
     "build_change_head",
     "signed_change_map",
     "DisentangledProjectionHeads",

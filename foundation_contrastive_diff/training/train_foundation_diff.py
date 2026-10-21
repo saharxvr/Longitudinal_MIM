@@ -455,6 +455,8 @@ def parse_args(argv=None):
                    help="mild independent image-only nuisances during training; requires --no_cache")
     p.add_argument("--benchmark_batches", type=int, default=0,
                    help="time this many training batches, save benchmark.json, then exit without checkpoints")
+    p.add_argument("--fusion_arms", nargs="+", choices=["S6", "S9", "S12", "A", "R9A", "B", "R9B"],
+                   default=None, help="joint fusion branches; requires training.train_layer_ablation")
     p.add_argument("--balanced", action="store_true", help="class-balanced sampler over anomaly type")
     p.add_argument("--epochs", type=int, default=C.EPOCHS)
     p.add_argument("--batch_size", type=int, default=C.BATCH_SIZE)
@@ -581,6 +583,8 @@ def save_augmentation_preview(dataset, path, target_threshold):
 
 def main():
     args = parse_args()
+    if args.fusion_arms is not None:
+        raise ValueError("Fusion configs require training.train_layer_ablation for shared A/B extraction")
     device = args.device
     if args.seed is not None:
         torch.manual_seed(args.seed)

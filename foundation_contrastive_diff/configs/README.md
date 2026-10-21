@@ -4,7 +4,130 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
-## Next Run: Single-Layer Depth Ablation
+## Joint A/B Layer Fusion (CE-only)
+
+Implemented locally; commit and push the implementation to `main` before using
+the campus block. See [the architecture/experiment record](../LAYER_FUSION_6_9_12_PLAN.md)
+and [the configuration](layer_fusion_6_9_12_ce_30.yaml).
+
+One frozen RAD-DINO pass per image extracts normalized blocks6/9/12 for all
+seven independent heads:
+
+- **A:** concatenate depths, project2304->96, temporal cross-attention, DPT.
+- **B:** three768->96 projections and separate temporal attention streams;
+  concatenate their signed differences and fuse288->96 before the same decoder.
+- **S6/S9/S12:** fresh CE-only single-depth controls.
+- **R9A/R9B:** repeat block9 features/CLS through A/B respectively, matching
+  each architecture's parameter count. These are not identical-capacity controls
+  for both architectures interchangeably.
+
+All arms see the same sampled pairs and realized train-only augmentation.
+Backpropagation is sequential across heads, with no retained/shared head graph;
+optimizers, schedulers, best epochs and inference checkpoints are independent.
+Unused output-only latent projections are frozen, not claimed as CE-trained.
+Both synthetic online evaluation and clinical inference load the exact ordered
+sources/normalization/fusion recorded in each checkpoint. Last-K caches cannot
+stand in for these features.
+
+The fixed recipe is30epochs, seed42, batch16/accum2, learning rate0.0003,
+weight decay0.01, two-epoch warmup and cosine decay. CE-only means
+`loss_mode: ce_dice`, `w_ce: 1`, `w_dice: 0`, equal class weights and GT cutoff0.001.
+Select best checkpoints at prediction0.5/GT0.001. Log unfiltered0.5/0.75 sweeps
+against GT0.001/0.05; CC>50/250 evaluation is separate and does not select weights.
+Prior CE+Dice runs are context, not matched controls.
+
+### Campus launch
+
+This starts **one joint job**, not separate A/B processes. It never overwrites
+the completed depth-ablation run or broad-stages unrelated campus work.
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+cd /cs/labs/josko/sahar_aharon/repos
+git status --short --branch
+test "$(git branch --show-current)" = main || { echo "Not on main; stopping."; exit 1; }
+git pull --ff-only origin main
+cd /cs/labs/josko/sahar_aharon/repos/foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv
+python -c 'import torch; print("PyTorch:", torch.__version__, "CUDA:", torch.cuda.is_available()); assert torch.cuda.is_available(), "CUDA unavailable"; print("GPU:", torch.cuda.get_device_name(0))'
+test -f training/run_layer_fusion.sh || { echo "Fusion implementation is not checked out; commit/push it first."; exit 1; }
+if pgrep -u "$USER" -af 'training[.](train_foundation_diff|train_layer_ablation|run_ce_dice_clinical|run_upright_clinical)|training/run_layer_(ablation|fusion)[.]sh'; then
+    echo "Existing training/pipeline detected. Do not overlap GPU jobs."
+    exit 1
+fi
+export HEAD_CONFIG=configs/layer_fusion_6_9_12_ce_30.yaml
+RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_layer_fusion_6_9_12_ce_30
+mkdir -p "$RUN"
+LOG="$RUN/pipeline_$(date +%Y%m%d_%H%M%S)_$$.log"
+touch "$LOG"
+nohup bash training/run_layer_fusion.sh >> "$LOG" 2>&1 < /dev/null &
+PID=$!
+echo "PID=$PID log=$LOG"
+sleep 5
+if ! kill -0 "$PID" 2>/dev/null; then
+    tail -n 100 "$LOG"
+    exit 1
+fi
+tail -n 40 "$LOG"
+BASH
+```
+
+The inherited launcher audits patient/group separation and image/GT availability,
+then gates training on a fresh10warmup+100measured-batch benchmark. It benchmarks
+the actual seven heads, includes diagnostic work and sampled validation, and
+records per-arm specifications/parameter counts and training/validation peak
+memory in `checkpoints/benchmark.json`. This is a timing estimate, not a speed or
+memory guarantee. Warmup rounds up to complete accumulation steps if accumulation
+changes. The preflight dataset must match the training config.
+Real training reinitializes from the original seed after the
+benchmark; benchmark updates are not warm-start weights. If resources fail,
+choose a smaller common microbatch in a new config/run directory, preserving
+effective batch size where practical. Do not change batch size mid-run.
+
+For an explicitly reduced A/B-only experiment, use a copied config with
+`fusion_arms: [A, B]` and distinct `save_folder`/`plots_folder`; all other settings
+and provenance gates still apply. The default keeps all planned controls.
+
+Rerunning the launch block after a stopped process resumes the shared completed
+epoch. Configuration, source hashes, manifest and backbone identity must match.
+Outputs are `checkpoints/arm_A`, `arm_B`, `arm_S6`, `arm_S9`, `arm_S12`,
+`arm_R9A`, `arm_R9B`: each has best/last inference weights, metrics and diagnostics.
+`shared_last.pt` alone owns optimizer/scheduler/RNG state and resume boundaries.
+After completion the launcher publishes only scoped metrics/provenance,
+diagnostics and augmentation preview into `results/layer_fusion_ablation_*`,
+not weights, source NIfTIs or caches. Clinical evaluation remains a separate,
+validation-selected step.
+
+### Campus monitoring
+
+Do not pull code while the experiment is running.
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+cd /cs/labs/josko/sahar_aharon/repos
+git status --short --branch
+git --no-pager log -1 --oneline
+cd /cs/labs/josko/sahar_aharon/repos/foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv
+python -c 'import torch; print("PyTorch:", torch.__version__, "CUDA:", torch.cuda.is_available()); assert torch.cuda.is_available(), "CUDA unavailable"; print("GPU:", torch.cuda.get_device_name(0))'
+RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_layer_fusion_6_9_12_ce_30
+LOG=$(find "$RUN" -maxdepth 1 -name 'pipeline_*.log' -type f | sort | tail -n 1)
+test -n "$LOG" || { echo "No fusion pipeline log found."; exit 1; }
+tail -n 60 -F "$LOG"
+BASH
+```
+
+## Completed: Single-Layer Depth Ablation
 
 See [the experiment plan](../LAYER_DEPTH_ABLATION_PLAN.md). One frozen RAD-DINO
 pass per image supplies blocks6/9/12 to three independent, identically initialized

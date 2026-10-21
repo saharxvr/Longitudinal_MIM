@@ -35,6 +35,130 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-21 - Implemented joint A/B fusion screening; not launched.**
+  User requests sharing backbone inference between early fusion A and
+  depth-preserving temporal fusion B. The shared layer trainer now supports
+  A/B, fresh CE-only S6/S9/S12, and architecture-matched R9A/R9B controls.
+  Unique normalized blocks6/9/12 are extracted once per image/batch; all seven
+  heads share sampled/augmented inputs but have independent optimizers,
+  schedulers and checkpoints, with sequential backward. B keeps three temporal
+  streams until learned288->96fusion. Both use concatenated own-depth CLS.
+  New config: configs/layer_fusion_6_9_12_ce_30.yaml; launcher:
+  training/run_layer_fusion.sh. Thirty epochs, seed42, CE-only at GT0.001,
+  batch16/accum2; benchmark actual seven-head memory/runtime before training.
+  CE-path parameter counts: singles2,010,723; A/R9A2,305,635; B/R9B2,780,931.
+  Output-only z_proj is frozen/excluded. Inference loads exact ordered sources,
+  including repeat9 controls, rather than treating them as the last three layers.
+  Local CPU checks cover CE gradient flow, shared inference, independent updates,
+  source/normalization parity, checkpoint exports and resume continuity.
+  Validation:91tests pass across fusion, layer ablation, DPT/clinical/synthetic
+  evaluation and prediction export; both launcher scripts and documented campus
+  blocks pass Bash syntax checks. Pylance reports compatible backbone call sites.
+  Existing one/four-layer DPT initial weights and outputs match HEAD exactly
+  across signed/three-class and attention/no-attention variants.
+  Training diagnostics include raw0.5/0.75 threshold sweeps; CC>50/250 remains
+  separate evaluation. No real GPU benchmark, campus connection or training
+  launch was performed here. See the updated plan and complete README commands.
+
+- **2026-10-21 - Planned joint-depth projection/cross-attention with CE-only loss.**
+  User requests a new experiment using blocks6/9/12 as inputs to one trained head.
+  Plan only: LAYER_FUSION_6_9_12_PLAN.md. Concatenate normalized depth features
+  along channels, project2304->96, retain two-block/four-head bidirectional temporal
+  attention and the existing single-projected-map DPT decoder. Fuse own-depth CLS
+  tokens consistently. "Projection head" here is the spatial segmentation path,
+  not output-only contrastive pathology/nuisance MLPs.
+  Interpret CE as CE-only (w_ce1/w_dice0); prior CE+Dice models are not matched
+  controls. Recommended shared frozen-backbone30epoch screening has fresh CE-only
+  single6/9/12 controls, joint6912, and repeated9input capacity/shape control.
+  Primary joint-vs9 comparison is declared before running; report all controls,
+  GT0.001/0.05, component F1 and nuisance errors, then confirm promising comparisons
+  with additional seeds. No config, model implementation, benchmark or training
+  launched. No code push or campus connection performed for this planning step.
+
+- **2026-10-21 - Spatial review of32selected layer-ablation prediction maps.**
+  Pulled094c9772: results/layer_prediction_review_20261021_113536_3126591.
+  All32NPZ hashes, float32 types, finite512x512 maps and diagnostic signed Dice
+  reproduction pass. Selection is24layer-advantage cases,4seeded pathology
+  controls and4nuisance outliers, not a representative validation/clinical cohort.
+  Rendered local32case side-by-side gallery without source images. Swept prediction
+  thresholds0.5/0.75, sign-specific CC area cutoffs0/50/100/150/200/250/500/1000,
+  and GT cutoffs0.001/0.05. CC retention is strictly greater than the cutoff.
+  At prediction0.75/CC>250/GT0.05,107GT components are at least50pixels:
+  15covered only by block6,9only by9,9only by12,34by multiple heads,40by none.
+  Coverage means any same-sign pixel overlap, permits a merged prediction to touch
+  several GT fragments, and is NOT one-to-one component detection or lesion count.
+  Unique >=50pixel components by pathology (6/9/12): consolidation13/0/3,
+  fluid_overload1/7/6, pleural_effusion0/1/0, pneumothorax1/1/0.
+  These selected cases support case-specific complementarity, not robust pathology
+  specialization or proof that backbone feature information is disentangled.
+  Only16.1%/13.0%/11.7% of exclusive signed prediction pixels on pathology cases
+  match GT0.05 for6/9/12, versus54.8%/51.3%/41.9% at GT0.001.
+  Thus extra predictions mix useful coverage, faint target support and unsupported
+  regions; do not label all pixels outside stricter GT as clinically false.
+  Arithmetic mean of signed scores before postprocessing, at0.75/CC>250/GT0.05:
+  pooled Dice0.5372 versus individual6/9/12 scores0.4982/0.4607/0.4782,
+  but macro Dice0.2495 versus0.3095/0.2751/0.2802 and component F1
+  0.1607 versus0.2119/0.2447/0.2176. Mean nuisance area on the four selected
+  outliers falls to0.72% versus5.18%/16.61%/8.54%; these are NOT cohort rates.
+  Averaging can suppress both nuisance and useful isolated detections. No general
+  ensemble improvement claimed. Block9 component F1 at0.75/GT0.05 is0.2742
+  with CC>50 versus0.2447 with CC>250 on this subset; larger filters are not
+  uniformly better and these enriched cases must not select a final cutoff.
+  Next: review GT/image validity and test predeclared fusion and postprocessing on
+  the full fixed split before clinical evaluation; keep clinical100 exploratory.
+
+- **2026-10-21 - Completed block6/9/12 depth screening; analyzed published run.**
+  Fast-forwarded local main from c9441cbb to92d72269, preserving existing local
+  changes. Results: results/layer_depth_ablation_20261021_053226, trained from
+  c9441cbb. All three branches completed30epochs. Independently reproduced all90
+  validation target-signed-Dice scores from exported threshold counts; histories
+  are sequential/finite and summary best epochs/scores match their maxima.
+  All90validation reports contain2108pairs and zero invalid pairs; selected
+  checkpoints have identical pair order and GT counts (1293pathology/815nuisance).
+  Twelve of13source hashes match current code allowing CRLF/LF normalization.
+  The remaining constants.py hash matches the previously reviewed campus source
+  snapshot in results/orientation_source_20261018_112551; its AST is identical
+  to tracked constants.py (comment-only difference), not an unresolved mismatch.
+  At each branch's validation-selected checkpoint, prediction threshold0.5:
+
+  | Block | Best epoch | Target signed Dice (GT0.001) | Macro signed Dice (GT0.001) | Nuisance FP area mean / p95 / max | Component F1 (GT0.05) |
+  |---|---|---|---|---|---|
+  | 6 | 18 | 0.822741 | 0.697061 | 0.495% / 1.878% / 21.846% | 0.199006 |
+  | 9 | 18 | 0.824326 | 0.697731 | 0.406% / 1.076% / 23.232% | 0.199888 |
+  | 12 | 21 | 0.809999 | 0.679868 | 0.502% / 2.979% / 28.064% | 0.199756 |
+
+  Block9 exceeds matched block12 by1.433percentage points of pooled target
+  Dice; block6 exceeds it by1.274points. Block9-block6 is only0.159points:
+  last-five-epoch means are0.820668/0.820962/0.807663 for9/6/12, so the top-two
+  order is not stable. Both intermediate depths beat block12 at GT0.001 for
+  positive and negative pooled Dice and all four pathology categories.
+  Block6 beats9 on consolidation (0.732055 vs0.728210); block9 narrowly leads
+  the other categories. Target-overlap improvements primarily increase pooled
+  recall (6/9/12:0.795068/0.801056/0.771405), not precision
+  (0.852410/0.848989/0.852658).
+  IMPORTANT threshold reversal: at GT0.05, pooled signed Dice is
+  0.565691/0.563966/0.573862 for6/9/12; block12 also has the highest macro
+  signed Dice there (0.442008 vs0.436305/0.437873). Thus the depth advantage
+  concerns the declared low-cutoff target, not every definition of true change.
+  Component F1 is essentially unchanged near0.20. At GT0.05, pathology pairs
+  average11.406reference components but only2.592/2.360/2.517predicted
+  components; one-to-one matched component recall is about12% for every depth.
+  This can coexist with high pixel recall and motivates overlay/GT-fragmentation
+  review; it does not establish that most clinically meaningful findings are missed.
+  Validation loss minima occur at epochs13/15/10 for6/9/12, then rise while
+  training loss falls. Target Dice plateaus rather than improving at epoch30;
+  no evidence here that simply extending training will resolve the limitations.
+  Shared measured train+validation computation totals13.992hours,
+  27.984minutes/epoch, excluding checkpoint/diagnostic serialization and other
+  overhead. Benchmark peak allocated/reserved memory is5.996/6.421GB, not a
+  measured full-run peak.
+  Interpretation: retain block9 as the provisional target-Dice candidate and
+  block6 as a near-tie; block12 remains the matched reference. Single seed42,
+  no clinical layer comparison and no independent-test superiority claim.
+  Next: inspect all three selected-checkpoint overlays, confirm promising depths
+  with additional matched seeds, and evaluate clinically under the unchanged
+  protocol without selecting/tuning depth on the reused clinical100 cohort.
+
 - **2026-10-20 - Fixed benchmark provenance JSON key mismatch.**
   Campus block6/9/12 benchmark succeeded:1.48615s/shared train batch,
   1.28124s/sample validation batch, estimated1698.38s/epoch, allocated5.996GB,

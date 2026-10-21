@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from datasets.pair_dataset import _norm01, _to_chw, orient_tensor
-from models import signed_change_map
+from models import checkpoint_feature_options, signed_change_map
 
 
 PHYSICIANS = ("Avi", "Benny", "Sigal", "Smadar", "Nitzan")
@@ -255,16 +255,11 @@ def run(args):
     head = build_change_head(spec, args.device).eval()
     head.load_state_dict(state["head"])
     del state
-    width = spec["kwargs"]["backbone_dim"]
-    layers = spec["kwargs"]["patch_dim"] // width
-    selected_layer = config.get("backbone_layer")
-    if selected_layer is not None and (layers != 1 or config.get("feature_normalization") != "final_layernorm"):
-        raise ValueError("Selected-layer checkpoint requires one layer and final_layernorm features")
+    feature_options = checkpoint_feature_options(spec, config)
     backbone = FrozenCXRBackbone(
         name=settings.BACKBONE, model_id=settings.RAD_DINO_MODEL,
         backbone_img_size=settings.BACKBONE_IMG_SIZE,
-        num_patch_tokens=settings.NUM_PATCH_TOKENS, last_n_layers=layers, freeze=True,
-        selected_layer=selected_layer,
+        num_patch_tokens=settings.NUM_PATCH_TOKENS, freeze=True, **feature_options,
     ).to(args.device).eval()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     metadata = dict(checkpoint_sha256=digest, head_spec=spec, run_config=config,

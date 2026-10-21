@@ -36,7 +36,8 @@ from torch.utils.data import DataLoader, Subset
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import constants as C
-from models import DifferenceHead, build_change_head, signed_change_map
+from models import DifferenceHead, build_change_head, checkpoint_feature_options, signed_change_map
+from models.backbone import CheckpointFeatureOptions
 from datasets import CachedPairDataset, LongitudinalPairDataset
 from evaluation.change_detection_metrics import dice_score, iou_score, directional_sensitivity
 
@@ -427,6 +428,11 @@ def main():
         raise ValueError("Evaluation horizontal flip differs from the checkpoint")
     feat_dim = spec["kwargs"]["patch_dim"] if spec else None
     selected_layer = run_config.get("backbone_layer")
+    feature_options: CheckpointFeatureOptions = (
+        checkpoint_feature_options(spec, run_config) if spec
+        else dict(last_n_layers=C.LAST_N_LAYERS, selected_layer=selected_layer))
+    if run_config.get("backbone_layers") is not None and not args.no_cache:
+        raise ValueError("Fusion evaluation requires no_cache; last-K caches have different feature sources")
     if selected_layer is not None:
         if (not args.no_cache or not spec or feat_dim != spec["kwargs"]["backbone_dim"]
                 or run_config.get("feature_normalization") != "final_layernorm"):
@@ -437,9 +443,8 @@ def main():
         backbone = FrozenCXRBackbone(
             name=C.BACKBONE, model_id=C.RAD_DINO_MODEL,
             backbone_img_size=C.BACKBONE_IMG_SIZE, num_patch_tokens=C.NUM_PATCH_TOKENS,
-            last_n_layers=(feat_dim // spec["kwargs"]["backbone_dim"] if spec else C.LAST_N_LAYERS),
             freeze=C.FREEZE_BACKBONE,
-            selected_layer=selected_layer,
+            **feature_options,
         ).to(device).eval()
         ds = LongitudinalPairDataset(args.dataset_root, split=args.split, img_size=C.IMG_SIZE,
                          rotation_k=args.rotation_k, flip_horizontal=args.flip_horizontal)

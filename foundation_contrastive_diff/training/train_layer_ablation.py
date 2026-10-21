@@ -1,4 +1,4 @@
-"""Train independent single-depth heads using one shared frozen encoder pass."""
+"""Train independent depth/fusion heads using one shared frozen encoder pass."""
 
 import argparse
 import copy
@@ -18,7 +18,7 @@ import torch
 
 import constants as C
 from datasets.augmentations import augment_cxr
-from models import build_change_head, signed_change_map
+from models import build_change_head, concatenate_layer_features, signed_change_map
 from training.train_foundation_diff import (
     cosine_warmup, head_spec, make_diagnostics, make_loaders, objective, parse_args,
     print_prediction_metrics, save_augmentation_preview,
@@ -34,7 +34,34 @@ CODE_FILES = (
     "models/dpt_head.py", "models/__init__.py", "models/difference_head.py",
     "datasets/pair_dataset.py", "datasets/augmentations.py", "losses/change_map_losses.py",
     "evaluation/training_diagnostics.py", "constants.py",
+    "training/run_layer_fusion.sh",
 )
+FUSION_ARMS = {
+    "S6": ([6], None), "S9": ([9], None), "S12": ([12], None),
+    "A": ([6, 9, 12], "early"), "R9A": ([9, 9, 9], "early"),
+    "B": ([6, 9, 12], "late"), "R9B": ([9, 9, 9], "late"),
+}
+
+
+def branch_sources(arm):
+    return [arm] if isinstance(arm, int) else FUSION_ARMS[arm][0]
+
+
+def branch_directory(arm):
+    return f"layer_{arm:02d}" if isinstance(arm, int) else f"arm_{arm}"
+
+
+def branch_metadata(arm):
+    sources = branch_sources(arm)
+    if isinstance(arm, int):
+        return dict(backbone_layer=arm)
+    return dict(fusion_arm=arm, feature_sources=sources,
+                **({"backbone_layer": sources[0]} if len(sources) == 1
+                   else {"backbone_layers": sources, "fusion_mode": FUSION_ARMS[arm][1]}))
+
+
+def branch_spec(spec, arm):
+    return spec if isinstance(arm, int) else spec[arm]
 
 def json_record(value):
     """Canonicalize JSON key types before comparing in-memory and saved records."""
@@ -81,6 +108,8 @@ def restore_rng(state, generators):
 
 
 def build_branches(args, device, steps):
+    if getattr(args, "fusion_arms", None):
+        return build_fusion_branches(args, device, steps)
     spec = head_spec(C.BACKBONE_DIM, args.head, args.dpt_channels, args.loss_mode)
     with torch.random.fork_rng(devices=[]):
         torch.random.default_generator.manual_seed(args.seed)
@@ -96,6 +125,44 @@ def build_branches(args, device, steps):
             scheduler=cosine_warmup(optimizer, int(steps * args.warmup_epochs), steps * args.epochs),
             best_score=-1., best_epoch=0, best_head=None, best_val=None, history=[])
     return spec, branches
+
+
+def build_fusion_branches(args, device, steps):
+    specs, branches, common_weights = {}, {}, {}
+    for arm in FUSION_ARMS:
+        if arm not in args.fusion_arms:
+            continue
+        sources, mode = FUSION_ARMS[arm]
+        spec = head_spec(C.BACKBONE_DIM, args.head, args.dpt_channels, args.loss_mode)
+        if mode is not None:
+            spec = dict(type="dpt_layer_fusion", kwargs={
+                key: value for key, value in spec["kwargs"].items() if key != "num_layers"})
+            spec["kwargs"].update(
+                patch_dim=3 * C.BACKBONE_DIM, cls_dim=3 * C.BACKBONE_DIM,
+                feature_layers=sources, fusion_mode=mode)
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(args.seed)
+            head = build_change_head(spec, "cpu")
+        if any(isinstance(module, torch.nn.Dropout) and module.p > 0 for module in head.modules()):
+            raise ValueError("Shared ablations require deterministic heads without dropout")
+        weights = head.state_dict()
+        for name, value in weights.items():
+            identity = (name, tuple(value.shape))
+            if identity not in common_weights:
+                common_weights[identity] = value.detach().clone()
+            weights[name] = common_weights[identity]
+        head.load_state_dict(weights)
+        head.z_proj.requires_grad_(False)
+        head.to(device)
+        optimizer = torch.optim.AdamW(
+            [parameter for parameter in head.parameters() if parameter.requires_grad],
+            lr=args.lr, weight_decay=args.weight_decay)
+        specs[arm] = spec
+        branches[arm] = dict(
+            head=head, optimizer=optimizer,
+            scheduler=cosine_warmup(optimizer, int(steps * args.warmup_epochs), steps * args.epochs),
+            best_score=-1., best_epoch=0, best_head=None, best_val=None, history=[])
+    return specs, branches
 
 
 def synchronize(device):
@@ -129,16 +196,18 @@ def run_epoch(branches, backbone, loader, args, training, limit=None, warmup=0,
             prior, current = batch["img_prior"].to(device), batch["img_curr"].to(device)
             if training and args.photometric_augmentation:
                 prior, current = augment_cxr(prior), augment_cxr(current)
-            fp = backbone.forward_layers(prior, list(branches))
-            fc = backbone.forward_layers(current, list(branches))
+            fp = backbone.forward_layers(prior, args.ablation_layers)
+            fc = backbone.forward_layers(current, args.ablation_layers)
         gt = batch["gt_diff"].to(device)
         if not torch.isfinite(gt).all():
             raise ValueError(f"Nonfinite GT in shared batch {batch_index + 1}")
         for layer, branch in branches.items():
             with torch.set_grad_enabled(training):
+                prior_features = concatenate_layer_features(fp, branch_sources(layer))
+                current_features = concatenate_layer_features(fc, branch_sources(layer))
                 output, embedding = branch["head"](
-                    fp[layer]["patch_tokens"], fc[layer]["patch_tokens"],
-                    fp[layer]["cls_token"], fc[layer]["cls_token"])
+                    prior_features["patch_tokens"], current_features["patch_tokens"],
+                    prior_features["cls_token"], current_features["cls_token"])
                 loss, components = objective(output, gt, args, args.w_dice)
                 if not torch.isfinite(loss) or not torch.isfinite(output).all():
                     raise ValueError(f"Nonfinite output/loss: layer {layer}, batch {batch_index + 1}")
@@ -163,7 +232,7 @@ def run_epoch(branches, backbone, loader, args, training, limit=None, warmup=0,
                         branch["optimizer"].step()
                         branch["optimizer"].zero_grad(set_to_none=True)
                         branch["scheduler"].step()
-                del output, embedding, loss, pred
+                del output, embedding, loss, pred, prior_features, current_features
         steps += 1
         if training and (steps == 1 or steps % 100 == 0):
             print(f"[shared train] {steps} batches | "
@@ -209,15 +278,15 @@ def diagnostic_metrics(diagnostics, args):
 
 def export_branches(branches, spec, args):
     for layer, branch in branches.items():
-        folder = Path(args.save_folder) / f"layer_{layer:02d}"
+        folder = Path(args.save_folder) / branch_directory(layer)
         folder.mkdir(exist_ok=True)
-        config = dict(vars(args), backbone_layer=layer)
+        config = dict(vars(args), **branch_metadata(layer))
         write_json(folder / "run_config.json", config)
         for kind in ("best", "last"):
             best = kind == "best"
             atomic_save(dict(
                 head=branch["best_head"] if best else cpu_weights(branch["head"]),
-                head_spec=spec, run_config=config,
+                head_spec=branch_spec(spec, layer), run_config=config,
                 epoch=branch["best_epoch"] if best else branch["history"][-1]["epoch"],
                 best_score=branch["best_score"], best_metric="target_signed_dice",
                 val=branch["best_val"] if best else branch["history"][-1]),
@@ -239,6 +308,16 @@ def validate_args(args):
     if (not layers or len(set(layers)) != len(layers)
             or any(type(layer) is not int or not 1 <= layer <= 12 for layer in layers)):
         raise ValueError("ablation_layers must contain unique one-based blocks in [1,12]")
+    arms = getattr(args, "fusion_arms", None)
+    if arms is not None:
+        if (not isinstance(arms, list) or not arms or any(
+                not isinstance(arm, str) or arm not in FUSION_ARMS for arm in arms)
+                or len(set(arms)) != len(arms) or not {"A", "B"}.issubset(arms)
+                or layers != [6, 9, 12]):
+            raise ValueError("fusion_arms must uniquely include A and B; extract blocks [6,9,12]")
+        if (args.w_ce != 1 or args.w_dice != 0 or args.ce_class_weights != [1., 1., 1.]
+                or args.target_threshold != .001 or args.eval_threshold != .5):
+            raise ValueError("Fusion screening requires equal-weight CE-only at GT0.001, selection0.5")
     if (args.accum < 1 or args.batch_size < 1 or args.epochs < 1 or args.grad_clip <= 0
             or not 0 <= args.warmup_epochs < args.epochs
             or not 0 < args.eval_threshold < 1 or args.lr <= 0 or args.weight_decay < 0
@@ -263,7 +342,7 @@ def run(args, publish_results=False, benchmark_warmup=10):
         manifest_sha256=hashlib.sha256((Path(args.dataset_root) / "manifest_split.jsonl").read_bytes()).hexdigest(),
         code_sha256={name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in CODE_FILES})
     snapshot = folder / "shared_last.pt"
-    if not snapshot.exists() and any(folder.glob("layer_*")):
+    if not snapshot.exists() and (any(folder.glob("layer_*")) or any(folder.glob("arm_*"))):
         raise ValueError("Branch artifacts without shared snapshot; use a new run directory")
     if snapshot.exists() and not args.resume and not args.benchmark_batches:
         raise ValueError("Existing shared checkpoint; pass --resume")
@@ -278,6 +357,13 @@ def run(args, publish_results=False, benchmark_warmup=10):
         raise ValueError("Need validation data and at least one complete optimizer update")
     generators = configure_generators(train_loader, val_loader, args.seed)
     spec, branches = build_branches(args, args.device, len(train_loader) // args.accum)
+    branch_info = {str(arm): dict(
+        **branch_metadata(arm), head_spec=branch_spec(spec, arm),
+        total_parameters=sum(parameter.numel() for parameter in branch["head"].parameters()),
+        trainable_parameters=sum(parameter.numel() for parameter in branch["head"].parameters()
+                                 if parameter.requires_grad))
+        for arm, branch in branches.items()}
+    print("[branches] " + json.dumps(branch_info), flush=True)
     backbone._validate_layers(args.ablation_layers)
     if args.benchmark_batches:
         if args.benchmark_batches < 100 or benchmark_warmup < args.accum or benchmark_warmup % args.accum:
@@ -290,8 +376,14 @@ def run(args, publish_results=False, benchmark_warmup=10):
         memory = dict(allocated=torch.cuda.max_memory_allocated(args.device),
                       reserved=torch.cuda.max_memory_reserved(args.device)) if str(args.device).startswith("cuda") else {}
         _, _, val_time = run_epoch(branches, backbone, val_loader, args, False, limit=4)
+        validation_memory = dict(
+            allocated=torch.cuda.max_memory_allocated(args.device),
+            reserved=torch.cuda.max_memory_reserved(args.device)) if str(args.device).startswith("cuda") else {}
         report = dict(config=config, provenance=provenance, train=train_time, validation_sample=val_time,
-                      peak_cuda_bytes=memory, validation_sample_batches=4,
+                      branches=branch_info, train_peak_cuda_bytes=memory,
+                      validation_peak_cuda_bytes=validation_memory,
+                      peak_cuda_bytes={key: max(value, validation_memory[key]) for key, value in memory.items()},
+                      validation_sample_batches=min(4, len(val_loader)),
                       estimated_epoch_seconds=train_time["seconds_per_shared_batch"] * len(train_loader)
                       + val_time["seconds_per_shared_batch"] * len(val_loader),
                       note="Includes diagnostic computation, excludes checkpoint writes; estimate not guaranteed.")
@@ -323,7 +415,7 @@ def run(args, publish_results=False, benchmark_warmup=10):
     write_json(folder / "run_config.json", config)
     write_json(folder / "provenance.json", dict(
         **provenance, code_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-        head_spec=spec))
+        head_spec=spec, branches=branch_info))
     print(f"[layer ablation] blocks={list(branches)} epochs={args.epochs} "
           f"train_batches={len(train_loader)} val_batches={len(val_loader)} start={start}", flush=True)
     for epoch in range(start + 1, args.epochs + 1):
@@ -339,8 +431,8 @@ def run(args, publish_results=False, benchmark_warmup=10):
             if score > branch["best_score"]:
                 branch.update(best_score=score, best_epoch=epoch,
                               best_head=cpu_weights(branch["head"]), best_val=val[layer])
-            directory = folder / f"layer_{layer:02d}" / "diagnostics"
-            metadata = dict(backbone_layer=layer, train_timing=train_time, val_timing=val_time,
+            directory = folder / branch_directory(layer) / "diagnostics"
+            metadata = dict(**branch_metadata(layer), train_timing=train_time, val_timing=val_time,
                             train_loss=train[layer], val_loss=val[layer])
             train_diagnostics[layer].save(directory, epoch, "train", metadata)
             val_diagnostics[layer].save(directory, epoch, "val", metadata)
@@ -362,7 +454,8 @@ def run(args, publish_results=False, benchmark_warmup=10):
         del state, train_diagnostics, val_diagnostics
     if publish_results:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        destination = ROOT / "results" / f"layer_depth_ablation_{timestamp}"
+        prefix = "layer_fusion_ablation" if getattr(args, "fusion_arms", None) else "layer_depth_ablation"
+        destination = ROOT / "results" / f"{prefix}_{timestamp}"
         destination.mkdir()
         for source in folder.rglob("*"):
             if source.is_file() and source.suffix in (".json", ".csv", ".gz") and not source.name.endswith(".pt"):

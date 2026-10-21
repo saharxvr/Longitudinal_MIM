@@ -20,6 +20,8 @@ Output:
 CheXFound (arXiv:2502.05142) is kept as ablation E and will slot into `_build_backbone`.
 """
 
+from typing import TypedDict
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -39,6 +41,7 @@ class FrozenCXRBackbone(nn.Module):
         last_n_layers: int = 1,
         freeze: bool = True,
         selected_layer: int | None = None,
+        selected_layers: list[int] | None = None,
     ):
         super().__init__()
         self.name = name
@@ -47,9 +50,14 @@ class FrozenCXRBackbone(nn.Module):
         self.num_patch_tokens = int(num_patch_tokens)
         self.last_n_layers = int(last_n_layers)
         self.selected_layer = selected_layer
+        self.selected_layers = None if selected_layers is None else list(selected_layers)
         self._layer_parity_checked = False
 
         self.backbone, mean, std = self._build_backbone(name, model_id, checkpoint, config)
+        if selected_layers is not None:
+            if selected_layer is not None or last_n_layers != 1 or not freeze:
+                raise ValueError("Multi-depth extraction requires frozen last_n_layers=1 and no selected_layer")
+            self._validate_layers(list(dict.fromkeys(selected_layers)))
         if selected_layer is not None:
             self._validate_layers([selected_layer])
             if last_n_layers != 1:
@@ -115,6 +123,9 @@ class FrozenCXRBackbone(nn.Module):
             patch_tokens: [B, NUM_PATCH_TOKENS, BACKBONE_DIM * last_n_layers]
             cls_token:    [B, BACKBONE_DIM]
         """
+        if self.selected_layers is not None:
+            features = self.forward_layers(img, list(dict.fromkeys(self.selected_layers)))
+            return concatenate_layer_features(features, self.selected_layers)
         if self.selected_layer is not None:
             return self.forward_layers(img, [self.selected_layer])[self.selected_layer]
         x = self._prep(img)
@@ -163,3 +174,40 @@ class FrozenCXRBackbone(nn.Module):
                 patch_tokens=hidden[:, -self.num_patch_tokens:, :].detach().contiguous(),
                 cls_token=hidden[:, 0, :].detach().contiguous())
         return features
+
+
+def concatenate_layer_features(features, layers):
+    """Repeat/select already-normalized depths without another encoder pass or norm."""
+    if not layers or any(layer not in features for layer in layers):
+        raise ValueError("Missing selected backbone depth")
+    if len(layers) == 1:
+        return features[layers[0]]
+    return {key: torch.cat([features[layer][key] for layer in layers], dim=-1)
+            for key in ("patch_tokens", "cls_token")}
+
+
+class CheckpointFeatureOptions(TypedDict, total=False):
+    last_n_layers: int
+    selected_layer: int | None
+    selected_layers: list[int]
+
+
+def checkpoint_feature_options(spec, config) -> CheckpointFeatureOptions:
+    """Bind inference extraction to the ordered feature sources saved by training."""
+    kwargs = spec["kwargs"]
+    layers = kwargs["patch_dim"] // kwargs["backbone_dim"]
+    selected = config.get("backbone_layer")
+    sources = config.get("backbone_layers")
+    if spec["type"] == "dpt_layer_fusion":
+        if (not isinstance(sources, list) or sources != list(kwargs["feature_layers"])
+                or len(sources) != 3 or selected is not None
+                or config.get("fusion_mode") != kwargs["fusion_mode"]
+                or config.get("feature_normalization") != "final_layernorm"):
+            raise ValueError("Fusion checkpoint requires matching ordered sources, fusion mode and final_layernorm features")
+        return dict(last_n_layers=1, selected_layers=sources)
+    if sources is not None:
+        raise ValueError("Multi-depth sources require an explicit fusion head")
+    if selected is not None and (
+            layers != 1 or config.get("feature_normalization") != "final_layernorm"):
+        raise ValueError("Selected-layer checkpoint requires one layer and final_layernorm features")
+    return dict(last_n_layers=layers, selected_layer=selected)
