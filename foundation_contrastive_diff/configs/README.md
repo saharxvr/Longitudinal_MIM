@@ -58,6 +58,53 @@ publishes only metrics/provenance/diagnostic artifacts, not weights or scans.
 Clinical100 evaluation remains a separate step after synthetic-validation
 selection, not a clinical-driven branch-selection sweep.
 
+### Export selected layer prediction maps after completion
+
+The repository includes [training/export_layer_maps.sh](../training/export_layer_maps.sh);
+no script needs to be saved in the home directory. It runs inference only on up to
+32 validation cases: two cases per block/pathology with a Dice advantage above0.05,
+one seeded control per pathology, and four high-FP nuisance cases. Change-group IDs
+are not repeated; this does not guarantee distinct patients. Selection uses the
+existing prediction0.5/GT0.05 diagnostics, not clinical labels.
+
+Run the following on campus (never connect to campus automatically from another
+workstation):
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+cd /cs/labs/josko/sahar_aharon/repos
+git status --short --branch
+test "$(git branch --show-current)" = main || { echo "Not on main; stopping."; exit 1; }
+git pull --ff-only origin main
+cd /cs/labs/josko/sahar_aharon/repos/foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+python -c 'import torch; print("PyTorch:", torch.__version__, "CUDA:", torch.cuda.is_available()); assert torch.cuda.is_available(), "CUDA unavailable"; print("GPU:", torch.cuda.get_device_name(0))'
+bash training/export_layer_maps.sh
+cd /cs/labs/josko/sahar_aharon/repos
+git status --short --branch
+git --no-pager log -1 --oneline
+BASH
+```
+
+The exporter validates training-source, dataset, backbone and checkpoint provenance,
+and checks that saved maps reproduce diagnostic Dice and predicted area within0.001
+absolute tolerance. Keep the previously reviewed campus constants variant: do not
+overwrite it to remove an expected local comment-only Git difference.
+
+Output is a new `results/layer_prediction_review_<timestamp>_<pid>` directory with
+float32 NPZ maps (`gt_diff`, `pred_layer_06`, `pred_layer_09`, `pred_layer_12`) and
+a manifest containing case IDs, selection reasons, checkpoint/map hashes and
+preprocessing metadata. Maps use the same upright512x512 coordinates, with no
+prediction thresholding or CC filtering;0.5/0.75 and CC sweeps can be applied later.
+No source images, model weights or feature caches are published. A100MiB size guard
+prevents unexpectedly large exports from being staged. The launcher stages, commits
+and pushes only its dedicated export directory, excluding unrelated campus changes.
+This enriched review subset is not a replacement for full-cohort evaluation.
+
 Monitor:
 
 ```bash
