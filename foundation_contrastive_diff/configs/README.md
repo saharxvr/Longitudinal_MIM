@@ -4,6 +4,62 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Clinical100 fusion OV: threshold 0.75 and CC cutoff 250
+
+After saved inference finishes for all seven arms, use
+[training/run_fusion_ov.sh](../training/run_fusion_ov.sh). It selects the latest
+`clinical100_*` directory in the fusion run, or the explicit `CLINICAL_RUN`
+environment variable. It does not rerun inference or require GPU access.
+
+The fixed operating point retains scores strictly above +0.75 or below -0.75,
+then keeps sign-specific 8-connected components strictly larger than250pixels
+at512x512-equivalent area. Native-resolution area cutoffs scale with image area.
+Original scores and annotations are unchanged. This is the requested threshold/CC
+setting, **not exact Itamar legacy cleanup**: the historical `Prediction.py`
+postprocess removes high-magnitude scores and applies additional intensity cleanup.
+Do not label these operations equivalent.
+
+The evaluator runs the original OV implementation on temporary filtered signed
+masks in original coordinates, with further filtering disabled. It independently
+verifies all15per-reader detection-F1 values per arm against the filtered masks.
+Outputs include full human/model agreement matrices and aggregate plots, consensus
+sensitivity, HMDR/UDPP, per-clinician F1, source hashes and a seven-arm summary.
+Historical per-pair PAI retains its original empty/one-sided conventions and is
+not detection F1. The reused clinical cohort remains exploratory.
+
+Only compact OV outputs are committed/pushed under a unique
+`results/clinical100_fusion_ov_thr075_cc250_*` directory, with a100MiB guard.
+No raw scans, scan overlays, model weights or prediction/probability NIfTIs
+are exported. Per-case image rendering is disabled. Temporary filtered maps are
+removed after scoring; originals on campus are preserved.
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+cd /cs/labs/josko/sahar_aharon/repos
+git status --short --branch
+test "$(git branch --show-current)" = main || { echo "Not on main"; exit 1; }
+git pull --ff-only origin main
+cd /cs/labs/josko/sahar_aharon/repos/foundation_contrastive_diff
+source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version)/lib:${LD_LIBRARY_PATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+RUN=/cs/labs/josko/sahar_aharon/fcd_runs/run_layer_fusion_6_9_12_ce_30
+LOG="$RUN/ov_thr075_cc250_$(date +%Y%m%d_%H%M%S)_$$.log"
+nohup bash training/run_fusion_ov.sh > "$LOG" 2>&1 < /dev/null &
+PID=$!
+echo "PID=$PID LOG=$LOG"
+sleep 5
+if ! kill -0 "$PID" 2>/dev/null; then tail -n 100 "$LOG"; exit 1; fi
+tail -n 60 -F "$LOG"
+BASH
+```
+
+No NVIDIA diagnostic is mandatory because this evaluates saved maps on CPU.
+Ctrl+C stops log viewing only. Successful completion automatically pushes the
+small OV export, which can then be pulled on the development workstation.
+
 ## Joint A/B Layer Fusion (CE-only)
 
 Implemented locally; commit and push the implementation to `main` before using

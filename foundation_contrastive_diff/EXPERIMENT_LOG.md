@@ -35,6 +35,18 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-10-22 - Fixed Clinical100 OV postprocessing for all seven fusion arms.**
+  Added evaluation/evaluate_fusion_ov.py and training/run_fusion_ov.sh for saved
+  inference, not retraining. Retain |score|>0.75 then sign-specific8-connected
+  CCs>250equivalent512x512pixels, preserving original coordinates/annotations.
+  This is NOT exact Itamar cleanup: historical Prediction.py removes high
+  magnitudes and has additional intensity filters. Reuse original OV with no
+  extra cleanup after generating temporary filtered masks; independently verify
+  per-reader component F1. Publish only compact OV matrices/aggregate plots,
+  metrics and provenance, not scans/overlays or multi-GB prediction maps.
+  Local integration covers all seven arms and strict threshold/area boundaries.
+  Real100pair OV execution remains on campus; no campus connection attempted.
+
 - **2026-10-21 - Implemented joint A/B fusion screening; not launched.**
   User requests sharing backbone inference between early fusion A and
   depth-preserving temporal fusion B. The shared layer trainer now supports
