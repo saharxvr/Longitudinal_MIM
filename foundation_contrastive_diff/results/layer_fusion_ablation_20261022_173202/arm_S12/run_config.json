@@ -1,0 +1,80 @@
+{
+  "config": "configs/layer_fusion_6_9_12_ce_30.yaml",
+  "dataset_root": "/cs/labs/josko/sahar_aharon/fcd_train",
+  "cache_dir": "/cs/labs/josko/sahar_aharon/fcd_cache_last1_upright_inference",
+  "save_folder": "/cs/labs/josko/sahar_aharon/fcd_runs/run_layer_fusion_6_9_12_ce_30/checkpoints",
+  "plots_folder": "/cs/labs/josko/sahar_aharon/fcd_runs/run_layer_fusion_6_9_12_ce_30/plots",
+  "no_cache": true,
+  "photometric_augmentation": true,
+  "benchmark_batches": 0,
+  "fusion_arms": [
+    "S6",
+    "S9",
+    "S12",
+    "A",
+    "R9A",
+    "B",
+    "R9B"
+  ],
+  "balanced": true,
+  "epochs": 30,
+  "batch_size": 16,
+  "accum": 2,
+  "lr": 0.0003,
+  "weight_decay": 0.01,
+  "warmup_epochs": 2.0,
+  "grad_clip": 1.0,
+  "num_workers": 0,
+  "device": "cuda",
+  "rotation_k": 3,
+  "flip_horizontal": true,
+  "seed": 42,
+  "tau": 0.02,
+  "w_l1": 0.0,
+  "w_dice": 0.0,
+  "w_sign": 0.0,
+  "w_l2": 0.0,
+  "pos_weight": 0.0,
+  "target_mode": "signed_mask",
+  "target_threshold": 0.001,
+  "background_weight": 1.0,
+  "loss_mode": "ce_dice",
+  "w_ce": 1.0,
+  "ce_class_weights": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "checkpoint_metric": "target_signed_dice",
+  "dice_warmup_epochs": 0,
+  "eval_threshold": 0.5,
+  "eval_gt_threshold": 0.05,
+  "resume": true,
+  "resume_from": "",
+  "overfit": 0,
+  "feat_last_k": 1,
+  "head": "dpt_cross_attention",
+  "dpt_channels": 96,
+  "diagnostics": true,
+  "diagnostics_every": 1,
+  "diagnostics_pred_thresholds": [
+    0.5,
+    0.75
+  ],
+  "diagnostics_gt_thresholds": [
+    0.001,
+    0.05
+  ],
+  "diagnostics_components": true,
+  "ablation_layers": [
+    6,
+    9,
+    12
+  ],
+  "feature_normalization": "final_layernorm",
+  "fusion_arm": "S12",
+  "feature_sources": [
+    12
+  ],
+  "backbone_layer": 12
+}
