@@ -4,6 +4,24 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Compact A/B/Itamar prediction transfer
+
+Run `bash training/export_fusion_predictions.sh` on campus after updating Git.
+This exports and publishes 100 compressed NumPy files plus a JSON manifest for
+making collages locally, without rendering campus collages or transferring scans.
+Each `pairN.npz` contains `A`, `B`, and `Itamar` signed int8 masks in original
+current-image array coordinates; transpose arrays for display. No raw scores,
+scans, annotations, weights, or scan-containing PNGs are exported.
+
+A/B use the published OV input hashes and the strict 0.75/CC250 operating point.
+The historical baseline is located by the committed prediction-hash reference,
+restored with the legacy crop mapping, and thresholded at zero. Historical lmm5
+substitutions for pairs99/100 remain explicitly labelled in the manifest.
+The two postprocessing pipelines are not equivalent. Missing or changed inputs
+abort before publication; export size must stay below 100 MiB.
+Pass `--baseline-root PATH` to the launcher if the historical predictions are
+outside the default repository `python_files` directory.
+
 ## Clinical100 fusion OV: threshold 0.75 and CC cutoff 250
 
 After saved inference finishes for all seven arms, use
