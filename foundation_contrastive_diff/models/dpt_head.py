@@ -171,6 +171,8 @@ def _temporal_difference(prior, current, project, blocks, grid):
 class DPTCrossAttentionHead(DPTDifferenceHead):
     """Bidirectional temporal attention before signed fusion and DPT reassembly."""
 
+    temporal_block_type = BidirectionalCrossAttention
+
     def __init__(self, *args, channels=96, num_heads=4, attention_depth=2, **kwargs):
         super().__init__(*args, channels=channels, **kwargs)
         if num_heads < 1 or channels % num_heads:
@@ -178,7 +180,7 @@ class DPTCrossAttentionHead(DPTDifferenceHead):
         if attention_depth < 1:
             raise ValueError("Attention depth must be positive")
         self.temporal_blocks = nn.ModuleList([
-            nn.ModuleList([BidirectionalCrossAttention(channels, num_heads)
+            nn.ModuleList([self.temporal_block_type(channels, num_heads)
                            for _ in range(attention_depth)]) for _ in range(self.num_layers)
         ])
 
@@ -188,6 +190,67 @@ class DPTCrossAttentionHead(DPTDifferenceHead):
                     p_prior.split(self.backbone_dim, dim=-1),
                     p_curr.split(self.backbone_dim, dim=-1),
                     self.projections, self.temporal_blocks)]
+
+
+class JointSelfAttention(BidirectionalCrossAttention):
+    def forward(self, prior, current):
+        tokens = torch.cat((prior, current), dim=1)
+        normalized = self.norm(tokens)
+        tokens = tokens + self.attention(
+            normalized, normalized, normalized, need_weights=False)[0]
+        tokens = tokens + self.ffn(self.ffn_norm(tokens))
+        return tokens.split(prior.shape[1], dim=1)
+
+
+class DPTGlobalAttentionHead(DPTCrossAttentionHead):
+    """Joint temporal attention; optional fixed feature-subspace removal."""
+
+    temporal_block_type = JointSelfAttention
+
+    def __init__(self, *args, debias_rank=0, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.num_layers != 1:
+            raise ValueError("Global-attention ablation requires one backbone depth")
+        if type(debias_rank) is not int or not 0 <= debias_rank < self.backbone_dim:
+            raise ValueError("Debias rank must be an integer in [0, backbone_dim)")
+        self.image_roles = nn.Parameter(torch.empty(2, self.cls_proj.out_features))
+        nn.init.normal_(self.image_roles, std=0.02)
+        self.register_buffer("debias_basis", torch.zeros(self.backbone_dim, debias_rank))
+        self.register_buffer("basis_ready", torch.tensor(debias_rank == 0))
+
+    @torch.no_grad()
+    def set_debias_basis(self, basis):
+        if (basis.shape != self.debias_basis.shape or not torch.isfinite(basis).all()
+                or not torch.allclose(
+                    basis.float().T @ basis.float(),
+                    torch.eye(basis.shape[1], device=basis.device),
+                    atol=1e-5, rtol=1e-5)):
+            raise ValueError("Debias basis must have the configured shape and orthonormal columns")
+        self.debias_basis.copy_(basis)
+        self.basis_ready.fill_(True)
+
+    def clean_patch_tokens(self, tokens):
+        if not bool(self.basis_ready):
+            raise ValueError("Load a validated debias basis before using this head")
+        if not self.debias_basis.shape[1]:
+            return tokens
+        basis = self.debias_basis.to(dtype=tokens.dtype)
+        return tokens - (tokens @ basis) @ basis.T
+
+    def _project_streams(self, p_prior, p_curr):
+        batch_size = p_prior.shape[0]
+        projected = []
+        for role, tokens in enumerate((p_prior, p_curr)):
+            tokens = self.clean_patch_tokens(tokens)
+            features = tokens.transpose(1, 2).reshape(
+                batch_size, self.backbone_dim, self.grid, self.grid).contiguous()
+            tokens = self.projections[0](features).flatten(2).transpose(1, 2)
+            projected.append(tokens + self.image_roles[role])
+        prior, current = projected
+        for block in self.temporal_blocks[0]:
+            prior, current = block(prior, current)
+        return [(current - prior).transpose(1, 2).reshape(
+            batch_size, -1, self.grid, self.grid).contiguous()]
 
 
 class DPTLayerFusionHead(_DPTDecoder):

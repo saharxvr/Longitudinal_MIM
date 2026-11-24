@@ -2,13 +2,14 @@
 
 from .backbone import FrozenCXRBackbone, checkpoint_feature_options, concatenate_layer_features
 from .difference_head import DifferenceHead
-from .dpt_head import DPTCrossAttentionHead, DPTDifferenceHead, DPTLayerFusionHead
+from .dpt_head import DPTCrossAttentionHead, DPTDifferenceHead, DPTGlobalAttentionHead, DPTLayerFusionHead
 from .projection_heads import DisentangledProjectionHeads
 
 
 def build_change_head(spec, device="cpu"):
     head_types = {"dglori": DifferenceHead, "dpt": DPTDifferenceHead,
-                  "dpt_cross_attention": DPTCrossAttentionHead, "dpt_layer_fusion": DPTLayerFusionHead}
+                  "dpt_cross_attention": DPTCrossAttentionHead, "dpt_layer_fusion": DPTLayerFusionHead,
+                  "dpt_global_attention": DPTGlobalAttentionHead}
     if spec["type"] not in head_types:
         raise ValueError(f"Unknown head type: {spec['type']}")
     return head_types[spec["type"]](**spec["kwargs"]).to(device)
@@ -29,6 +30,7 @@ __all__ = [
     "DifferenceHead",
     "DPTDifferenceHead",
     "DPTCrossAttentionHead",
+    "DPTGlobalAttentionHead",
     "DPTLayerFusionHead",
     "checkpoint_feature_options",
     "concatenate_layer_features",

@@ -23,8 +23,11 @@ change (effective_anomaly_type / realized_change), not merely the applied entity
 from __future__ import annotations
 
 import json
+import math
 import os
+import random
 import sys
+from collections import Counter
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -37,6 +40,69 @@ _FCD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _FCD_ROOT not in sys.path:
     sys.path.insert(0, _FCD_ROOT)
 import constants as C  # noqa: E402
+
+
+def record_patient(record):
+    from data_generation.split_dataset import patient_key
+
+    patient = record.get("patient_key") or patient_key(record.get("case", ""))
+    if not isinstance(patient, str) or not patient.strip():
+        raise ValueError(f"Missing patient identity for {record.get('pair_id')}")
+    if record.get("case") and patient_key(record["case"]) != patient:
+        raise ValueError(f"Inconsistent patient identity for {record.get('pair_id')}")
+    return patient
+
+
+def audit_patient_splits(records):
+    """Reject duplicate identities and patient/change-group leakage before subsetting."""
+    pair_ids, patients, groups = set(), {}, {}
+    for record in records:
+        pair_id, group = record.get("pair_id"), record.get("change_group_id")
+        split = record.get("split")
+        if (not isinstance(pair_id, str) or not pair_id or pair_id in pair_ids
+                or not isinstance(group, str) or not group
+                or split not in ("train", "val", "test")):
+            raise ValueError("Manifest requires unique pair IDs, change groups and explicit splits")
+        pair_ids.add(pair_id)
+        patient = record_patient(record)
+        if patient in patients and patients[patient] != split:
+            raise ValueError(f"Patient leakage across splits: {patient}")
+        if group in groups and groups[group] != (patient, split):
+            raise ValueError(f"Change-group leakage: {group}")
+        patients[patient], groups[group] = split, (patient, split)
+    summary = {}
+    for split in ("train", "val", "test"):
+        selected = [record for record in records if record["split"] == split]
+        if not selected:
+            raise ValueError(f"Empty {split} split")
+        summary[split] = pair_inventory(selected)
+    return summary
+
+
+def pair_inventory(records):
+    return dict(
+        pairs=len(records), patients=len({record_patient(r) for r in records}),
+        change_groups=len({r["change_group_id"] for r in records}),
+        by_anomaly=dict(Counter(r.get("effective_anomaly_type", r.get("anomaly_type", "none"))
+                                for r in records)),
+        by_direction=dict(Counter(r.get("direction", "none") for r in records)),
+        by_source=dict(Counter(r.get("source", "unspecified") for r in records)),
+        pathology_pairs=sum(bool(r.get("realized_change",
+                            r.get("effective_anomaly_type", "none") != "none")) for r in records),
+    )
+
+
+def patient_subset_indices(records, fraction, seed):
+    """Nested seeded prefixes of training patients; retain every selected patient's pair."""
+    if not math.isfinite(fraction) or not 0 < fraction <= 1 or type(seed) is not int:
+        raise ValueError("Use a finite patient fraction in (0,1] and an integer seed")
+    if not records or any(record.get("split") != "train" for record in records):
+        raise ValueError("Patient subsets may only contain training records")
+    patients = sorted({record_patient(record) for record in records})
+    random.Random(seed).shuffle(patients)
+    count = max(1, math.floor(len(patients) * fraction))
+    selected = set(patients[:count])
+    return [index for index, record in enumerate(records) if record_patient(record) in selected]
 
 
 def _read_manifest(root: str) -> List[Dict[str, Any]]:

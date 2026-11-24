@@ -35,6 +35,31 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-11-23 - Implementing joint architecture/training-data controls.**
+  Added a dedicated block9/CE+Dice/online-photometric sweep: B0 existing
+  bidirectional cross-attention, B1 joint self-attention with learned
+  prior/current role vectors, B2 the same head with a fixed noise-derived
+  patch-feature projection. Backbone positional embeddings are retained.
+  Default matrix: nested10/25/50/100%training-patient subsets x3seeds42/43/44
+  x3arms =36fresh independent trainings, sequential subprocesses.
+  All patient variants remain together, val/test unchanged, subset-only
+  balancing, effective batch32, matched optimizer updates/LR/validation slots.
+  B1-B0 groups attention and role embeddings; B2-B1 isolates projection.
+  Block9 and augmentation match the earlier depth-screen recipe; neither
+  a universal depth winner nor a significant augmentation gain is claimed.
+  Noise/basis diagnostics and an explicit rank/hash lock are required before
+  a matching largest-arm GPU benchmark and sweep. This is INSID3-inspired
+  whole-patch projection for DINOv2, not its DINOv3 selective matching method.
+  True per-image backward decoding is deferred: existing GT is in current
+  geometry while saved prior is independently rotated, so negating GT alone
+  is not valid prior-frame supervision. Checkpoints preserve exact extraction,
+  basis, subset, update and RNG provenance; completed cells are hash-verified.
+  Local focused tests include a reduced six-cell smoke sweep and exact
+  interrupted-resume weights. Campus diagnostics/rank selection, GPU benchmark,
+  the36model sweep and clinical evaluation have NOT been run.
+  Config: configs/architecture_data_block9_aug.yaml; entry point:
+  training.train_architecture_data_ablation; instructions: configs/README.md.
+
 - **2026-10-22 - Fixed Clinical100 OV postprocessing for all seven fusion arms.**
   Added evaluation/evaluate_fusion_ov.py and training/run_fusion_ov.sh for saved
   inference, not retraining. Retain |score|>0.75 then sign-specific8-connected

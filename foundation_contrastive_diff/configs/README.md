@@ -4,6 +4,145 @@ YAML configs for `training.train_foundation_diff`. A config's values become the 
 defaults; anything you pass on the CLI still overrides it. Each run also writes its fully
 resolved parameters to `<save_folder>/run_config.json` (a record of exactly what ran).
 
+## Block-9 architecture x training-data sweep
+
+Use [architecture_data_block9_aug.yaml](architecture_data_block9_aug.yaml) with
+[training.train_architecture_data_ablation](../training/train_architecture_data_ablation.py).
+This is a separate experiment; existing launchers/checkpoints are unchanged.
+
+The default matrix trains **36 fresh independent models**, sequentially:
+
+| Arm | Temporal head | Patch features |
+| --- | --- | --- |
+| B0 | Existing bidirectional cross-attention + DPT | Original |
+| B1 | Joint global self-attention + learned prior/current role vectors + DPT | Original |
+| B2 | Same as B1 | Fixed noise-derived subspace projection |
+
+Each arm uses 10/25/50/100% of **training patients**, not exact percentages of
+the approximately16k training pairs, with seeds42/43/44. Selected patient
+prefixes are nested; all their reconstructions/variants remain together.
+Validation/test are unchanged. Selection inventories, actual pair fractions,
+IDs and hashes are saved per cell. Balanced-sampling weights use only the
+selected subset.
+
+All arms use frozen RAD-DINO **block9**, its own CLS and final LayerNorm,
+upright preprocessing, online train-only photometric augmentation, and
+equal-weight CE + positive/negative Dice at GT0.001. Augmentation is a matched
+control, not a demonstrated significant improvement. No last-layer cache,
+image reconstruction, reverse-map supervision, or encoder fine-tuning is used.
+B1-B0 measures global attention and image-role embeddings together; it does
+not isolate their individual contributions.
+
+Each evaluation slot has `floor(N_full / effective_batch)` optimizer updates.
+There are30slots, with two slots' worth of warmup, at effective batch32.
+Smaller subsets are sampled repeatedly to receive **the same updates, sample
+draws, LR schedule and validation frequency** as the full-data model.
+Slots are not subset-specific epochs. Nonfinite outputs/gradients and partial
+accumulation stop the cell; updates are never silently skipped.
+
+### Required diagnostic and benchmark gates
+
+RAD-DINO is DINOv2; [INSID3](https://arxiv.org/abs/2603.28480) primarily
+studies DINOv3 and reports weaker bias in DINOv2. B2 removes a fixed
+noise-estimated feature subspace, **not pretrained positional embeddings**.
+It projects all patch features before the global head, affecting both intra-
+and cross-image attention. It is INSID3-inspired, not its selective
+matching/clustering pipeline. Useful anatomy may also be removed.
+
+Before executing any command, verify dataset/storage ownership, current
+training processes on every relevant node, free storage, and CUDA availability.
+Run from the study folder in the existing campus environment. Do not launch
+multiple sweep processes against the same run root. Commands do not connect
+to campus, commit, push, delete old runs, or publish clinical images.
+Exclusive root/cell lock files reject concurrent launches. If a machine reboot
+or forced termination leaves a lock, verify the recorded host's process is
+no longer running before removing **only that named lock file** and resuming.
+
+First run the diagnostic with `debias_rank`/`diagnostic_sha256` still null:
+
+```bash
+python -u -m training.train_architecture_data_ablation \
+  --config configs/architecture_data_block9_aug.yaml --mode diagnose
+```
+
+This writes the fixed basis, a JSON table/hash, and rank-vs-positional-gap/
+feature-retention curves under the configured `diagnostic_file`.
+Noise is seeded independent Gaussian RGB pixels clipped to[-3,3], mapped
+to[0,1], then processed by the same frozen block9/preprocessing. Basis
+estimation uses one noise image; positional-gap diagnostics use two independent
+noise images. Feature retention uses training-only pairs, never val/test.
+Rank0 is the no-projection diagnostic control.
+
+Inspect the curves. Choose one explicitly evaluated nonzero rank and paste its
+diagnostic SHA256 into the config. There is **no automatic rank choice or
+claim that debiasing works**. If the evidence does not support it, revise the
+experiment rather than silently substituting B1. Do not transfer INSID3's
+500-component DINOv3 setting. Lock the config before benchmarking/test use.
+Diagnostic output is never overwritten; use a new diagnostic path when
+data, code, extraction, environment or noise settings change.
+
+```bash
+python -u -m training.train_architecture_data_ablation \
+  --config configs/architecture_data_block9_aug.yaml --mode benchmark
+```
+
+The benchmark trains a disposable B2 head with warmup followed by at least
+100measured batches, actual augmentation/accumulation/diagnostics, and full
+validation. It records GPU memory and code/config/data/basis provenance, but
+no model checkpoint. If memory fails, reduce microbatch and increase
+accumulation in the **shared config**, retaining effective batch32; use a
+fresh run root and rerun the benchmark. CPU tests do not establish GPU capacity.
+
+### Launch, resume, and outputs
+
+After inspecting a successful compatible GPU benchmark, one command starts
+the sweep:
+
+```bash
+python -u -m training.train_architecture_data_ablation \
+  --config configs/architecture_data_block9_aug.yaml --mode sweep
+```
+
+Each cell runs in a separate process with a unique log under `run_root/logs`.
+The parent does not keep an encoder on the GPU during child training.
+A failure stops orchestration with the child log path displayed. After checking
+that the previous process is no longer running, resume the same unchanged
+experiment:
+
+```bash
+python -u -m training.train_architecture_data_ablation \
+  --config configs/architecture_data_block9_aug.yaml --mode sweep --resume
+```
+
+Resume is from the last completed evaluation slot, with full model/optimizer/
+scheduler/sampler/augmentation RNG state restored. Partial-slot work is
+repeated. Completed cells are skipped only after verifying identity, configured
+updates, and best/last/result/CSV hashes; corrupt/incompatible artifacts fail.
+No weights are carried between fractions or arms.
+
+Every cell saves inference-compatible best/last checkpoints and a non-trainable
+basis buffer for B2. Best selection uses the existing pooled signed Dice on
+**pathology pairs with active GT0.001**, excluding empty-GT pairs. The final
+fixed synthetic test evaluation reports signed/positive/negative change-only
+Dice at GT0.001 and0.05, macro Dice, component F1 and nuisance FP mean/p95/max.
+Diagnostic threshold tables are also saved; their all-pathology aggregates
+can differ from active-reference-only checkpoint selection.
+
+The root contains `results.csv`, per-seed `paired_differences.csv`,
+`summary.json` (means/sampleSD), and `learning_curves.png` against actual
+patient/pair counts. Seeds vary both subset membership and training randomness.
+Three seeds are not proof of statistical significance.
+Clinical100 is not automatically evaluated or used for tuning; any later
+comparison must use one locked protocol and remain exploratory.
+
+Focused local validation:
+
+```bash
+python -m unittest training.test_architecture_data_ablation \
+  training.test_dpt_head.DPTCrossAttentionTests \
+  training.test_dpt_head.SingleLayerCrossAttentionTests
+```
+
 ## Compact A/B/Itamar prediction transfer
 
 Run `bash training/export_fusion_predictions.sh` on campus after updating Git.
