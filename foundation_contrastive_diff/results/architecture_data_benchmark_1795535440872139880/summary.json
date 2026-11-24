@@ -1,0 +1,150 @@
+{
+  "selected_rank": 8,
+  "diagnostic_sha256": "c7965000fda1cfe01319d368d67c6ee6fa5045517b40fd22473cf81b0d8609b2",
+  "benchmark_sha256": "d4c7223ca1479d5191906db3d2e41bd814773f0db25e14d8675304c66a9ecd9f",
+  "diagnostic_rows": [
+    {
+      "rank": 0,
+      "same_position": 0.8796515968718513,
+      "other_position": 0.5873118188106717,
+      "positional_gap": 0.2923397780611796,
+      "train_energy_retained_mean": 1.0,
+      "train_energy_retained_min": 1.0,
+      "noise_energy_removed": 0.0
+    },
+    {
+      "rank": 1,
+      "same_position": 0.7085218115811063,
+      "other_position": 0.004631844965749689,
+      "positional_gap": 0.7038899666153566,
+      "train_energy_retained_mean": 0.9572953328466997,
+      "train_energy_retained_min": 0.9431632634133537,
+      "noise_energy_removed": 0.5873735992773622
+    },
+    {
+      "rank": 4,
+      "same_position": 0.5253100697104565,
+      "other_position": 0.004574124914385168,
+      "positional_gap": 0.5207359447960713,
+      "train_energy_retained_mean": 0.8405080660358573,
+      "train_energy_retained_min": 0.8152421293239271,
+      "noise_energy_removed": 0.7588426197540659
+    },
+    {
+      "rank": 8,
+      "same_position": 0.19122495293539388,
+      "other_position": 0.008350039582576081,
+      "positional_gap": 0.1828749133528178,
+      "train_energy_retained_mean": 0.7394637309502601,
+      "train_energy_retained_min": 0.7100673122537714,
+      "noise_energy_removed": 0.8734512636545566
+    },
+    {
+      "rank": 16,
+      "same_position": 0.18063043605751028,
+      "other_position": 0.012564194292336912,
+      "positional_gap": 0.16806624176517337,
+      "train_energy_retained_mean": 0.6899310667988496,
+      "train_energy_retained_min": 0.6544912448671912,
+      "noise_energy_removed": 0.926823539726358
+    },
+    {
+      "rank": 32,
+      "same_position": 0.14608318011443325,
+      "other_position": 0.016744952625911438,
+      "positional_gap": 0.1293382274885218,
+      "train_energy_retained_mean": 0.6233748565564277,
+      "train_energy_retained_min": 0.5841032887071496,
+      "noise_energy_removed": 0.9536193245009335
+    },
+    {
+      "rank": 64,
+      "same_position": 0.13742396773004975,
+      "other_position": 0.018838144212822122,
+      "positional_gap": 0.11858582351722763,
+      "train_energy_retained_mean": 0.5397000110493443,
+      "train_energy_retained_min": 0.4959876766646179,
+      "noise_energy_removed": 0.972617620274245
+    }
+  ],
+  "provenance": {
+    "manifest_sha256": "78d18b1c8c6c34aae2023f2c8342fba28b8109ca0343f81be4939ee849c54468",
+    "model_id": "microsoft/rad-dino",
+    "backbone_revision": "110cbc18d5133582e320b43d53bf5c44e410c936",
+    "backbone_layer": 9,
+    "feature_normalization": "final_layernorm",
+    "image_size": 512,
+    "backbone_image_size": 518,
+    "rotation_k": 3,
+    "flip_horizontal": true,
+    "noise_method": "independent Gaussian pixels clipped to [-3,3] and mapped to [0,1]",
+    "runtime": {
+      "torch": "2.14.1+cu130",
+      "cuda": "13.0"
+    },
+    "code_sha256": {
+      "training/train_architecture_data_ablation.py": "ef86e3422a867d64753377365aaa3af182030da06358f1c1b516f15f78b89384",
+      "training/positional_debias.py": "51961aca9bb12343f829717563f7d291971a456f3cb47e34edbb5f431cc78e4e",
+      "training/train_foundation_diff.py": "bdd1901e9e90dd20c964361d1d149f43697cb02443c63f07d876c5abf4e7b271",
+      "training/train_layer_ablation.py": "44ec271cb35c67571c9d534b837af58eeba8cec716890b392403418abf1a1495",
+      "models/backbone.py": "fa78b6887fac300202c7c184ae7b027324ce8098b59ad9775331fac5dc4b7afb",
+      "models/dpt_head.py": "26e853a00d07eee2973fd9320fc34e54b50fcdacb59b9ea776d0497858480059",
+      "models/difference_head.py": "c0b5cfa06fc0c2a1f350beadf405406965aa4085528313807ac5092937d0c46a",
+      "models/__init__.py": "b562d33a76aa04e8d8b9b612fbff9b97b94b9e2e580a52ca3240f13257d026e3",
+      "datasets/pair_dataset.py": "d63bb42999b05f243e3fd06618c0e0c15a97fe7c20515cd8e372b18853cfbee2",
+      "datasets/augmentations.py": "f88039f44c22c7e65b693dde052722961a05aa83bba0488c83648cb410b4cbaf",
+      "data_generation/split_dataset.py": "b82e0c928eb17fb566dc53d79e78ff20cc9a719ecf37d9cb54d3e5a5c7402742",
+      "losses/change_map_losses.py": "52b311bc4d5b14a940796f1e0401df75b6b708e98b204c4837da4841bd83a718",
+      "evaluation/training_diagnostics.py": "175d638d77a53562bfd2e4d1a3fa9f5d3aab8a0885b05be9ea5e64afecf387e7",
+      "constants.py": "be9e6bc7c28d8d6d2456aa34636eea1f14794bb99500905a5992d0467937931e"
+    }
+  },
+  "recipe": {
+    "batch_size": 16,
+    "accum": 2,
+    "epochs": 30,
+    "lr": 0.0003,
+    "weight_decay": 0.01,
+    "warmup_epochs": 2.0,
+    "photometric_augmentation": true,
+    "dpt_channels": 96,
+    "target_threshold": 0.001,
+    "eval_threshold": 0.5
+  },
+  "updates_per_slot": 514,
+  "training": {
+    "optimizer_updates": 55,
+    "sample_draws": 1760,
+    "seconds": 91.22803519014269,
+    "measured_batches": 100,
+    "loss_total": 1.6733862681822342,
+    "loss_ce": 0.7973502115769819,
+    "loss_dice": 0.8760360593145544,
+    "target_signed_dice": 0.007640404072988872,
+    "raw_signed_dice": 0.013906638137260657,
+    "nuisance_fp_mean": 0.002934668083293189,
+    "nuisance_fp_p95": 0.014540863037109355,
+    "nuisance_fp_max": 0.04216766357421875,
+    "component_f1": 0.017040185471406493
+  },
+  "validation": {
+    "optimizer_updates": 0,
+    "sample_draws": 2108,
+    "seconds": 112.80302728526294,
+    "measured_batches": 132,
+    "loss_total": 1.4069537827462861,
+    "loss_ce": 0.516809390801372,
+    "loss_dice": 0.8901443960088672,
+    "target_signed_dice": 0.017062945131468506,
+    "raw_signed_dice": 0.03834981552049647,
+    "nuisance_fp_mean": 0.00030598084619440184,
+    "nuisance_fp_p95": 0.0014892578124999986,
+    "nuisance_fp_max": 0.01587677001953125,
+    "component_f1": 0.03842437755481234
+  },
+  "peak_cuda_bytes": {
+    "allocated": 5577575936,
+    "reserved": 5955911680
+  },
+  "note": "Disposable B2 benchmark, not trained-model performance. No full sweep launched. Export excludes images, patient/pair IDs, paths, basis and model weights."
+}
