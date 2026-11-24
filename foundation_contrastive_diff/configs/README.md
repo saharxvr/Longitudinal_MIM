@@ -10,7 +10,8 @@ Use [architecture_data_block9_aug.yaml](architecture_data_block9_aug.yaml) with
 [training.train_architecture_data_ablation](../training/train_architecture_data_ablation.py).
 This is a separate experiment; existing launchers/checkpoints are unchanged.
 
-The default matrix trains **36 fresh independent models**, sequentially:
+The matrix trains **36 fresh independent models**. The original launcher runs
+them sequentially; the shared-backbone launcher below trains three heads together:
 
 | Arm | Temporal head | Patch features |
 | --- | --- | --- |
@@ -123,6 +124,72 @@ accumulation in the **shared config**, retaining effective batch32; use a
 fresh run root and rerun the benchmark. CPU tests do not establish GPU capacity.
 
 ### Launch, resume, and outputs
+
+#### Shared-backbone launcher (preferred)
+
+[train_shared_architecture_ablation.py](../training/train_shared_architecture_ablation.py)
+trains B0/B1/B2 together for one fraction/seed, with **one frozen-backbone pass
+per image and one augmentation per sampled pair**. Each head sees exactly the
+same augmented features, has its own loss/optimizer/scheduler/best checkpoint,
+and receives the full update budget. Head forward/backward graphs run
+sequentially within a batch to limit memory; this is joint multi-head training,
+not three independent CUDA processes. The four fractions and three seeds remain
+sequential groups: 12 jobs, each producing three independent trained heads.
+
+Use the existing external `locked_rank8.yaml`, but a **new shared run root**.
+The old sequential run/checkpoints stay untouched and are not warm-started.
+Existing noise diagnostics remain valid because no diagnostic/backbone/head
+source is changed; the new shared code is additionally hashed in the benchmark
+and checkpoints. The earlier single-head benchmark is not sufficient.
+
+After confirming the old launcher and its exact owned child processes are stopped:
+
+```bash
+CFG=/cs/labs/josko/sahar_aharon/fcd_runs/run_architecture_data_block9_aug/locked_rank8.yaml
+SHARED=/cs/labs/josko/sahar_aharon/fcd_runs/run_architecture_data_block9_aug_shared
+
+python -u -m training.train_shared_architecture_ablation \
+  --config "$CFG" --run-root "$SHARED" --mode benchmark --publish
+```
+
+This benchmarks all three heads with warmup, at least100measured batches and
+full validation. After reviewing its GPU memory/timing, launch:
+
+```bash
+python -u -m training.train_shared_architecture_ablation \
+  --config "$CFG" --run-root "$SHARED" --mode sweep --resume --publish
+```
+
+Use a unique background log/nohup for a long run. Every group logs batch1 and
+every100batches, then prints all three validation Dice values at each slot.
+Atomic `fraction_*/shared_last.pt` snapshots save all three optimization states
+and shared RNG/sampler position together at completed slots. Resume restores
+the whole group, not an individual arm. Best/last inference-compatible
+checkpoints and numeric metric CSVs are exported under B0/B1/B2 separately.
+An interrupted first slot without a saved group snapshot is not resumable;
+preserve the artifacts and resolve the failure before choosing a new run root.
+
+For a compact progress report while training is active:
+
+```bash
+python -u -m training.train_shared_architecture_ablation \
+  --config "$CFG" --run-root "$SHARED" --mode report --publish
+```
+
+Report mode needs no GPU/encoder. It reads atomic snapshots and publishes only
+aggregate numeric metrics, including positive/negative predicted areas to
+help spot all-unchanged predictions. No patient IDs, images, annotations, paths,
+features or weights enter the export. Benchmark/sweep `--publish` likewise
+exports a compact summary after successful completion. The scoped publisher
+never pulls or changes training code during a run. A push conflict fails
+explicitly; preserve the saved report and resolve Git separately.
+
+Finite losses and a successful memory benchmark do not guarantee useful
+learning. Inspect signed/positive/negative Dice, prediction areas and nuisance
+FPs over validation slots; do not treat early all-unchanged predictions as
+either proven permanent collapse or successful localization.
+
+#### Original sequential launcher
 
 After inspecting a successful compatible GPU benchmark, one command starts
 the sweep:

@@ -35,6 +35,22 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-11-24 - Replacing sequential arms with shared-backbone joint training.**
+  User clarified B0/B1/B2 should train together on one RTX4090. Added a separate
+  shared launcher: one sampled/augmented batch and frozen encoder extraction,
+  three independent heads/losses/optimizers/schedulers, sequential head graphs
+  to limit memory. Four fractions x3seeds remain12sequential groups producing
+  36models with the same per-head update budget. New run root and all-head GPU
+  benchmark are mandatory; preserve the already-launched sequential artifacts.
+  Atomic group snapshots restore all head and RNG states together. Compact
+  benchmark/progress/final JSON exports include sign-specific prediction areas
+  for collapse monitoring, never patient IDs/images/weights. Publication does
+  not pull or change training sources. Existing diagnostic-source hashes remain
+  unchanged. Local tests exercise shared extraction, independent optimization,
+  all-arm exact resume and old-checkpoint-compatible inference. Campus shared
+  benchmark/training have NOT been run; numerical stability is not a guarantee
+  of non-collapsed or clinically useful predictions.
+
 - **2026-11-24 - Campus diagnostic reviewed; rank8 approved for benchmark only.**
   User-provided block9 noise diagnostic: rank0 positional gap0.292340;
   rank8 gap0.182875 with mean training feature-energy retention0.739464.
