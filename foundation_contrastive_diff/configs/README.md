@@ -52,8 +52,9 @@ matching/clustering pipeline. Useful anatomy may also be removed.
 Before executing any command, verify dataset/storage ownership, current
 training processes on every relevant node, free storage, and CUDA availability.
 Run from the study folder in the existing campus environment. Do not launch
-multiple sweep processes against the same run root. Commands do not connect
-to campus, commit, push, delete old runs, or publish clinical images.
+multiple sweep processes against the same run root. Commands do not connect to campus, delete old runs, or publish clinical images.
+The benchmark wrapper below commits/pushes a compact metrics-only export only
+when explicitly given `--publish`.
 Exclusive root/cell lock files reject concurrent launches. If a machine reboot
 or forced termination leaves a lock, verify the recorded host's process is
 no longer running before removing **only that named lock file** and resuming.
@@ -85,6 +86,34 @@ data, code, extraction, environment or noise settings change.
 python -u -m training.train_architecture_data_ablation \
   --config configs/architecture_data_block9_aug.yaml --mode benchmark
 ```
+
+For the approved rank8 pilot, the
+[benchmark wrapper](../training/run_architecture_benchmark.py) reads and checks
+the diagnostic hash automatically, creates `locked_rank8.yaml` under the run
+root (outside Git), and runs **benchmark only**:
+
+```bash
+python -u -m training.run_architecture_benchmark \
+  --config configs/architecture_data_block9_aug.yaml --rank 8 --publish
+```
+
+It preserves the source YAML and refuses to overwrite an incompatible lock.
+The helper is separate from the diagnostic/training provenance source set, so
+adding it does not invalidate already-generated diagnostics. Existing feature
+code, data, environment and the saved basis still must match exactly.
+
+On success, `--publish` uses the existing scoped campus publisher to commit
+and push only a new `results/architecture_data_benchmark_*/summary.json`.
+This includes rank curves, feature-retention metrics, benchmark timing/GPU
+memory, recipe and source hashes. It excludes patient/pair IDs, paths, scans,
+logs, annotations, basis and model weights. The disposable benchmark's
+validation scores are **not a trained-model result**. Publication failure
+stops explicitly; after resolving it, `--export-only --publish` exports the
+saved benchmark without repeating GPU work.
+
+When the benchmark is approved for the full sweep, use the generated locked
+config path printed by the helper, not the original YAML with null rank/hash.
+Do not launch the sweep as part of this benchmark step.
 
 The benchmark trains a disposable B2 head with warmup followed by at least
 100measured batches, actual augmentation/accumulation/diagnostics, and full

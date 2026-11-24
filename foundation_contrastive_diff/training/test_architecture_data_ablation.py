@@ -258,6 +258,72 @@ class ArchitectureDataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exist"):
             trainer.run_diagnostics(args, self.context)
 
+    def test_benchmark_wrapper_locks_external_config_and_exports_only_safe_metrics(self):
+        import yaml
+        from training import run_architecture_benchmark as wrapper
+
+        diagnostic = torch.load(self.args.diagnostic_file, weights_only=False)
+        diagnostic.pop("basis")
+        diagnostic["diagnostic_sha256"] = self.args.diagnostic_sha256
+        trainer.write_json(Path(self.args.diagnostic_file).with_suffix(".json"), diagnostic)
+        source = self.root / "source.yaml"
+        config = dict(vars(self.args), debias_rank=None, diagnostic_sha256=None)
+        source.write_text(yaml.safe_dump(config), encoding="utf-8")
+        original = source.read_bytes()
+        locked, resolved, _ = wrapper.lock_config(source, 1)
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(locked.parent, Path(self.args.run_root).resolve())
+        self.assertEqual(resolved["debias_rank"], 1)
+        self.assertEqual(wrapper.lock_config(source, 1)[0], locked)
+        altered = yaml.safe_load(locked.read_text())
+        altered["lr"] *= 2
+        locked.write_text(yaml.safe_dump(altered))
+        with self.assertRaisesRegex(ValueError, "differs"):
+            wrapper.lock_config(source, 1)
+        with patch.object(trainer, "MIN_BENCHMARK_BATCHES", 2):
+            trainer.run_benchmark(self.args, self.context, trainer.locked_basis(self.args, self.context))
+            with patch.object(wrapper, "ROOT", self.root):
+                exported = wrapper.export_report(resolved, diagnostic)
+        report = json.loads((exported / "summary.json").read_text())
+        self.assertEqual(report["selected_rank"], 1)
+        self.assertEqual(report["training"]["measured_batches"], 2)
+        self.assertEqual([path.name for path in exported.iterdir()], ["summary.json"])
+        text = (exported / "summary.json").read_text()
+        self.assertNotIn("training_pair_ids", text)
+        self.assertNotIn("volume-train-", text)
+        self.assertNotIn(str(self.root), text)
+        with self.assertRaisesRegex(ValueError, "match"):
+            wrapper.export_report(dict(resolved, debias_rank=2), diagnostic)
+
+    def test_benchmark_wrapper_runs_benchmark_only_and_scopes_publication(self):
+        from training import run_architecture_benchmark as wrapper
+
+        source = trainer.ROOT / "configs/architecture_data_block9_aug.yaml"
+        config = dict(run_root=str(self.root / "wrapper"), diagnostic_file=self.args.diagnostic_file)
+        locked = self.root / "locked.yaml"
+        diagnostic = dict(test="diagnostic")
+        destination = self.root / "export"
+        with patch.object(wrapper, "lock_config", return_value=(locked, config, diagnostic)), \
+             patch.object(wrapper, "load_diagnostic", return_value=diagnostic), \
+             patch.object(wrapper.subprocess, "run") as child, \
+             patch.object(wrapper, "export_report", return_value=destination), \
+             patch.object(wrapper, "publish") as publisher:
+            wrapper.main(["--config", str(source), "--rank", "8", "--publish"])
+            command = child.call_args.args[0]
+            self.assertEqual(command[-2:], ["--mode", "benchmark"])
+            self.assertNotIn("sweep", command)
+            self.assertTrue(child.call_args.kwargs["check"])
+            publisher.assert_called_once_with(destination)
+            child.reset_mock()
+            publisher.reset_mock()
+            wrapper.main(["--config", str(source), "--rank", "8", "--export-only"])
+            child.assert_not_called()
+            publisher.assert_not_called()
+            child.side_effect = subprocess.CalledProcessError(1, ["benchmark"])
+            with self.assertRaises(subprocess.CalledProcessError):
+                wrapper.main(["--config", str(source), "--rank", "8", "--publish"])
+            publisher.assert_not_called()
+
     def test_cell_exact_budget_and_interrupted_resume_equivalence(self):
         result = trainer.run_cell(self.args, self.context, "B1", .5, 42)
         folder = Path(self.args.run_root) / trainer.cell_name("B1", .5, 42)

@@ -35,6 +35,18 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-11-24 - Campus diagnostic reviewed; rank8 approved for benchmark only.**
+  User-provided block9 noise diagnostic: rank0 positional gap0.292340;
+  rank8 gap0.182875 with mean training feature-energy retention0.739464.
+  Rank16 gap0.168066 retains0.689931; rank64 gap0.118586 retains0.539700.
+  Chose rank8 as an exploratory tradeoff, not demonstrated semantic retention
+  or improved clinical performance. User approves GPU benchmark only, not the
+  full36model sweep. Added a separate benchmark wrapper that preserves the
+  existing diagnostic code hashes, writes an external rank/hash-locked config,
+  and optionally publishes a compact metrics-only JSON through the existing
+  scoped publisher. No patient IDs, images, logs, basis or weights exported.
+  Campus benchmark results are pending.
+
 - **2026-11-23 - Implementing joint architecture/training-data controls.**
   Added a dedicated block9/CE+Dice/online-photometric sweep: B0 existing
   bidirectional cross-attention, B1 joint self-attention with learned
