@@ -34,7 +34,8 @@ image reconstruction, reverse-map supervision, or encoder fine-tuning is used.
 B1-B0 measures global attention and image-role embeddings together; it does
 not isolate their individual contributions.
 
-Each evaluation slot has `floor(N_full / effective_batch)` optimizer updates.
+The original equal-compute recipe below uses
+`floor(N_full / effective_batch)` optimizer updates per evaluation slot.
 There are30slots, with two slots' worth of warmup, at effective batch32.
 Smaller subsets are sampled repeatedly to receive **the same updates, sample
 draws, LR schedule and validation frequency** as the full-data model.
@@ -125,7 +126,76 @@ fresh run root and rerun the benchmark. CPU tests do not establish GPU capacity.
 
 ### Launch, resume, and outputs
 
-#### Shared-backbone launcher (preferred)
+#### Subset-sized epochs, all fractions before seed repeats (current recipe)
+
+Use [train_subset_architecture_ablation.py](../training/train_subset_architecture_ablation.py)
+for the revised data-size experiment. It reuses the unchanged shared B0/B1/B2
+training, loss, sampling, diagnostics and checkpoint helpers, but changes the
+epoch budget and group order:
+
+- Seed42: **10% -> 25% -> 50% -> 100%**, then the same fractions for seed43,
+  then seed44. All three architecture heads still train together in each group.
+- Each epoch draws `ceil(N_selected_pairs / 32) * 32` pairs from **only the
+  selected patients**, using the same balanced replacement sampler. Rounding
+  adds fewer than32draws. It is not a no-replacement pass over every pair.
+- Each model trains30subset-sized epochs. Warmup spans two such epochs,
+  followed by cosine decay over that group's actual optimizer-update budget.
+  B0/B1/B2 have identical budgets within a fraction/seed, but smaller subsets
+  get fewer updates. Actual selected pair counts, not nominal patient fractions,
+  determine the budget.
+- Validation uses the same full clean split after every subset epoch, with
+  best-checkpoint selection unchanged. Final test evaluation remains separate.
+- This is **equal nominal subset exposure**, not the previous equal-compute
+  experiment. Keep old results labelled and separate; do not combine them in
+  one controlled learning curve or continue their weights/optimizers.
+
+The existing external rank/hash lock and noise basis are reused unchanged.
+Use a **new output directory** and a matching new benchmark. Do not stop or
+edit a running experiment implicitly; first verify its owned process tree and
+preserve its completed checkpoints.
+
+```bash
+CFG=/cs/labs/josko/sahar_aharon/fcd_runs/run_architecture_data_block9_aug/locked_rank8.yaml
+SUBSET=/cs/labs/josko/sahar_aharon/fcd_runs/run_architecture_data_block9_aug_subset_epochs
+
+python -u -m training.train_subset_architecture_ablation \
+  --config "$CFG" --run-root "$SUBSET" --mode benchmark --publish
+```
+
+The disposable all-head benchmark validates the revised source/config/data
+identity and publishes a numeric schedule table with exact pair counts,
+updates/epoch, draws/epoch, warmup and total updates for all fraction/seed
+groups. It does not choose a new debias rank or start full training.
+
+After inspecting the benchmark, launch with a unique background log:
+
+```bash
+python -u -m training.train_subset_architecture_ablation \
+  --config "$CFG" --run-root "$SUBSET" --mode sweep --resume --publish
+```
+
+Group checkpoints record `epoch_budget`, `group_order` and `subset_budget`
+along with the three independent optimization/RNG states. Old equal-update
+checkpoints and benchmarks are incompatible and are never silently reused.
+Resume restores the latest completed **subset epoch** for that group.
+The inherited log label `slot` now refers to a subset-sized epoch.
+
+CPU-only progress publication uses the new entry point too:
+
+```bash
+CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python -u -m training.train_subset_architecture_ablation \
+  --config "$CFG" --run-root "$SUBSET" --mode report --publish
+```
+
+The compact report includes exact per-group budgets, best and latest
+validation metrics, sign-specific prediction areas and measured epoch timings.
+Only numeric metrics/source hashes are published; patient IDs, paths, images,
+features and weights remain on campus. Existing no-pull publication behavior
+is retained. Smaller epochs reduce excessive repetition, **not all risk of
+overfitting**; inspect validation curves before extending the study.
+
+#### Original equal-update shared-backbone launcher
 
 [train_shared_architecture_ablation.py](../training/train_shared_architecture_ablation.py)
 trains B0/B1/B2 together for one fraction/seed, with **one frozen-backbone pass

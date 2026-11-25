@@ -35,6 +35,22 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-11-25 - Switching to subset-sized epochs and fraction-first screening.**
+  User approved fewer updates for smaller subsets and covering all fractions
+  for seed42 before repeating seeds43/44. Added a separate shared-head entry
+  point; existing active trainer/backbone/head/sampler sources stay unchanged.
+  Each epoch has ceil(selected_pairs/32) complete optimizer updates per head,
+  using subset-only balanced replacement draws rounded up to effective batch32.
+  Thirty epochs and two warmup epochs are scaled to each actual subset;
+  B0/B1/B2 remain update-matched within groups. This changes equal compute to
+  equal nominal data exposure, not a guarantee of visiting every pair once or
+  avoiding overfitting. Ordering: seed42 10/25/50/100%, then43, then44.
+  Fresh heads/optimizers, new run directory and new benchmark are required;
+  old equal-update checkpoints/results are preserved and cannot be resumed
+  into the revised recipe. Compact reports expose actual counts/update budgets,
+  best/latest validation metrics and timings without images or patient IDs.
+  No remote process was stopped or revised training launched by the assistant.
+
 - **2026-11-24 - Replacing sequential arms with shared-backbone joint training.**
   User clarified B0/B1/B2 should train together on one RTX4090. Added a separate
   shared launcher: one sampled/augmented batch and frozen encoder extraction,
