@@ -1,0 +1,43 @@
+{
+  "cohort": "Repeatedly evaluated ICU100; exploratory, not untouched independent test",
+  "pairs": 100,
+  "readers": [
+    "Avi",
+    "Benny",
+    "Sigal",
+    "Smadar",
+    "Nitzan"
+  ],
+  "seed": 42,
+  "thresholds": [
+    0.1,
+    0.25,
+    0.5,
+    0.75,
+    0.9
+  ],
+  "headline_threshold": 0.75,
+  "cc_cutoff": 250,
+  "cc_area_space": "512x512 equivalent; native cutoff = 250*image_area/512^2",
+  "comparisons": "strict |score| > threshold and component area > cutoff",
+  "separate_signs": true,
+  "connectivity": 8,
+  "smoothing": false,
+  "coordinate_space": "original current-image array; unchanged affine; inverse training orientation",
+  "selection": "Synthetic validation best checkpoint; never selected on ICU performance",
+  "matcher": "Actual legacy OV and independently checked reference-first greedy one-to-one counts",
+  "detection_f1": "Per-reader pooled component F1; not pixel Dice or legacy boosted per-pair agreement",
+  "reader_SD": "Variability across five clinician scores, not across seeds or a confidence interval",
+  "postprocessing_warning": "Not exact historical Itamar cleanup",
+  "input_hash": "b640a3bd2d54bcd19638a93c05132d5c87d33a0dd387c7c87678e7f727f4d7a0",
+  "prediction_hash": "3d16e24df347e4a3bc814e98e1ff12e7a6114968d9d4f29eda866250162d3cc9",
+  "training_manifest_sha256": "78d18b1c8c6c34aae2023f2c8342fba28b8109ca0343f81be4939ee849c54468",
+  "evaluation_code_sha256": {
+    "evaluate_subset_clinical_ov": "7521d42ae03ca4ed0cf574161dfec0ff503967b595cf346fcb864163dd95b38c",
+    "clinical_preprocessing": "85173a93b8de09ab9443358a4a23f39cf712079e6b94fa9656b3793f591246b9",
+    "postprocessing": "44f73f299f591ea5fd4ac2b2716a69fbeb082653f095062d51b0b07dd9906e76",
+    "legacy_ov": "fcf35d67fce2d5f47d2a7f9004171577259af32e700ea97196e059419cddf3b4"
+  },
+  "undefined_ratios": "null; not replaced by zero",
+  "publication": "Aggregates and numeric plots only; scans, case IDs, predictions and weights stay on campus"
+}
