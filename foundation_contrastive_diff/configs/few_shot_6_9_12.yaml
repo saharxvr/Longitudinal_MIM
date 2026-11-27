@@ -1,0 +1,55 @@
+# Few-shot (in-context) signed change heatmaps on frozen RAD-DINO blocks 6/9/12.
+# Plan: FEW_SHOT_DIFF_PLAN.md. Trainer: training/train_few_shot.py. Launcher: training/run_few_shot.sh.
+corpus_root: /cs/labs/josko/sahar_aharon/fcd_fewshot_supervoxel
+corpus_store: /cs/labs/josko/sahar_aharon/fcd_fewshot_supervoxel/_store
+corpus_tiers: [T1, T2]            # T2near only in the ablation corpus/run
+run_root: /cs/labs/josko/sahar_aharon/fcd_runs/run_few_shot_6_9_12
+val_dataset_root: /cs/labs/josko/sahar_aharon/fcd_train
+val_store: /cs/labs/josko/sahar_aharon/fcd_fewshot_val_store
+arms: [fsdiff, dcama, panet, alpnet, universeg, none]
+par_arms: [panet]
+feature_layers: [6, 9, 12]
+model_id: microsoft/rad-dino
+channels: 96
+num_heads: 4
+attention_depth: 2
+memory_layers: 2
+task_tokens: 4
+local_pool: 4
+local_threshold: 0.3
+token_budget: 0
+crossblocks: 2
+max_support: 32                   # set to benchmark.json chosen_max_support (64/32/16)
+queries: 4
+level_weights: [0.45, 0.25, 0.15, 0.15]   # fine, family, compartment, any
+empty_query_prob: 0.15
+distractor_query_prob: 0.5
+zero_support_prob: 0.05
+label_mode: tight                 # tight | coarse_support | coarse_both (decided on synthetic val)
+coarse_prob: 0.3
+episodes_per_epoch: 2000
+epochs: 30
+accum: 1
+lr: 0.0003
+weight_decay: 0.01
+warmup_epochs: 2.0
+grad_clip: 1.0
+w_ce: 1.0
+w_dice: 0.0
+w_change: 0.1
+w_par: 1.0
+target_threshold: 0.001
+eval_threshold: 0.5
+photometric_augmentation: true
+rotation_k: 3
+flip_horizontal: true
+precision: bf16
+extract_chunk: 32
+num_workers: 4
+seed: 42
+device: cuda
+val_cache_pairs: 1200
+val_shuffle_check: true
+benchmark_support: [64, 32, 16]
+benchmark_episodes: 12
+benchmark_memory_gb: 21.0
