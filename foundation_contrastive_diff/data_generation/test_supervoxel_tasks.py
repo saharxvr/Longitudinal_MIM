@@ -301,6 +301,36 @@ class GeneratorTests(unittest.TestCase):
         kinds = {export.source_kind(item[0]) for item in export.diverse_choice(available, 3, 0)}
         self.assertEqual(kinds, {"ct_rate", "luna", "lits"})
 
+    def test_ctrate_fetch_helpers_offline(self):
+        from data_generation import fetch_ctrate_preview_cases as fetch
+
+        self.assertEqual(fetch.volume_paths("train_12_a_1.nii.gz"), (
+            "dataset/train_fixed/train_12/train_12_a/train_12_a_1.nii.gz",
+            "dataset/ts_seg/ts_total/train_fixed/train_12/train_12_a/train_12_a_1.nii.gz"))
+        rows = [dict(VolumeName=f"train_{index}_a_{recon}.nii.gz", ZSpacing=str(spacing), NumberofSlices="300",
+                     XYSpacing="[0.7, 0.7]", RescaleSlope="1", RescaleIntercept="-1024")
+                for index, spacing in ((1, 1.0), (2, 5.0), (3, 1.25), (4, 1.0)) for recon in (1, 2)]
+        chosen = fetch.choose(rows, {"train_4_a_1.nii.gz"}, 2, 0, None)
+        self.assertEqual(sorted(name for name, _ in chosen), ["train_1_a_1.nii.gz", "train_3_a_1.nii.gz"])
+        raw = np.full((8, 8, 4), 1024, np.float32)
+        raw[2:5, 2:5] = 0
+        image, notes = fetch.to_hu(nib.Nifti1Image(raw, np.eye(4)), rows[0])
+        hu = np.asarray(image.dataobj)
+        self.assertEqual(int(hu.min()), -1024)
+        self.assertEqual(notes["rescaled"]["intercept"], -1024.0)
+        self.assertAlmostEqual(float(image.header.get_zooms()[0]), 0.7, places=3)
+        ct, segs = phantom()
+        labels = np.zeros(ct.shape, np.int16)
+        for name, value in (("upper_right_lobe", 15), ("middle_right_lobe", 16), ("lower_right_lobe", 17),
+                            ("upper_left_lobe", 13), ("lower_left_lobe", 14)):
+            labels[segs[name]] = value
+        labels[segs["heart"]] = 46
+        version, masks, _ = fetch.decode_total(nib.Nifti1Image(labels, np.eye(4)), nib.Nifti1Image(ct, np.eye(4)))
+        self.assertEqual(version, "total_v1")
+        np.testing.assert_array_equal(masks["upper_left_lobe"], segs["upper_left_lobe"])
+        with self.assertRaises(SystemExit):
+            fetch.main(["--output", str(Path(fetch.__file__).resolve().parents[1] / "tmp_ctrate")])
+
 
 if __name__ == "__main__":
     unittest.main()
