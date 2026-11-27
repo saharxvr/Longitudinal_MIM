@@ -72,9 +72,13 @@ def choose(rows, no_chest, count, seed, explicit):
     candidates = []
     for name, row in by_name.items():
         z_spacing = number(column(row, "zspacing")) or number(column(row, "slicethickness"))
+        xy_spacing = number(column(row, "xyspacing"))
         slices = number(column(row, "numberofslices"))
+        # Same rule as the campus cohort filter (case_filtering.py): every spacing <= 1 mm. The
+        # renderer rotates in voxel units like the existing DRR generator, so thicker slices shear.
         if (name and name.endswith("_1.nii.gz") and name not in no_chest and z_spacing
-                and 0.8 <= z_spacing <= 1.5 and (slices is None or 150 <= slices <= 600)):
+                and 0.7 <= z_spacing <= 1.0 and (xy_spacing is None or xy_spacing <= 1.0)
+                and (slices is None or 150 <= slices <= 600)):
             candidates.append(name)
     rng = np.random.default_rng(seed)
     chosen, patients = [], set()
@@ -176,12 +180,12 @@ def main(argv=None):
     output = Path(args.output).resolve()
     if (Path(__file__).resolve().parents[2] / ".git").exists() and Path(__file__).resolve().parents[2] in output.parents:
         raise SystemExit("Output is inside the git repository; CT-RATE forbids redistribution. Choose a folder outside it.")
-    downloads = output / "_downloads"
     output.mkdir(parents=True, exist_ok=True)
     revision = HfApi().dataset_info(REPO).sha
 
     def fetch(path):
-        return Path(hf_hub_download(REPO, path, repo_type="dataset", revision=revision, local_dir=downloads))
+        # Standard HF cache (short blob paths; a nested local_dir exceeds Windows MAX_PATH).
+        return Path(hf_hub_download(REPO, path, repo_type="dataset", revision=revision))
 
     with open(fetch(METADATA), newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))

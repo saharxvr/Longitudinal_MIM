@@ -101,6 +101,12 @@ def crop_like_generator(ct, segs):
     return ct[box], {name: mask[box] for name, mask in segs.items()}
 
 
+def spacing_from_affine(affine):
+    """Voxel spacing (mm) in the (z, x, y) axis order produced by load_volume."""
+    zooms = np.sqrt((np.asarray(affine)[:3, :3] ** 2).sum(0))
+    return (float(zooms[2]), float(zooms[0]), float(zooms[1]))
+
+
 def load_case(case, ct_path, templates):
     ct, affine = load_volume(ct_path)
     segs, missing = {}, []
@@ -156,12 +162,12 @@ class DonorBank:
     def __init__(self, size=64, seed=0):
         self.items, self.size, self.rng = [], size, np.random.default_rng(seed)
 
-    def add(self, ctx, count=8, edge=None):
-        edge = edge or max(8, int(0.15 * ctx.scale))
-        points = np.argwhere(ctx.compartments["body"]) * ctx.ds
+    def add(self, ctx, count=8, edge_mm=None):
+        edge_mm = edge_mm or max(20.0, 0.15 * ctx.scale)
+        points = ctx.full_points(ctx.compartments["body"])
         for _ in range(count):
             center = points[self.rng.integers(len(points))]
-            box = tasks.box_around(center, [edge // 2] * 3, ctx.shape)
+            box = tasks.box_around(center, ctx.vox(edge_mm / 2), ctx.shape)
             self.items.append(ctx.ct[box].copy())
         self.items = self.items[-self.size:]
 
@@ -300,11 +306,11 @@ def main(argv=None):
             continue
         try:
             ct, segs, affine, missing = load_case(case, ct_path, templates)
-            cache = output / "_supervoxels" / f"{case}.npy"
+            cache = output / "_supervoxels" / f"{case}_mm.npy"
             supervoxels = np.load(cache) if cache.is_file() else None
-            ctx = tasks.CTContext(ct, segs, supervoxels=supervoxels, n_supervoxels=args.n_supervoxels,
-                                  seed=scene_seed(case, 0))
-            if supervoxels is None:
+            ctx = tasks.CTContext(ct, segs, spacing=spacing_from_affine(affine), supervoxels=supervoxels,
+                                  n_supervoxels=args.n_supervoxels, seed=scene_seed(case, 0))
+            if supervoxels is None or supervoxels is not ctx.supervoxels:
                 cache.parent.mkdir(parents=True, exist_ok=True)
                 np.save(cache, ctx.supervoxels)
             hook = make_devices_hook(args.devices_prob, ctx.segs["lungs"], scene_seed(case, 9999))

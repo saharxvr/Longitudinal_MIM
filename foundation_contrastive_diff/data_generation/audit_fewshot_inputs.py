@@ -41,8 +41,8 @@ def sample_ct_checks(cases, templates, count, device, seed=0):
     for case, path, _ in [cases[index] for index in rng.permutation(len(cases))[:count]]:
         started = time.time()
         try:
-            ct, segs, _, missing = corpus.load_case(case, path, templates)
-            ctx = tasks.CTContext(ct, segs)
+            ct, segs, affine, missing = corpus.load_case(case, path, templates)
+            ctx = tasks.CTContext(ct, segs, spacing=corpus.spacing_from_affine(affine))
             setup = time.time() - started
             families = {}
             for family in sorted(tasks.FAMILIES):

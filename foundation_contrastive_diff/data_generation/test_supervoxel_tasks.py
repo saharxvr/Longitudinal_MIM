@@ -180,6 +180,53 @@ class GeneratorTests(unittest.TestCase):
             self.assertTrue(all(abs(angle) <= 17.5 for angle in angles))
             self.assertLessEqual(sum(abs(angle) for angle in angles), 37.5)
 
+    def test_sizes_are_physical_on_anisotropic_grids(self):
+        spacing = (2.0, 0.5, 0.5)
+        shape = (40, 120, 120)
+        box = tuple(slice(0, size) for size in shape)
+        ball = tasks.ellipsoid(box, (20, 60, 60), 10.0, spacing)
+        extents_mm = [(np.ptp(np.nonzero(ball.any(axis=tuple(a for a in range(3) if a != axis)))[0]) + 1) * s
+                      for axis, s in enumerate(spacing)]
+        self.assertTrue(np.allclose(extents_mm, 20.0, atol=2.0), extents_mm)
+        point = np.zeros(shape, bool)
+        point[20, 60, 60] = True
+        grown = tasks.dilate(point, 6.0, spacing)
+        self.assertEqual(int(grown[:, 60, 60].sum()), 7)
+        self.assertEqual(int(grown[20, :, 60].sum()), 25)
+        ct, segs = phantom()
+        stretched = tasks.CTContext(np.repeat(ct, 2, axis=1), {k: np.repeat(v, 2, axis=1) for k, v in segs.items()},
+                                    spacing=(1.0, 0.5, 1.0), n_supervoxels=300)
+        self.assertEqual(stretched.ds.tolist(), [3, 6, 3])
+        self.assertAlmostEqual(stretched.scale, self.ctx.scale, delta=0.1 * self.ctx.scale)
+
+    def test_orientation_from_heart_and_diaphragm_dome_columns(self):
+        ct, segs = phantom()
+        flipped = tasks.CTContext(ct[::-1].copy(), {k: v[::-1].copy() for k, v in segs.items()},
+                                  downsample=2, supervoxel_downsample=2, n_supervoxels=300)
+        self.assertEqual(flipped.inferior_rule, "heart centroid")
+        self.assertEqual(flipped.inferior, -1)
+        for ctx in (self.ctx, flipped):
+            below = np.argwhere(ctx.compartments["sub_diaphragm"])[:, 0].mean() * ctx.ds[0]
+            self.assertGreater(ctx.inferior * (below - ctx.lung_center[0]), 0)
+        lung = np.zeros((50, 10, 4), bool)
+        lung[10:40, :5] = True
+        lung[10:20, 5:] = True  # columns ending high (e.g. over the heart) are not diaphragm
+        np.testing.assert_array_equal(self.ctx.dome_columns(lung)[:, 0], [True] * 5 + [False] * 5)
+
+    def test_widening_stays_in_lungs_and_faint_changes_are_rejected(self):
+        change = tasks.sample_change(self.ctx, "mediastinal_widening", np.random.default_rng(0))
+        self.assertIsNotNone(change)
+        lungs = tasks.dilate(self.ctx.segs["lungs"][change.delta.box], 2.0)
+        self.assertFalse((change.delta.support(50.0) & ~lungs).any())
+        box = (slice(20, 24), slice(15, 19), slice(26, 30))
+        faint = tasks.VolumeDelta(box, np.full((4, 4, 4), 5.0, np.float32))
+        self.assertIsNone(tasks._finish(self.ctx, faint, "x", "T1", "lungs", {}))
+        self.ctx.min_visibility = None
+        try:
+            self.assertIsNotNone(tasks._finish(self.ctx, faint, "x", "T1", "lungs", {}))
+        finally:
+            self.ctx.min_visibility = (0.035, 80.0)
+
     def test_corpus_scene_files_manifest_and_train_only_sources(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -236,7 +283,7 @@ class GeneratorTests(unittest.TestCase):
             coverage = audit.segmentation_coverage([("caseX", "", "p")], templates)
             self.assertEqual(coverage["with_all_lobes"], 1)
             original = tasks.CTContext
-            with unittest.mock.patch.object(tasks, "CTContext", side_effect=lambda c, s: original(
+            with unittest.mock.patch.object(tasks, "CTContext", side_effect=lambda c, s, **k: original(
                     c, s, downsample=2, supervoxel_downsample=2, n_supervoxels=300)):
                 report = audit.sample_ct_checks([("caseX", str(root / "caseX.nii.gz"), "p")], templates, 1, "cpu")
             self.assertNotIn("error", report[0])
@@ -309,9 +356,9 @@ class GeneratorTests(unittest.TestCase):
             "dataset/ts_seg/ts_total/train_fixed/train_12/train_12_a/train_12_a_1.nii.gz"))
         rows = [dict(VolumeName=f"train_{index}_a_{recon}.nii.gz", ZSpacing=str(spacing), NumberofSlices="300",
                      XYSpacing="[0.7, 0.7]", RescaleSlope="1", RescaleIntercept="-1024")
-                for index, spacing in ((1, 1.0), (2, 5.0), (3, 1.25), (4, 1.0)) for recon in (1, 2)]
+                for index, spacing in ((1, 1.0), (2, 5.0), (3, 1.25), (4, 1.0), (5, 0.8)) for recon in (1, 2)]
         chosen = fetch.choose(rows, {"train_4_a_1.nii.gz"}, 2, 0, None)
-        self.assertEqual(sorted(name for name, _ in chosen), ["train_1_a_1.nii.gz", "train_3_a_1.nii.gz"])
+        self.assertEqual(sorted(name for name, _ in chosen), ["train_1_a_1.nii.gz", "train_5_a_1.nii.gz"])
         raw = np.full((8, 8, 4), 1024, np.float32)
         raw[2:5, 2:5] = 0
         image, notes = fetch.to_hu(nib.Nifti1Image(raw, np.eye(4)), rows[0])

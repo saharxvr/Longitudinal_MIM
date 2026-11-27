@@ -51,15 +51,17 @@ def case_folders(root):
 def load_context(folder, cache_dir, n_supervoxels):
     templates = {name: str(folder.parent / "{case}" / f"{name}.nii.gz") for name in corpus.SEG_TEMPLATES}
     started = time.time()
-    ct, segs, _, missing = corpus.load_case(folder.name, str(folder / "ct.nii.gz"), templates)
-    cache = Path(cache_dir) / f"{folder.name}_supervoxels.npy"
+    ct, segs, affine, missing = corpus.load_case(folder.name, str(folder / "ct.nii.gz"), templates)
+    cache = Path(cache_dir) / f"{folder.name}_supervoxels_mm.npy"
     supervoxels = np.load(cache) if cache.is_file() else None
-    ctx = tasks.CTContext(ct, segs, supervoxels=supervoxels, n_supervoxels=n_supervoxels,
-                          seed=seed_for(folder.name)[0])
-    if supervoxels is None:
+    ctx = tasks.CTContext(ct, segs, spacing=corpus.spacing_from_affine(affine), supervoxels=supervoxels,
+                          n_supervoxels=n_supervoxels, seed=seed_for(folder.name)[0])
+    if supervoxels is None or supervoxels is not ctx.supervoxels:
         cache.parent.mkdir(parents=True, exist_ok=True)
         np.save(cache, ctx.supervoxels)
-    info = dict(case=folder.name, cropped_shape=list(ct.shape), missing_segs=missing, inferior=ctx.inferior,
+    info = dict(case=folder.name, cropped_shape=list(ct.shape), spacing_mm=[round(v, 3) for v in ctx.spacing],
+                compartment_grid=ctx.ds.tolist(), supervoxel_grid=ctx.sv_ds.tolist(), lung_scale_mm=round(ctx.scale, 1),
+                missing_segs=missing, inferior=ctx.inferior, inferior_rule=ctx.inferior_rule,
                 supervoxels=int(len(np.unique(ctx.supervoxels)) - 1), setup_seconds=round(time.time() - started, 1),
                 compartment_voxels={name: int(mask.sum()) for name, mask in ctx.compartments.items()})
     return ctx, info
@@ -94,7 +96,8 @@ def family_panel(ctx, change, current_image, prior_image, base_projection, gt, e
     before, after, mask = coronal(ctx, change)
     figure, axes = plt.subplots(1, 7, figsize=(24, 4))
     for axis, image, title in ((axes[0], before, "CT coronal before"), (axes[1], after, "CT coronal after")):
-        axis.imshow(np.clip(image, *WINDOW), cmap="gray", vmin=WINDOW[0], vmax=WINDOW[1])
+        axis.imshow(np.clip(image, *WINDOW), cmap="gray", vmin=WINDOW[0], vmax=WINDOW[1],
+                    aspect=float(ctx.spacing[0] / ctx.spacing[1]))
         axis.set_title(title, fontsize=8)
     axes[1].contour(mask, levels=[0.5], colors="yellow", linewidths=0.6)
     axes[2].imshow(norm(prior_image), cmap="gray")
@@ -252,7 +255,7 @@ def preview_case(folder, args, output, families):
         for sample in range(args.samples):
             family_rng = np.random.default_rng(seed_for(args.seed, folder.name, family, sample))
             started = time.time()
-            change = tasks.sample_change(ctx, family, family_rng, donors(family_rng) if "cutpaste" in family else None)
+            change = tasks.sample_change(ctx, family, family_rng, donors if "cutpaste" in family else None)
             if change is None:
                 rows.append(dict(case=folder.name, family=family, sample=sample, tier=tasks.FAMILIES[family]["tier"],
                                  produced=False))

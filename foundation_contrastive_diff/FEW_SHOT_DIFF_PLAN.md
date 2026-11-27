@@ -115,6 +115,9 @@ signed map = p(positive) - p(negative); CLS difference feeds the decoder as in a
   - existing `ExternalDevices`;
   - angle.
 - Tests check projection linearity and that the GT sign follows the timepoint.
+- The rotation acts on voxel offsets, exactly like the existing generator, so training and
+  validation DRRs share the same geometry. This is a rigid rotation only for near-isotropic CTs;
+  the campus cohort is filtered to spacing <= 1 mm on every axis.
 
 ### 4.2 Change catalog ([supervoxel_tasks.py](data_generation/supervoxel_tasks.py))
 
@@ -124,6 +127,22 @@ signed map = p(positive) - p(negative); CLS difference feeds the decoder as in a
   pleural rim, fissures, hila.
 - Supervoxels: 3D SLIC, computed once per CT and cached. Regions are random connected supervoxel
   unions (70%) or smooth-noise blobs (30%), with log-uniform size.
+- Units: every size, distance, smoothing width and rotation is in millimetres from the CT voxel
+  spacing. Real CTs are strongly anisotropic (e.g. CT-RATE 0.35 x 0.35 x 1.5 mm), so voxel units
+  would stretch changes along z by a different factor per CT.
+- Head/foot direction comes from the heart centroid (inferior to the lung centre), then the
+  trachea (superior), then +z. Lung-area profiles are not used: the diaphragm domes make the
+  basal slices small.
+- Sub-diaphragm and diaphragm changes use only dome columns (columns whose lowest lung voxel is
+  in the bottom 40% of that lung). Chest-wall candidates are restricted to the lung projection
+  footprint, because the DRR crop (lung box + 7 voxels) excludes the lateral wall.
+- Visibility gate: every change must reach peak |GT| >= 0.035 and >= 80 GT pixels in an
+  approximate AP projection (`CTContext.min_visibility`), otherwise it is resampled. The
+  estimates are stored as `ap_peak` / `ap_area_px` in the change params.
+- T1 grow/shrink/displace (and non-lung cut-paste) are seeded within 10 mm of the lung interface.
+  Grow and shrink move only into tissue that differs by more than 150 HU, because edits inside
+  homogeneous tissue are invisible in projection. Texture patterns are non-negative, because
+  zero-mean patterns cancel along the ray.
 
 | Tier | Families (`FAMILIES` keys) | Use |
 |---|---|---|
@@ -259,6 +278,12 @@ Not yet implemented:
      ellipse label), per-tier contact sheets, composed scenes with episode target vs distractors,
      the nuisance example, and `index.md` with families that were not realized.
    - Review it, adjust magnitudes, and only then generate at scale.
+   - Without campus access, `python -m data_generation.fetch_ctrate_preview_cases --output <folder
+     outside the repo> --totalseg <TotalSegmentator.exe> --count 2` downloads public CT-RATE CTs
+     (Hugging Face login required; no redistribution). It keeps only CTs with every spacing
+     <= 1 mm, the same rule as the campus cohort filter. The renderer rotates in voxel units like
+     the existing DRR generator, so CTs with thicker slices are sheared by the rotation and are
+     not representative.
 3. `generate <slice> <num_slices>` on several GPU nodes (resumable), then `manifest`, then `stores`.
 4. `benchmark`; set `max_support` to `chosen_max_support`.
 5. `train` (locked, resumable), then `eval_synthetic`.
