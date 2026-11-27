@@ -92,6 +92,9 @@ def main(argv=None):
     templates = {name: template.replace(corpus.SEG_ROOT, args.seg_root)
                  for name, template in corpus.SEG_TEMPLATES.items()}
     available = complete_cases(args.source_manifest, templates)
+    if not available:
+        raise SystemExit("No train-split case has the CT and all segmentations under the configured "
+                         "templates; check --seg_root (see generate_supervoxel_corpus.SEG_TEMPLATES)")
     if args.cases:
         selected = [item for item in available if item[0] in set(args.cases)]
         missing = set(args.cases) - {item[0] for item in selected}
