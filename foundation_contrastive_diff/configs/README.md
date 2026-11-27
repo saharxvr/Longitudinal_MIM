@@ -126,6 +126,80 @@ fresh run root and rerun the benchmark. CPU tests do not establish GPU capacity.
 
 ### Launch, resume, and outputs
 
+#### ICU100 OV evaluation of the subset-epoch models
+
+Use [evaluate_subset_clinical_ov.py](../evaluation/evaluate_subset_clinical_ov.py)
+to evaluate **all 12 seed42 best checkpoints** (B0/B1/B2 at10/25/50/100%)
+against the existing100ICUpairs and five clinician annotations. Checkpoints
+must belong to fully completed subset-epoch groups. Their exact saved weights,
+best validation score/epoch, architecture, update budget and training-source
+hashes are verified before inference. No ICU score is used to select weights.
+
+The frozen block9encoder is run once per prior/current image and shared by all
+selected heads. Online photometric augmentation is disabled at evaluation.
+Predictions are restored with the inverse training orientation to each current
+image's native array/affine before thresholding. No crop, sharpening, smoothing,
+image reconstruction or new geometric correction is added.
+
+Operating points: **sign-specific 8-connected CC area >250**, scaled by
+native image area/512^2, at signed thresholds **0.1/0.25/0.5/0.75/0.9**.
+Threshold and component-area comparisons are strict. The fixed headline is
+**0.75/CC250**; the remaining thresholds are an exploratory sweep, not a
+confirmatory best-setting selection. Filtering uses the same shared helper as
+the previous fusionOV. Every model/threshold runs the actual legacyOV script;
+all positive/negative/combined per-clinician pooled component F1 values are
+checked against reference-first one-to-one counts at tolerance1e-12.
+Historical boosted per-pair PAI and pixel Dice are not component detection F1.
+This is not exact Itamar historical cleanup.
+
+Run from the study folder. Use a unique inference/output directory:
+
+```bash
+CFG=/cs/labs/josko/sahar_aharon/fcd_runs/run_architecture_data_block9_aug/locked_rank8.yaml
+SUBSET=/cs/labs/josko/sahar_aharon/fcd_runs/run_architecture_data_block9_aug_subset_epochs
+PRED=/cs/labs/josko/sahar_aharon/fcd_runs/clinical100_subset_seed42_$(date +%Y%m%d_%H%M%S)_$$
+OUT=results/clinical100_subset_seed42_ov_$(date +%Y%m%d_%H%M%S)_$$
+
+python -u -m evaluation.evaluate_subset_clinical_ov \
+  --config "$CFG" --run-root "$SUBSET" \
+  --clinical-root "/cs/labs/josko/sahar_aharon/repos/python_files/annotation tool" \
+  --inference-dir "$PRED" --out-dir "$OUT" --device cuda --publish
+```
+
+CUDA inference refuses to start while another owned training job is detected
+on the same node. Do not silently kill or restart it. Use `--device cpu` to
+leave GPU training running (slower), or explicitly stop the verified owned
+training process tree after preserving its checkpoint. The script itself
+does not stop processes or change training-source files/configs.
+
+Raw signed-score NIfTIs, case-level identity/hash records and full legacyOV
+outputs remain in the external `$PRED` directory on campus. No scan-overlay
+rendering is requested. Inference completion records cover every selected
+model/pair and its prediction hash. With `--reuse-inference`, an existing
+complete `$PRED` is verified and scored without encoder/GPU work; use a new
+`--out-dir`. Incomplete/corrupt inference, changed clinical inputs, changed
+annotations or checkpoint mismatches fail explicitly rather than being skipped.
+
+`--publish` commits/pushes only the explicit aggregate-file allowlist:
+`summary.json`, `protocol.json`, `checkpoints.csv`, `per_clinician.csv`,
+`threshold_summary.csv`, `threshold_sweep.png`, `data_fraction_f1.png`, and
+`index.md`, with a100MiB guard. No raw image, patient/case identity, prediction,
+log, annotation, basis or weight enters that export. The protocol contains
+aggregate input/prediction hashes and evaluation-source hashes. Publication
+does not pull or modify an active training source. A push conflict stops
+explicitly; preserve the completed reports and resolve Git separately.
+
+These100cases have been evaluated repeatedly: comparisons remain
+**exploratory**, not untouched test generalization or statistical superiority.
+Reader-score sampleSD is not training-seed uncertainty or a confidence interval.
+The synthetic held-out test remains a separate evaluation.
+
+Focused validation:
+
+```bash
+python -m unittest evaluation.test_subset_clinical_ov evaluation.test_evaluate_fusion_ov
+```
+
 #### Subset-sized epochs, all fractions before seed repeats (current recipe)
 
 Use [train_subset_architecture_ablation.py](../training/train_subset_architecture_ablation.py)

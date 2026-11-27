@@ -35,6 +35,21 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-11-27 - Adding seed42/four-fraction ICU100 OV evaluation.**
+  User approves12models: B0/B1/B2 at10/25/50/100%training patients, seed42,
+  validation-selected best checkpoints only. New evaluator verifies completed
+  subset-epoch groups/best weights and shares one frozen block9extraction per
+  clinical image. Predictions use clean preprocessing and inverse training
+  orientation/native current geometry. Reuse prior strict sign-separated
+  8connectedCC>250equivalent512^2; threshold sweep .1/.25/.5/.75/.9, fixed
+  headline .75. Actual legacyOVruns at every operating point with independent
+  per-reader componentF1 count verification. No ICU-based weight selection.
+  Only aggregate numeric reports/plots are published; case-level predictions,
+  identities and fullOVoutputs remain on campus. Existing trainer sources
+  remain unchanged. GPU inference refuses a concurrent owned training job;
+  CPU mode/reusing completed inference are available without stopping training.
+  Reused ICU100 comparisons are exploratory; no clinical results generated yet.
+
 - **2026-11-25 - Switching to subset-sized epochs and fraction-first screening.**
   User approved fewer updates for smaller subsets and covering all fractions
   for seed42 before repeating seeds43/44. Added a separate shared-head entry
