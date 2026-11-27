@@ -1,0 +1,51 @@
+{
+  "cohort": "Repeatedly evaluated ICU100; exploratory, one training seed; no metric/threshold-based weight selection",
+  "pairs": 100,
+  "models": 12,
+  "readers": [
+    "Avi",
+    "Benny",
+    "Sigal",
+    "Smadar",
+    "Nitzan"
+  ],
+  "thresholds": [
+    0.1,
+    0.25,
+    0.5,
+    0.75,
+    0.9
+  ],
+  "headline_threshold": 0.75,
+  "cc_cutoff": 250,
+  "filtering": "Unchanged strict signed thresholds; separate-sign 8-connected CC >250*image_area/512^2",
+  "one_to_many": "(matched model regions + matched reference regions)/(model regions + reference regions); each region counts once if any same-sign partner overlaps or touches (8-neighbours)",
+  "one_to_one_presentation": "Overlap-only greedy matching, model-first; same order as presentation reference",
+  "one_to_one_legacy": "Overlap-only greedy matching, reference-first; reproduces the previous OV table",
+  "aggregation": "Pool counts over pairs and both signs for each reader; then mean/sample SD across five readers",
+  "empty_handling": "Presentation ratios: empty/empty=1. Legacy OV undefined empty/empty remains null.",
+  "original_one_to_one_reproduced": true,
+  "presentation_baseline": {
+    "model": "Previous fusion Arm A (blocks 6/9/12, CE-only)",
+    "threshold": 0.75,
+    "cc_cutoff": 250,
+    "one_to_many": 0.5095313748322834,
+    "one_to_one_presentation": 0.4751602245426603,
+    "one_to_one_legacy": 0.4739974338449859,
+    "reproduced_from_saved_masks": true
+  },
+  "input_hash": "b640a3bd2d54bcd19638a93c05132d5c87d33a0dd387c7c87678e7f727f4d7a0",
+  "prediction_hash": "3d16e24df347e4a3bc814e98e1ff12e7a6114968d9d4f29eda866250162d3cc9",
+  "baseline_masks_hash": "42f98252378f512f16a87b0c97e16c3d26ef98ab344397aee4ad517cdc828ca9",
+  "source_sha256": {
+    "rescoring": "3084b39eb4d759b5d6879884bb304275f7b7505f45165e9dc92e1dda80e226d4",
+    "postprocessing": "44f73f299f591ea5fd4ac2b2716a69fbeb082653f095062d51b0b07dd9906e76",
+    "legacy_ov": "fcf35d67fce2d5f47d2a7f9004171577259af32e700ea97196e059419cddf3b4"
+  },
+  "original_report_sha256": "13fa4f55a854d1576338e7c0774a563b8a29f8db3b95ff4fd9783c320d53a93f",
+  "annotation_runtime_warnings": 34,
+  "annotation_nonpositive_radius_records": 18,
+  "annotation_policy": "Original rasterization unchanged; warnings counted explicitly, not proof of annotation validity",
+  "execution": "CPU-only saved-prediction rescoring; no model construction, inference, training or input modification",
+  "publication": "Aggregates only: no patient/case IDs, images, annotations, paths, predictions or weights"
+}
