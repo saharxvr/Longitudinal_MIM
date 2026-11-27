@@ -35,6 +35,21 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-11-27 - Aligning new ICU results with the presentation metric.**
+  User correctly recalled Rad-Dino-CXR-Diff0.51. Recomputed the exact old
+  presentation Arm A masks/reader terms: one-to-many overlap-or-touch pooled
+  F1=.5095313748322834, model-first overlap-only one-to-one=.4751602245426603,
+  reference-first legacyOVone-to-one=.4739974338449859. The prior new-model
+  table used reference-first one-to-one, not the presentation's primary metric.
+  Added CPU-only rescoring of the same saved12model/100ICUpredictions at the
+  unchanged5thresholds/CC250. Requires previousper-readerOVreproduction plus
+  exact oldArmAbaseline reproduction before aggregate-only publication.
+  Preserves all previous outputs and inference-source hashes; no retraining
+  or GPUinference. Local fullbaseline check reproduces allthreevalues; records
+  34rasterizerwarnings from18nonpositive-radius records without changing masks.
+  Note modeldifference too: oldArmA fusedblocks6/9/12withCEonly; newheads use
+  block9andCE+Dice. New presentation-metric scores await campus rescoring.
+
 - **2026-11-27 - Adding a short campus ICU100 evaluation launcher.**
   User requested a repository-backed Bash command instead of pasting the long
   terminal block. Added training/run_subset_clinical_ov.sh: exact owned-run

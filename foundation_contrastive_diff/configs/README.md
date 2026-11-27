@@ -128,6 +128,56 @@ fresh run root and rerun the benchmark. CPU tests do not establish GPU capacity.
 
 #### ICU100 OV evaluation of the subset-epoch models
 
+**Presentation-metric rescoring of the saved run (CPU only):**
+
+```bash
+bash training/rescore_subset_clinical_many.sh
+```
+
+The [rescoring helper](../evaluation/rescore_subset_clinical_many.py) reads the
+existing twelve-model predictions from the completed ICU100run, without model
+construction, GPU inference or training. The
+[short launcher](../training/rescore_subset_clinical_many.sh) uses the known
+`clinical100_subset_seed42_20261127_153538_98466` campus inference and original
+OV report by default; `INFERENCE_DIR`/`ORIGINAL_REPORT` may select another
+compatible saved run. It launches in the background, prints its log/output,
+does not stop/restart any training, and pushes a **new** aggregate-only report.
+Old predictions, checkpoint files and report outputs are never overwritten.
+
+The presentation's0.509531score is **one-to-many pooled detection F1**, not
+the original OV one-to-one metric. Rescoring keeps the same strict thresholds
+0.1/0.25/0.5/0.75/0.9 and separate-sign CC>250equivalent512^2, and reports:
+
+- `one_to_many`: each model/reference8-connected region counts once when any
+  same-sign partner overlaps or touches it (including diagonal neighbours).
+  Pool matched-region counts from both sides over100pairs, divide by the total
+  number of model+reference regions, then average the five reader scores.
+- `one_to_one_presentation`: overlap-only greedy matching, **model first**,
+  reproducing the presentation's companion reference metric.
+- `one_to_one_legacy`: overlap-only greedy matching, **reference first**,
+  reproducing every previously exported per-reader OV score at1e-12tolerance.
+
+These are different definitions, not interchangeable labels. The presentation
+also used **fusion Arm A (blocks6/9/12, CE-only)**, not the current single-block9
+CE+Dice architecture. The helper re-evaluates the committed old Arm A masks on
+the same current annotations and requires exact reproduction of **0.5095313748
+one-to-many** and **0.4751602245model-first one-to-one** before publishing.
+Its reference-first one-to-one value is0.4739974338.
+
+Saved inference/input hashes, geometry and original evaluator-source identities
+are verified. Original annotation rasterization is retained, with runtime
+warning and nonpositive-radius record counts explicitly exported; no silent
+annotation cleanup is introduced. Locally, all100baseline masks and500reader
+annotations reproduced the presentation values despite34rasterizer warnings
+from18nonpositive-radius records. This is a reproducibility check, not proof
+that those annotations are clinically valid.
+
+The fixed headline remains0.75/CC250; threshold sweeps stay exploratory.
+Results include both metrics side-by-side, exact aggregate matching counts per
+reader, data-size/threshold plots and the reproduced historical baseline.
+No scans, case identities, raw predictions, annotation files or weights are
+published. Use `--help` on the launcher or Python helper for direct usage.
+
 Use [evaluate_subset_clinical_ov.py](../evaluation/evaluate_subset_clinical_ov.py)
 to evaluate **all 12 seed42 best checkpoints** (B0/B1/B2 at10/25/50/100%)
 against the existing100ICUpairs and five clinician annotations. Checkpoints
