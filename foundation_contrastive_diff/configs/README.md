@@ -152,7 +152,29 @@ checked against reference-first one-to-one counts at tolerance1e-12.
 Historical boosted per-pair PAI and pixel Dice are not component detection F1.
 This is not exact Itamar historical cleanup.
 
-Run from the study folder. Use a unique inference/output directory:
+For the short campus launch on **cas703**, use
+[run_subset_clinical_ov.sh](../training/run_subset_clinical_ov.sh):
+
+```bash
+bash training/run_subset_clinical_ov.sh --stop-training
+```
+
+`--stop-training` explicitly authorizes stopping only the owned subset-epoch
+sweep with the exact configured run root and its descendants. Ownership,
+start time and command identity are checked before signalling individual PIDs.
+Other jobs are not terminated; any remaining training job blocks evaluation.
+Omit the flag if training is already stopped. Existing checkpoints are kept;
+work after the latest completed epoch may be lost.
+
+The script activates the campus environment, checks all four seed42 groups,
+launches the twelve-model GPU evaluation with a unique background log, and
+pushes the aggregate export on success. A launcher lock prevents duplicate
+script launches. It prints PID/log/report paths and checks startup; process
+liveness is not successful evaluation. No code pull or automatic training
+restart is performed. Use `--help` for the short usage message.
+
+Alternatively, run the evaluator directly from the study folder with a unique
+inference/output directory:
 
 ```bash
 CFG=/cs/labs/josko/sahar_aharon/fcd_runs/run_architecture_data_block9_aug/locked_rank8.yaml

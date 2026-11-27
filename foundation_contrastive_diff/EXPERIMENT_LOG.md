@@ -35,6 +35,15 @@ pleural_effusion 0.550, fluid_overload 0.468; overall 0.464; nuisance FP 0.020.
 
 ## Key findings / decisions
 
+- **2026-11-27 - Adding a short campus ICU100 evaluation launcher.**
+  User requested a repository-backed Bash command instead of pasting the long
+  terminal block. Added training/run_subset_clinical_ov.sh: exact owned-run
+  process-tree verification, explicit --stop-training flag, saved-checkpoint
+  preservation, duplicate-launch lock, background logs and the unchanged
+  twelve-model ICU100 evaluator with aggregate-only Git publication. No source
+  pull, forced termination or automatic training restart. Local tests mock all
+  process signals; no actual campus processes are touched by implementation.
+
 - **2026-11-27 - Adding seed42/four-fraction ICU100 OV evaluation.**
   User approves12models: B0/B1/B2 at10/25/50/100%training patients, seed42,
   validation-selected best checkpoints only. New evaluator verifies completed
