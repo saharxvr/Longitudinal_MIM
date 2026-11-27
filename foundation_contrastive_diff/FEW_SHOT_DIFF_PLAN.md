@@ -247,10 +247,22 @@ Not yet implemented:
    - validation task pool sizes;
    - ICU non-empty consensus/reader counts.
    Tune magnitude ranges if families rarely pass 50 px.
-2. `generate <slice> <num_slices>` on several GPU nodes (resumable), then `manifest`, then `stores`.
-3. `benchmark`; set `max_support` to `chosen_max_support`.
-4. `train` (locked, resumable), then `eval_synthetic`.
-5. Freeze the recipe, then `eval_icu` (set `ARM_A=<arm A best checkpoint>`). Publish aggregates only.
+2. Visual preview before mass generation:
+   - On campus, `python -m data_generation.export_preview_cases --source_manifest
+     $DATA/manifest_split.jsonl --output /cs/labs/josko/sahar_aharon/fewshot_preview_cases --count 2`
+     bundles 1-2 train-split CTs. Cases come from different sources, with all segmentations and
+     one existing pathology pair per type for comparison.
+   - Copy the bundle to the local machine.
+   - Run `python -m data_generation.preview_supervoxel_families --cases_root <bundle> --output
+     review_outputs/fewshot_preview_<date>`, about 5 minutes per CT on CPU.
+   - Output: one panel per family (CT before/after, DRR prior/current, image difference, tight GT,
+     ellipse label), per-tier contact sheets, composed scenes with episode target vs distractors,
+     the nuisance example, and `index.md` with families that were not realized.
+   - Review it, adjust magnitudes, and only then generate at scale.
+3. `generate <slice> <num_slices>` on several GPU nodes (resumable), then `manifest`, then `stores`.
+4. `benchmark`; set `max_support` to `chosen_max_support`.
+5. `train` (locked, resumable), then `eval_synthetic`.
+6. Freeze the recipe, then `eval_icu` (set `ARM_A=<arm A best checkpoint>`). Publish aggregates only.
 
 ## 10. Tests and limitations
 

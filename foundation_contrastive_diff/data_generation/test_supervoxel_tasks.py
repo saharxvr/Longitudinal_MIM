@@ -243,6 +243,64 @@ class GeneratorTests(unittest.TestCase):
             self.assertLess(report[0]["linearity_relative_error"], 0.02)
             self.assertGreater(report[0]["family_success"], 0)
 
+    def test_export_bundle_and_local_preview_gallery(self):
+        from data_generation import export_preview_cases as export
+        from data_generation import preview_supervoxel_families as preview
+
+        ct, segs = phantom()
+
+        def save(volume, path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = np.transpose(np.flip(volume, 0), (1, 2, 0)).astype(np.float32)
+            nib.save(nib.Nifti1Image(np.ascontiguousarray(data), np.eye(4)), str(path))
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            campus = root / "campus"
+            save(ct, campus / "scans" / "caseA.nii.gz")
+            names = {name: f"{{case}}_{name}.nii.gz" for name in corpus.SEG_TEMPLATES if name != "lungs"}
+            for name in names:
+                save(segs[name].astype(np.float32), campus / "segs" / names[name].format(case="caseA"))
+            pair = campus / "pairs" / "caseA" / "pair0"
+            save(ct[:, :, :1], pair / "prior.nii.gz")
+            (pair / "params.json").write_text(json.dumps(dict(effective_anomaly_type="consolidation",
+                                                              direction="appearance")))
+            for name in ("current", "diff_map"):
+                save(ct[:, :, :1] * 0, pair / f"{name}.nii.gz")
+            manifest = campus / "manifest_split.jsonl"
+            manifest.write_text(json.dumps(dict(
+                case="caseA", ct_source_path=str(campus / "scans" / "caseA.nii.gz"), split="train",
+                patient_key="caseA", pair_id="caseA/pair0", realized_change=True,
+                effective_anomaly_type="consolidation", prior_path=str(pair / "prior.nii.gz"),
+                current_path=str(pair / "current.nii.gz"), diff_map_path=str(pair / "diff_map.nii.gz"),
+                params_path=str(pair / "params.json"))) + "\n")
+            templates = {name: str(campus / "segs" / pattern) for name, pattern in names.items()}
+            with unittest.mock.patch.dict(corpus.SEG_TEMPLATES, templates, clear=True):
+                export.main(["--source_manifest", str(manifest), "--output", str(root / "bundle"), "--count", "1"])
+            cases = json.loads((root / "bundle" / "cases.json").read_text())
+            self.assertEqual(cases[0]["case"], "caseA")
+            self.assertTrue((root / "bundle" / "caseA" / "heart.nii.gz").is_file())
+            self.assertEqual(len(cases[0]["reference_pairs"]), 1)
+            original = tasks.CTContext
+            with unittest.mock.patch.object(tasks, "CTContext", side_effect=lambda c, s, **k: original(
+                    c, s, downsample=2, supervoxel_downsample=2, n_supervoxels=300, supervoxels=k.get("supervoxels"))):
+                preview.main(["--cases_root", str(root / "bundle"), "--output", str(root / "gallery"),
+                              "--families", "heart_resize", "t1_density@lungs", "lobar_collapse",
+                              "--scenes", "1", "--threads", "2"])
+            stats = json.loads((root / "gallery" / "stats.json").read_text())
+            produced = {row["family"] for row in stats["families"] if row["produced"]}
+            self.assertIn("heart_resize", produced)
+            for row in stats["families"]:
+                if row["produced"]:
+                    self.assertTrue((root / "gallery" / row["png"]).is_file())
+            self.assertTrue((root / "gallery" / "scenes" / "caseA_scene0.png").is_file())
+            self.assertTrue((root / "gallery" / "nuisance" / "caseA_inspiration.png").is_file())
+            self.assertEqual(len(stats["references"]), 1)
+            self.assertIn("heart_resize", (root / "gallery" / "index.md").read_text())
+        available = [(name, "", "p", {}) for name in ("train_1_a_1", "train_2_a_1", "1.3.6.1.x", "volume-3")]
+        kinds = {export.source_kind(item[0]) for item in export.diverse_choice(available, 3, 0)}
+        self.assertEqual(kinds, {"ct_rate", "luna", "lits"})
+
 
 if __name__ == "__main__":
     unittest.main()
