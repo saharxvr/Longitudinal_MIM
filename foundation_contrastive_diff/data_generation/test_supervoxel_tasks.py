@@ -464,6 +464,12 @@ class GeneratorTests(unittest.TestCase):
             progress = corpus.status(root / "corpus")
             self.assertEqual((progress["done"], progress["expected"], progress["cases_with_errors"]), (2, 2, 0))
             self.assertIsNone(corpus.status(root / "gallery")["expected"])  # no worker started there
+            (root / "corpus" / "errors_slice0.jsonl").write_text("\n".join(json.dumps(item) for item in (
+                dict(case="caseZ", error="OSError('first')"), dict(case="caseZ", error="KeyError('second')"),
+                dict(case="caseA", error="RuntimeError('fixed by a later launch')"))) + "\n")
+            progress = corpus.status(root / "corpus")
+            self.assertEqual(progress["cases_with_errors"], 1)
+            self.assertEqual(progress["latest_errors"], ["caseZ: KeyError('second')"])
             estimate = corpus.projection(speed, 2000, 8)
             self.assertGreater(estimate["single_worker_hours"], 0)
             self.assertGreaterEqual(estimate["suggested_workers"], 1)

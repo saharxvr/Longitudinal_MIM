@@ -455,10 +455,19 @@ def projection(summary, n_cases, scenes_per_ct, gpu_slots=2):
 def status(output):
     output = Path(output)
     times = [path.stat().st_mtime for path in output.glob("*/scene*/params.json")]
-    errors = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in output.glob("errors_slice*.jsonl"))
+    failures = {}
+    for path in sorted(output.glob("errors_slice*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                record = json.loads(line)
+                failures[record["case"]] = record["error"]  # latest error per case
+    done_cases = {path.parent.parent.name for path in output.glob("*/scene*/params.json")}
+    unresolved = {case: error for case, error in failures.items() if case not in done_cases}
+    errors = dict(cases_with_errors=len(unresolved),
+                  latest_errors=[f"{case}: {error[:200]}" for case, error in list(unresolved.items())[-3:]])
     config_path = output / "generator_config.json"
     if not config_path.is_file():
-        return dict(done=len(times), expected=None, cases_with_errors=errors,
+        return dict(done=len(times), expected=None, **errors,
                     message="No worker has started generating yet (or all stopped at the startup checks): "
                             "see the last log lines below / logs/generate_slice*.log")
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -467,11 +476,13 @@ def status(output):
     expected = n_cases * stored.scenes_per_ct
     now = time.time()
     recent = [stamp for stamp in times if now - stamp < 1800]
-    rate = len(recent) * 2.0  # scenes per hour over the last 30 minutes
+    # Rate over the time the recent scenes actually span (a fresh launch covers less than 30 min).
+    span = max(300.0, now - min(recent)) if recent else 1800.0
+    rate = round(3600.0 * len(recent) / span, 1)
     return dict(done=len(times), expected=expected, percent=round(100.0 * len(times) / max(1, expected), 1),
-                scenes_per_hour_last_30min=rate,
+                scenes_per_hour=rate, rate_window_minutes=round(span / 60.0, 1),
                 eta_hours=round((expected - len(times)) / rate, 1) if rate else None,
-                cases_with_errors=errors, generator_version=config.get("version"))
+                **errors, generator_version=config.get("version"))
 
 
 def parse_args(argv=None):
