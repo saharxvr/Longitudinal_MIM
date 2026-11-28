@@ -127,6 +127,13 @@ signed map = p(positive) - p(negative); CLS difference feeds the decoder as in a
   pleural rim, fissures, hila.
 - Supervoxels: 3D SLIC, computed once per CT and cached. Regions are random connected supervoxel
   unions (70%) or smooth-noise blobs (30%), with log-uniform size.
+- T1 regions have radius 3-18% of the lung scale (about 7-45 mm; texture 6-20%). A T1 change has
+  1, 2 or 3 separate regions with p = 0.5 / 0.3 / 0.2 (mean 1.7, matching the 1.7 regions per
+  ICU clinician annotation). All regions share the mechanism and its direction (density sign,
+  replacement tissue, texture kind), so the change is still a single task. Lung density changes
+  reach +950 HU, i.e. a region can become fully soft tissue. Large lung opacities resemble
+  consolidation; they stay in the main corpus by user decision (ICU size realism over a fully
+  novel synthetic validation).
 - Units: every size, distance, smoothing width and rotation is in millimetres from the CT voxel
   spacing. Real CTs are strongly anisotropic (e.g. CT-RATE 0.35 x 0.35 x 1.5 mm), so voxel units
   would stretch changes along z by a different factor per CT.

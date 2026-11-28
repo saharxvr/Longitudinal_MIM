@@ -471,10 +471,10 @@ def sample_region(ctx: CTContext, compartment, rng, size_range=(0.03, 0.12), sam
 
 
 # ---------------------------------------------------------------------------- mechanisms
-def op_density(ctx, box, mask, rng, sign=None):
+def op_density(ctx, box, mask, rng, sign=None, high=700.0):
     sign = sign or (1 if rng.random() < 0.5 else -1)
     soft = feather(mask, rng.uniform(1.0, 3.0), ctx.spacing)
-    amplitude = rng.uniform(200, 700)
+    amplitude = rng.uniform(200, high)
     texture = 1 + 0.3 * smooth_noise(mask.shape, 2.0, rng, ctx.spacing)
     target = ctx.ct[box] + sign * amplitude * soft * texture
     return bounded_delta(ctx.ct, box, target), dict(sign=sign, amplitude=amplitude)
@@ -550,9 +550,9 @@ def op_displace(ctx, box, mask, rng, compartment):
     return bounded_delta(ctx.ct, box, warped), dict(magnitude_mm=magnitude, direction=direction.tolist())
 
 
-def op_texture(ctx, box, mask, rng):
+def op_texture(ctx, box, mask, rng, kind=None):
     """Non-negative fine / reticular / nodular pattern (zero-mean patterns cancel along the ray)."""
-    kind = str(rng.choice(["fine", "reticular", "nodular"]))
+    kind = kind or str(rng.choice(["fine", "reticular", "nodular"]))
     if kind == "fine":
         pattern = np.clip(smooth_noise(mask.shape, 1.0, rng, ctx.spacing), 0, None)
     elif kind == "reticular":
@@ -578,38 +578,78 @@ def op_cutpaste(ctx, box, mask, rng, donor=None):
     return bounded_delta(ctx.ct, box, target), dict(donor_shape=list(donor.shape))
 
 
-T1_SIZE = dict(texture=(0.06, 0.15))
+T1_SIZE = dict(default=(0.03, 0.18), texture=(0.06, 0.2))  # region radius, fraction of the lung scale
 T1_AT_INTERFACE = ("grow", "shrink", "displace")
+T1_FOCI, T1_FOCI_P = (1, 2, 3), (0.5, 0.3, 0.2)  # mean 1.7, as ICU annotations (1.7 regions each)
+T1_DENSITY_MAX = dict(lungs=950.0)  # lung (-850 HU) can become fully soft tissue
 
 
-def t1_change(ctx, rng, compartment, mechanism, donor=None):
+def merge_deltas(parts):
+    """One VolumeDelta over the union box of non-overlapping parts."""
+    if len(parts) == 1:
+        return parts[0]
+    low = np.min([[item.start for item in part.box] for part in parts], 0)
+    high = np.max([[item.stop for item in part.box] for part in parts], 0)
+    values = np.zeros(high - low, np.float32)
+    for part in parts:
+        values[tuple(slice(item.start - a, item.stop - a) for item, a in zip(part.box, low))] += part.values
+    return VolumeDelta(tuple(slice(int(a), int(b)) for a, b in zip(low, high)), values)
+
+
+def _boxes_overlap(first, second, margin):
+    return all(a.start < b.stop + m and b.start < a.stop + m for a, b, m in zip(first, second, margin))
+
+
+def t1_change(ctx, rng, compartment, mechanism, donor=None, foci=None):
+    """One T1 change: the same mechanism (and sign / tissue / texture kind) in 1-3 separate regions."""
     # Edits inside homogeneous tissue are invisible in projection: interface mechanisms (and
     # non-lung cut-paste) are seeded within 10 mm of the lung boundary.
     at_interface = mechanism in T1_AT_INTERFACE or (mechanism == "cutpaste" and compartment != "lungs")
     candidates = _interface_candidates(ctx, compartment) if at_interface else None
     if at_interface and candidates is None:
         return None
-    region = sample_region(ctx, compartment, rng, T1_SIZE.get(mechanism, (0.03, 0.12)), candidates=candidates)
-    if region is None:
+    foci = foci or int(rng.choice(T1_FOCI, p=T1_FOCI_P))
+    shared = dict(sign=1 if rng.random() < 0.5 else -1, tissue=None, kind=None)
+    margin = np.ceil(ctx.vox(3.0)).astype(int)
+    parts, params = [], {}
+    for _ in range(3 * foci):
+        if len(parts) == foci:
+            break
+        region = sample_region(ctx, compartment, rng, T1_SIZE.get(mechanism, T1_SIZE["default"]),
+                               candidates=candidates)
+        if region is None:
+            continue
+        box, mask = region
+        if any(_boxes_overlap(box, part.box, margin) for part in parts):
+            continue
+        delta, params_i = _t1_op(ctx, box, mask, rng, compartment, mechanism, donor, shared)
+        if delta is None or effect_of(delta.values) is None:
+            continue
+        shared["tissue"] = shared["tissue"] or params_i.get("tissue")
+        shared["kind"] = shared["kind"] or params_i.get("kind")
+        parts.append(delta)
+        params = params or params_i
+    if not parts:
         return None
-    box, mask = region
+    return _finish(ctx, merge_deltas(parts), f"t1_{mechanism}", "T1", compartment, dict(params, foci=len(parts)))
+
+
+def _t1_op(ctx, box, mask, rng, compartment, mechanism, donor, shared):
     if mechanism == "density":
-        delta, params = op_density(ctx, box, mask, rng)
-    elif mechanism == "replace":
-        delta, params = op_replace(ctx, box, mask, rng)
-    elif mechanism == "grow":
-        delta, params = op_grow(ctx, box, mask, rng, compartment)
-    elif mechanism == "shrink":
-        delta, params = op_shrink(ctx, box, mask, rng, compartment)
-    elif mechanism == "displace":
-        delta, params = op_displace(ctx, box, mask, rng, compartment)
-    elif mechanism == "texture":
-        delta, params = op_texture(ctx, box, mask, rng)
-    elif mechanism == "cutpaste":
-        delta, params = op_cutpaste(ctx, box, mask, rng, donor)
-    else:
-        raise ValueError(f"Unknown T1 mechanism {mechanism}")
-    return _finish(ctx, delta, f"t1_{mechanism}", "T1", compartment, params)
+        return op_density(ctx, box, mask, rng, shared["sign"], T1_DENSITY_MAX.get(compartment, 700.0))
+    if mechanism == "replace":
+        return op_replace(ctx, box, mask, rng, shared["tissue"])
+    if mechanism == "grow":
+        return op_grow(ctx, box, mask, rng, compartment)
+    if mechanism == "shrink":
+        return op_shrink(ctx, box, mask, rng, compartment)
+    if mechanism == "displace":
+        return op_displace(ctx, box, mask, rng, compartment)
+    if mechanism == "texture":
+        return op_texture(ctx, box, mask, rng, shared["kind"])
+    if mechanism == "cutpaste":
+        return op_cutpaste(ctx, box, mask, rng, donor)
+    raise ValueError(f"Unknown T1 mechanism {mechanism}")
 
 
 def _finish(ctx, delta, family, tier, compartment, params):

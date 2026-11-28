@@ -8,6 +8,7 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+from scipy import ndimage as ndi
 
 from data_generation import audit_fewshot_inputs as audit
 from data_generation import generate_supervoxel_corpus as corpus
@@ -212,6 +213,22 @@ class GeneratorTests(unittest.TestCase):
         lung[10:40, :5] = True
         lung[10:20, 5:] = True  # columns ending high (e.g. over the heart) are not diaphragm
         np.testing.assert_array_equal(self.ctx.dome_columns(lung)[:, 0], [True] * 5 + [False] * 5)
+
+    def test_multifocal_t1_shares_direction_across_separate_regions(self):
+        parts = [tasks.VolumeDelta((slice(0, 2), slice(0, 2), slice(0, 2)), np.ones((2, 2, 2), np.float32)),
+                 tasks.VolumeDelta((slice(5, 7), slice(3, 4), slice(0, 1)), np.full((2, 1, 1), -2, np.float32))]
+        merged = tasks.merge_deltas(parts)
+        self.assertEqual(merged.values.shape, (7, 4, 2))
+        np.testing.assert_array_equal(merged.full((8, 8, 8)), parts[0].full((8, 8, 8)) + parts[1].full((8, 8, 8)))
+        found = []
+        for seed in range(12):
+            change = tasks.t1_change(self.ctx, np.random.default_rng(seed), "lungs", "density", foci=3)
+            if change is not None and change.params["foci"] >= 2:
+                found.append(change)
+        self.assertTrue(found)
+        for change in found:
+            self.assertIn(change.effect, ("denser", "lighter"))
+            self.assertGreaterEqual(ndi.label(change.delta.support())[1], 2)
 
     def test_widening_stays_in_lungs_and_faint_changes_are_rejected(self):
         change = tasks.sample_change(self.ctx, "mediastinal_widening", np.random.default_rng(0))
