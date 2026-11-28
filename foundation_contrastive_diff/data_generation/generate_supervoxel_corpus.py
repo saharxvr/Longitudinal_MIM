@@ -188,7 +188,7 @@ class DeviceBank:
     one side only. Devices never enter the GT (they are part of each timepoint's base volume).
     """
 
-    def __init__(self, ctx, calls, probability, seed, device, slots=0):
+    def __init__(self, ctx, calls, probability, seed, device, slots=0, threads=0):
         import torch
 
         sys.path.insert(0, str(CT_ENTITIES))
@@ -219,6 +219,11 @@ class DeviceBank:
                     self.wait_seconds += started - waited
                     if torch.device(device).type == "cuda":
                         torch.cuda.reset_peak_memory_stats(device)
+                    # Part of ExternalDevices runs on the CPU (full-volume sticker smoothing); only one
+                    # worker inserts at a time, so it may use more threads than a scene worker.
+                    previous_threads = torch.get_num_threads()
+                    if threads > 0:
+                        torch.set_num_threads(threads)
                     try:
                         pair = insert()
                         self.gpu_peaks.append(render.gpu_memory_gb(device))
@@ -227,6 +232,7 @@ class DeviceBank:
                             raise
                         failure = error
                     finally:
+                        torch.set_num_threads(previous_threads)
                         render.release_gpu(device)
                         self.seconds += time.time() - started
                 if failure is None:
@@ -516,6 +522,8 @@ def parse_args(argv=None):
     parser.add_argument("--gpu_slots", type=int, default=1,
                         help="Max concurrent device insertions per GPU across the workers of one PC (0 = no limit); "
                              "one insertion can take ~13 GB on a 24 GB card")
+    parser.add_argument("--device_threads", type=int, default=12,
+                        help="CPU threads for the (exclusive, partly CPU-bound) device insertion; 0 = unchanged")
     parser.add_argument("--n_supervoxels", type=int, default=1500)
     parser.add_argument("--slice_index", type=int, default=0)
     parser.add_argument("--num_slices", type=int, default=1)
@@ -619,7 +627,7 @@ def main(argv=None):
                 os.replace(partial, cache)
             if args.devices_prob > 0:
                 bank = DeviceBank(ctx, args.device_calls_per_ct, args.devices_prob, scene_seed(case, 9999),
-                                  args.device, args.gpu_slots)
+                                  args.device, args.gpu_slots, args.device_threads)
                 banks.append(dict(seconds=bank.seconds, wait=bank.wait_seconds, peaks=bank.gpu_peaks))
                 render.drop_device_volumes(ctx)
                 render.release_gpu(args.device)
@@ -636,11 +644,13 @@ def main(argv=None):
                 render.drop_device_volumes(ctx)  # idle workers keep only their CUDA context on the GPU
                 render.release_gpu(args.device)
             donors.add(ctx)
+            held = render.gpu_held_gb(args.device)
             print(f"[{number + 1}/{len(cases)}] {case}: {len(pending)} scenes, setup {setups[-1]:.0f}s, "
                   + (f"devices {banks[-1]['seconds']:.0f}s (+{banks[-1]['wait']:.0f}s waiting for a GPU slot), "
                      if bank else "")
                   + f"missing segs={missing}, elapsed {time.time() - started:.0f}s, "
-                  f"{3600 * len(timings) / (time.time() - started):.0f} scenes/h", flush=True)
+                  f"{3600 * len(timings) / (time.time() - started):.0f} scenes/h"
+                  + (f", GPU held {held:.2f} GB" if held is not None else ""), flush=True)
             del ctx, bank
         except Exception as error:  # keep going; record the failure
             print(f"[error] {case}: {type(error).__name__}: {error}", flush=True)

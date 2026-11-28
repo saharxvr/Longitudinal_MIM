@@ -116,15 +116,31 @@ def gpu_memory_gb(device):
 
 
 def release_gpu(device):
-    """Return cached torch / cupy blocks to the driver so concurrent workers can use them."""
+    """Return cached torch / cupy blocks to the driver so concurrent workers can use them. gc first:
+    arrays in reference cycles (e.g. cupy memory shared with torch by the device insertion) are only
+    freed by the cyclic collector."""
+    import gc
     import sys
 
     if torch.device(device).type != "cuda":
         return
+    gc.collect()
     if "cupy" in sys.modules:
         sys.modules["cupy"].get_default_memory_pool().free_all_blocks()
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
+
+
+def gpu_held_gb(device):
+    """GPU memory this process still holds (torch reserved + cupy pool), GB; None on CPU."""
+    import sys
+
+    if torch.device(device).type != "cuda":
+        return None
+    held = torch.cuda.memory_reserved(device)
+    if "cupy" in sys.modules:
+        held += sys.modules["cupy"].get_default_memory_pool().total_bytes()
+    return held / 2 ** 30
 
 
 class FrameRenderer:
