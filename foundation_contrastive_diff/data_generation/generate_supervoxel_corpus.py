@@ -434,10 +434,12 @@ def projection(summary, n_cases, scenes_per_ct, gpu_slots=2):
     worker_hours = n_cases * per_ct / 3600.0
     limits = dict(cpu=max(1, summary["cpu_count"] - 2))
     if summary.get("gpu_total_gb"):
-        # Every worker keeps its CT on the GPU (+0.6 GB CUDA context); the slots hold insertion peaks.
-        reserved = max(1, gpu_slots) * (summary.get("device_insert_gpu_peak_gb_median") or 0.0)
-        baseline = 0.6 + (summary.get("scene_gpu_peak_gb_median") or 1.0)
-        limits["gpu"] = max(1, int((0.85 * summary["gpu_total_gb"] - reserved) // baseline))
+        # Idle workers hold only their CUDA context (~0.5 GB): CT and masks are released after every
+        # scene. On top: the insertion slots at their median peak and ~2 scenes rendering at once.
+        # Larger-than-median overlaps are rare and handled by the out-of-memory retry.
+        inserting = max(1, gpu_slots) * (summary.get("device_insert_gpu_peak_gb_median") or 0.0)
+        rendering = 2.0 * (summary.get("scene_gpu_peak_gb_median") or 1.0)
+        limits["gpu"] = max(1, int((0.95 * summary["gpu_total_gb"] - inserting - rendering) // 0.5))
     if summary.get("ram_peak_gb"):
         limits["ram"] = max(1, int(0.8 * summary["ram_total_gb"] // summary["ram_peak_gb"]))
     workers = min(limits.values())
@@ -578,16 +580,23 @@ def main(argv=None):
             setup_started = time.time()
             ct, segs, affine, missing = load_case(case, ct_path, templates)
             cache = output / "_supervoxels" / f"{case}_mm.npy"
-            supervoxels = np.load(cache) if cache.is_file() else None
+            try:
+                supervoxels = np.load(cache) if cache.is_file() else None
+            except (OSError, ValueError):  # truncated by a killed worker: recompute
+                supervoxels = None
             ctx = tasks.CTContext(ct, segs, spacing=spacing_from_affine(affine), supervoxels=supervoxels,
                                   n_supervoxels=args.n_supervoxels, seed=scene_seed(case, 0))
             if supervoxels is None or supervoxels is not ctx.supervoxels:
                 cache.parent.mkdir(parents=True, exist_ok=True)
-                np.save(cache, ctx.supervoxels)
+                partial = cache.with_name(f"{cache.stem}.{os.getpid()}.tmp.npy")
+                np.save(partial, ctx.supervoxels)
+                os.replace(partial, cache)
             if args.devices_prob > 0:
                 bank = DeviceBank(ctx, args.device_calls_per_ct, args.devices_prob, scene_seed(case, 9999),
                                   args.device, args.gpu_slots)
                 banks.append(dict(seconds=bank.seconds, wait=bank.wait_seconds, peaks=bank.gpu_peaks))
+                render.drop_device_volumes(ctx)
+                render.release_gpu(args.device)
             else:
                 bank = None
             setups.append(time.time() - setup_started - (banks[-1]["seconds"] + banks[-1]["wait"] if bank else 0.0))
@@ -598,6 +607,7 @@ def main(argv=None):
                     f"{case} scene{index:04d}", args.device)
                 timings.append(record["timing_s"])
                 gpu_peaks.append(record["gpu_peak_gb"])
+                render.drop_device_volumes(ctx)  # idle workers keep only their CUDA context on the GPU
                 render.release_gpu(args.device)
             donors.add(ctx)
             print(f"[{number + 1}/{len(cases)}] {case}: {len(pending)} scenes, setup {setups[-1]:.0f}s, "

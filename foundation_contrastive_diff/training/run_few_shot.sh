@@ -51,6 +51,7 @@ case "$stage" in
         echo "worker $i already running (pid $(cat "$pid_file"))"; continue
       fi
       gpu="${gpus[$((i % ${#gpus[@]}))]}"
+      echo "=== $(date '+%F %T') launched worker $i/$workers (args: $*) ===" >> "$CORPUS/logs/generate_slice$i.log"
       CUDA_VISIBLE_DEVICES="$gpu" OMP_NUM_THREADS="${WORKER_THREADS:-2}" nohup python -u \
         -m data_generation.generate_supervoxel_corpus --source_manifest "$DATA/manifest_split.jsonl" \
         --output "$CORPUS" --slice_index "$i" --num_slices "$workers" --device cuda "$@" \

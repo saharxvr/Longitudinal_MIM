@@ -467,6 +467,13 @@ class GeneratorTests(unittest.TestCase):
             estimate = corpus.projection(speed, 2000, 8)
             self.assertGreater(estimate["single_worker_hours"], 0)
             self.assertGreaterEqual(estimate["suggested_workers"], 1)
+            campus = dict(setup_s_per_ct=6.18, device_insert_s_per_ct=9.35, scene_s_total=1.76,
+                          device_insert_gpu_peak_gb_median=7.51, scene_gpu_peak_gb_median=1.48,
+                          gpu_total_gb=23.5, ram_peak_gb=15.56, ram_total_gb=125.5, cpu_count=24)
+            estimate = corpus.projection(campus, 1848, 8, gpu_slots=2)  # RTX 4090 benchmark, 28 Nov
+            self.assertEqual(estimate["worker_limits"], dict(cpu=22, gpu=8, ram=6))
+            self.assertEqual(estimate["device_insertion_floor_hours"], 2.4)
+            self.assertEqual(estimate["hours_with_suggested_workers"], 2.5)
         available = [(name, "", "p", {}) for name in ("train_1_a_1", "train_2_a_1", "1.3.6.1.x", "volume-3")]
         kinds = {export.source_kind(item[0]) for item in export.diverse_choice(available, 3, 0)}
         self.assertEqual(kinds, {"ct_rate", "luna", "lits"})

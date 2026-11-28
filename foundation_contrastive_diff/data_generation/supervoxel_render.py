@@ -257,13 +257,20 @@ def change_maps(delta_projections, base_projection, footprint, signs):
 
 
 def device_volume(ctx, name, device):
-    """ctx.ct ('ct') or the lung mask ('lungs') as a float32 tensor, cached on ctx per device."""
+    """ctx.ct ('ct') or the lung mask ('lungs') as a float32 tensor, cached on ctx per device
+    (drop_device_volumes frees it between scenes)."""
     cache = ctx.__dict__.setdefault("_device_volumes", {})
     key = (name, str(device))
     if key not in cache:
-        source = ctx.ct if name == "ct" else ctx.segs["lungs"]
-        cache[key] = torch.as_tensor(np.asarray(source, np.float32), device=device)
+        if name == "ct":
+            cache[key] = torch.as_tensor(np.asarray(ctx.ct, np.float32), device=device)
+        else:  # upload the boolean mask (4x smaller) and convert on the device
+            cache[key] = torch.from_numpy(np.ascontiguousarray(ctx.segs["lungs"])).to(device).float()
     return cache[key]
+
+
+def drop_device_volumes(ctx):
+    ctx.__dict__.pop("_device_volumes", None)
 
 
 def render_scene(ctx, changes, rng, device="cpu", rotation_params=DEFAULT_ROTATION_PARAMS,
