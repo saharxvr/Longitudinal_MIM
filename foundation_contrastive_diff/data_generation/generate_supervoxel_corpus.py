@@ -341,15 +341,20 @@ def projection(summary, n_cases, scenes_per_ct):
 
 def status(output):
     output = Path(output)
-    config = json.loads((output / "generator_config.json").read_text(encoding="utf-8"))
+    times = [path.stat().st_mtime for path in output.glob("*/scene*/params.json")]
+    errors = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in output.glob("errors_slice*.jsonl"))
+    config_path = output / "generator_config.json"
+    if not config_path.is_file():
+        return dict(done=len(times), expected=None, cases_with_errors=errors,
+                    message="No worker has started generating yet (or all stopped at the startup checks): "
+                            "see the last log lines below / logs/generate_slice*.log")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     stored = argparse.Namespace(**config["args"])
     n_cases = len(all_cases(stored))
     expected = n_cases * stored.scenes_per_ct
     now = time.time()
-    times = [path.stat().st_mtime for path in output.glob("*/scene*/params.json")]
     recent = [stamp for stamp in times if now - stamp < 1800]
     rate = len(recent) * 2.0  # scenes per hour over the last 30 minutes
-    errors = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in output.glob("errors_slice*.jsonl"))
     return dict(done=len(times), expected=expected, percent=round(100.0 * len(times) / max(1, expected), 1),
                 scenes_per_hour_last_30min=rate,
                 eta_hours=round((expected - len(times)) / rate, 1) if rate else None,

@@ -431,6 +431,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertIn("render", record["timing_s"])
             progress = corpus.status(root / "corpus")
             self.assertEqual((progress["done"], progress["expected"], progress["cases_with_errors"]), (2, 2, 0))
+            self.assertIsNone(corpus.status(root / "gallery")["expected"])  # no worker started there
             estimate = corpus.projection(speed, 2000, 8)
             self.assertGreater(estimate["single_worker_hours"], 0)
             self.assertGreaterEqual(estimate["suggested_workers"], 1)
