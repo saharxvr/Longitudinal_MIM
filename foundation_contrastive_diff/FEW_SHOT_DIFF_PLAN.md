@@ -324,9 +324,14 @@ Not yet implemented:
      workers over GPUs, `WORKER_THREADS` sets threads per worker (default 2), and `FCD_VENV`
      selects the venv. Device nuisance needs `kornia`, `cupy-cuda12x` and the original gryds
      (`git+https://github.com/tueimage/gryds`; the PyPI `gryds` is a fork without the CUDA classes)
-     in it; the generator checks this at startup. Workers free GPU memory after every scene and
-     retry a scene after an out-of-memory error. Keep N fixed for one corpus; stop all workers
-     before relaunching with another N.
+     in it; the generator checks this at startup. ExternalDevices deforms and dilates full CT-size
+     volumes (~9 s and up to ~15 GB GPU per call on an RTX 4090), so it runs once per CT
+     (`--device_calls_per_ct 1`). Its prior/current outputs are stored as sparse overlays and reused
+     by that CT's scenes: as is, swapped, or one side only, with p = `--devices_prob` 0.8, the same
+     as the existing pairs. At most `--gpu_slots` (default 2) insertions run at once per GPU across
+     the workers of a PC. Workers free GPU memory after every scene and retry a scene after an
+     out-of-memory error. Keep N fixed for one corpus; stop all workers before relaunching with
+     another N.
    - `bash training/run_few_shot.sh generate_status`: scenes done / expected, the measured
      rate over the last 30 minutes, ETA, error count, each worker's last log line, and GPU memory.
    - Then `manifest` and `stores`.

@@ -274,7 +274,7 @@ def render_scene(ctx, changes, rng, device="cpu", rotation_params=DEFAULT_ROTATI
     Returns raw projections in the DRR [z, x] frame plus per-change signed maps
     GT = P(current delta - prior delta) / scale (stable changes give an all-zero map).
     ``prior_nuisance`` is a VolumeDelta applied only to the prior render (never in GT).
-    ``devices_hook(base tensor) -> (prior tensor, current tensor, names)`` adds device nuisance.
+    ``devices_hook(base tensor, rng) -> (prior tensor, current tensor, names)`` adds device nuisance.
     """
     from data_generation.supervoxel_tasks import timepoint_deltas
 
@@ -289,7 +289,7 @@ def render_scene(ctx, changes, rng, device="cpu", rotation_params=DEFAULT_ROTATI
     base_prior = base_current = ct
     device_names = []
     if devices_hook is not None:
-        base_prior, base_current, device_names = devices_hook(ct)
+        base_prior, base_current, device_names = devices_hook(ct, rng)
     seconds = dict(devices=time.time() - started)
     gpu_peak = dict(devices=gpu_memory_gb(device))
     if cuda:

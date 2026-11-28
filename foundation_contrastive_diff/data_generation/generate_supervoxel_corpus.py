@@ -25,11 +25,13 @@ Example (one campus GPU node, slice 0 of 8):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import random
 import sys
+import tempfile
 import time
 import zlib
 from pathlib import Path
@@ -133,32 +135,122 @@ def save_nifti(array, affine, path):
     nib.save(nib.Nifti1Image(np.ascontiguousarray(array.astype(np.float32)), affine), str(path))
 
 
-def make_devices_hook(probability, lungs, rng_seed):
-    if probability <= 0:
-        return None
-    sys.path.insert(0, str(CT_ENTITIES))
-    sys.path.insert(0, str(CT_ENTITIES.parent))
-    import torch
-    from External_Devices import ExternalDevices  # campus DRR environment (gryds, devices)
+@contextlib.contextmanager
+def gpu_slot(slots):
+    """Hold one of ``slots`` machine-wide slots (per visible GPU) around heavy GPU work, so that
+    concurrent workers on one PC never run more than ``slots`` device insertions at once."""
+    try:
+        import fcntl
+    except ImportError:  # Windows: no cross-process slots (local CPU runs)
+        fcntl = None
+    if slots <= 0 or fcntl is None:
+        yield
+        return
+    folder = Path(tempfile.gettempdir()) / f"fewshot_gpu_slots_{os.getuid()}_{os.environ.get('CUDA_VISIBLE_DEVICES', 'all')}"
+    folder.mkdir(parents=True, exist_ok=True)
+    while True:
+        for index in range(slots):
+            handle = open(folder / f"slot{index}.lock", "w")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+                continue
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+                handle.close()
+            return
+        time.sleep(0.5)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    lungs_tensor = torch.from_numpy(lungs.astype(np.float32)).to(device)
-    generator = random.Random(rng_seed)
 
-    def hook(base):
-        if generator.random() >= probability:
+def with_oom_retry(function, label, device, attempts=4):
+    for attempt in range(attempts):
+        try:
+            return function()
+        except Exception as error:
+            if not _out_of_memory(error) or attempt == attempts - 1:
+                raise
+            # Another worker is at its GPU peak: free ours, wait, retry.
+            render.release_gpu(device)
+            wait = random.uniform(10.0, 40.0)
+            print(f"[oom] {label}: retry {attempt + 1}/{attempts - 1} in {wait:.0f}s", flush=True)
+            time.sleep(wait)
+
+
+class DeviceBank:
+    """Device nuisance of one CT (existing ExternalDevices: tubes, wires, stickers, devices).
+
+    ExternalDevices deforms / dilates full CT-size volumes on the GPU (seconds and GBs per call) but
+    only overwrites device voxels, so each call is stored as sparse prior / current overlays and
+    reused by the CT's scenes: with ``probability`` a scene applies the pair as is, swapped, or
+    one side only. Devices never enter the GT (they are part of each timepoint's base volume).
+    """
+
+    def __init__(self, ctx, calls, probability, seed, device, slots=0):
+        import torch
+
+        sys.path.insert(0, str(CT_ENTITIES))
+        sys.path.insert(0, str(CT_ENTITIES.parent))
+        from External_Devices import ExternalDevices  # campus DRR environment (kornia, cupy, gryds)
+
+        self.probability, self.pairs = probability, []
+        self.seconds = self.wait_seconds = 0.0
+        self.gpu_peaks = []
+        base = render.device_volume(ctx, "ct", device)
+        lungs = render.device_volume(ctx, "lungs", device)
+        generator = random.Random(seed)
+
+        def insert():
+            random.seed(generator.randrange(2 ** 31))
+            torch.manual_seed(generator.randrange(2 ** 31))
+            output = ExternalDevices.add_to_CT_pair(
+                [base.clone(), base.clone()], [{"lungs": lungs}, {"lungs": lungs}],
+                registrated_prior=base.clone(), log_params=False)
+            return [self._sparse(volume.float(), base) for volume in output["scans"]]
+
+        for call in range(calls):
+            waited = time.time()
+            with gpu_slot(slots):
+                started = time.time()
+                self.wait_seconds += started - waited
+                if torch.device(device).type == "cuda":
+                    torch.cuda.reset_peak_memory_stats(device)
+                pair = with_oom_retry(insert, f"devices call {call}", device)
+                self.gpu_peaks.append(render.gpu_memory_gb(device))
+                render.release_gpu(device)
+                self.seconds += time.time() - started
+            if any(layer is not None for layer in pair):
+                self.pairs.append(pair)
+
+    @staticmethod
+    def _sparse(volume, base):
+        if volume.shape != base.shape:
+            raise ValueError(f"ExternalDevices returned shape {tuple(volume.shape)} for {tuple(base.shape)}")
+        indices = (volume != base).view(-1).nonzero().squeeze(1)
+        if not len(indices):
+            return None
+        return indices.cpu(), volume.reshape(-1)[indices].cpu()
+
+    def __call__(self, base, rng):
+        if not self.pairs or rng.random() >= self.probability:
             return base, base, []
-        random.seed(generator.randrange(2 ** 31))
-        torch.manual_seed(generator.randrange(2 ** 31))
-        volume = (base.to(device, torch.float32) if torch.is_tensor(base)
-                  else torch.from_numpy(np.array(base, np.float32)).to(device))
-        output = ExternalDevices.add_to_CT_pair(
-            [volume.clone(), volume.clone()], [{"lungs": lungs_tensor}, {"lungs": lungs_tensor}],
-            registrated_prior=volume.clone(), log_params=False)
-        prior, current = output["scans"]
-        return prior.float(), current.float(), ["ExternalDevices"]
+        prior, current = self.pairs[int(rng.integers(len(self.pairs)))]
+        if rng.random() < 0.5:
+            prior, current = current, prior
+        if prior is not None and current is not None and rng.random() < 0.3:
+            prior, current = (prior, None) if rng.random() < 0.5 else (None, current)
+        return self._apply(base, prior), self._apply(base, current), ["ExternalDevices"]
 
-    return hook
+    @staticmethod
+    def _apply(base, layer):
+        if layer is None:
+            return base
+        indices, values = layer
+        volume = base.clone()
+        volume.view(-1)[indices.to(base.device)] = values.to(base.device)
+        return volume
 
 
 class DonorBank:
@@ -305,7 +397,7 @@ def _memory_gb():
         return None, None
 
 
-def speed_summary(setups, timings, elapsed, device, gpu_peaks=()):
+def speed_summary(setups, timings, elapsed, device, gpu_peaks=(), banks=()):
     import torch
 
     cuda = str(device).startswith("cuda") and torch.cuda.is_available()
@@ -314,42 +406,47 @@ def speed_summary(setups, timings, elapsed, device, gpu_peaks=()):
     total = sum(stages.values()) if stages else 0.0
     peaks = [max(value for value in peak.values() if value is not None) for peak in gpu_peaks
              if any(value is not None for value in peak.values())]
+    insert_peaks = [peak for bank in banks for peak in bank["peaks"] if peak is not None]
     peak_rss, total_ram = _memory_gb()
     return dict(cases=len(setups), scenes=len(timings), elapsed_s=round(elapsed, 1),
                 setup_s_per_ct=round(float(np.mean(setups)), 2) if setups else None,
+                device_insert_s_per_ct=round(float(np.mean([bank["seconds"] for bank in banks])), 2) if banks else 0.0,
+                device_wait_s_per_ct=round(float(np.mean([bank["wait"] for bank in banks])), 2) if banks else 0.0,
+                device_insert_gpu_peak_gb=round(max(insert_peaks), 2) if insert_peaks else None,
+                device_insert_gpu_peak_gb_median=round(float(np.median(insert_peaks)), 2) if insert_peaks else None,
                 scene_s=stages, scene_s_total=round(total, 2) if stages else None,
                 scenes_per_hour=round(3600 * len(timings) / elapsed, 1) if elapsed > 0 else None,
                 gpu=torch.cuda.get_device_name(0) if cuda else None,
-                gpu_peak_gb=round(max(peaks), 2) if peaks else None,
-                gpu_peak_gb_median=round(float(np.median(peaks)), 2) if peaks else None,
-                gpu_busy_fraction=(round((stages["devices"] + stages["render"]) / total, 2)
-                                   if stages and total > 0 else None),
+                scene_gpu_peak_gb=round(max(peaks), 2) if peaks else None,
+                scene_gpu_peak_gb_median=round(float(np.median(peaks)), 2) if peaks else None,
                 gpu_total_gb=round(torch.cuda.get_device_properties(0).total_memory / 2 ** 30, 1) if cuda else None,
                 ram_peak_gb=peak_rss, ram_total_gb=total_ram,
                 cpu_count=_cpu_count(), omp_threads=os.environ.get("OMP_NUM_THREADS"))
 
 
-def projection(summary, n_cases, scenes_per_ct):
-    """Full-corpus time from a single-worker benchmark (ideal parallel scaling) and a worker suggestion."""
-    per_ct = (summary["setup_s_per_ct"] or 0.0) + scenes_per_ct * (summary["scene_s_total"] or 0.0)
-    hours = n_cases * per_ct / 3600.0
+def projection(summary, n_cases, scenes_per_ct, gpu_slots=2):
+    """Full-corpus time from a single-worker benchmark and a worker suggestion.
+
+    Device insertions run at most ``gpu_slots`` at a time on a GPU, so the corpus takes at least
+    n_cases x insertion time / gpu_slots, however many workers run the CPU-bound scene work."""
+    insert = summary.get("device_insert_s_per_ct") or 0.0
+    per_ct = (summary["setup_s_per_ct"] or 0.0) + scenes_per_ct * (summary["scene_s_total"] or 0.0) + insert
+    worker_hours = n_cases * per_ct / 3600.0
     limits = dict(cpu=max(1, summary["cpu_count"] - 2))
-    notes = {}
-    if summary.get("gpu_peak_gb"):
-        # Workers release GPU memory after every scene, so only workers inside the devices / render
-        # step hold their peak. Budget 2x the busy fraction (+0.6 GB CUDA context each), 15% headroom;
-        # an out-of-memory scene is retried, so a rare overlap costs time, not data.
-        busy = min(1.0, 2.0 * (summary.get("gpu_busy_fraction") or 1.0))
-        limits["gpu"] = max(1, int(0.85 * summary["gpu_total_gb"] // (0.6 + summary["gpu_peak_gb"] * busy)))
-        notes["gpu_if_every_worker_peaks_together"] = max(
-            1, int(0.85 * summary["gpu_total_gb"] // (summary["gpu_peak_gb"] + 0.6)))
+    if summary.get("gpu_total_gb"):
+        # Every worker keeps its CT on the GPU (+0.6 GB CUDA context); the slots hold insertion peaks.
+        reserved = max(1, gpu_slots) * (summary.get("device_insert_gpu_peak_gb_median") or 0.0)
+        baseline = 0.6 + (summary.get("scene_gpu_peak_gb_median") or 1.0)
+        limits["gpu"] = max(1, int((0.85 * summary["gpu_total_gb"] - reserved) // baseline))
     if summary.get("ram_peak_gb"):
         limits["ram"] = max(1, int(0.8 * summary["ram_total_gb"] // summary["ram_peak_gb"]))
     workers = min(limits.values())
+    floor = n_cases * insert / max(1, gpu_slots) / 3600.0
     return dict(train_cases=n_cases, scenes_per_ct=scenes_per_ct, scenes=n_cases * scenes_per_ct,
-                single_worker_hours=round(hours, 1), worker_limits=limits, suggested_workers=workers,
-                hours_with_suggested_workers=round(hours / workers, 1), **notes,
-                note="Ideal scaling; CPU/memory contention makes the real rate lower. Launch, wait ~15 min, "
+                single_worker_hours=round(worker_hours, 1), worker_limits=limits, suggested_workers=workers,
+                gpu_slots=gpu_slots, device_insertion_floor_hours=round(floor, 1),
+                hours_with_suggested_workers=round(max(worker_hours / workers, floor), 1),
+                note="CPU/memory contention makes the real rate lower. Launch, wait ~15 min, "
                      "then use --status for the measured rate and ETA.")
 
 
@@ -387,6 +484,10 @@ def parse_args(argv=None):
     parser.add_argument("--empty_scene_prob", type=float, default=0.1)
     parser.add_argument("--inspiration_prob", type=float, default=0.3)
     parser.add_argument("--devices_prob", type=float, default=0.8)
+    parser.add_argument("--device_calls_per_ct", type=int, default=1,
+                        help="ExternalDevices calls per CT; each gives a prior/current overlay pair reused by its scenes")
+    parser.add_argument("--gpu_slots", type=int, default=2,
+                        help="Max concurrent device insertions per GPU across the workers of one PC (0 = no limit)")
     parser.add_argument("--n_supervoxels", type=int, default=1500)
     parser.add_argument("--slice_index", type=int, default=0)
     parser.add_argument("--num_slices", type=int, default=1)
@@ -467,7 +568,7 @@ def main(argv=None):
         encoding="utf-8")
     donors = DonorBank(seed=args.slice_index)
     started = time.time()
-    setups, timings, gpu_peaks = [], [], []
+    setups, timings, gpu_peaks, banks = [], [], [], []
     for number, (case, ct_path, patient) in enumerate(cases):
         pending = [index for index in range(args.scenes_per_ct)
                    if not (output / case / f"scene{index:04d}" / "params.json").is_file()]
@@ -483,44 +584,42 @@ def main(argv=None):
             if supervoxels is None or supervoxels is not ctx.supervoxels:
                 cache.parent.mkdir(parents=True, exist_ok=True)
                 np.save(cache, ctx.supervoxels)
-            hook = make_devices_hook(args.devices_prob, ctx.segs["lungs"], scene_seed(case, 9999))
-            setups.append(time.time() - setup_started)
+            if args.devices_prob > 0:
+                bank = DeviceBank(ctx, args.device_calls_per_ct, args.devices_prob, scene_seed(case, 9999),
+                                  args.device, args.gpu_slots)
+                banks.append(dict(seconds=bank.seconds, wait=bank.wait_seconds, peaks=bank.gpu_peaks))
+            else:
+                bank = None
+            setups.append(time.time() - setup_started - (banks[-1]["seconds"] + banks[-1]["wait"] if bank else 0.0))
             for index in pending:
-                for attempt in range(4):
-                    try:
-                        record = generate_scene(ctx, case, patient, index, args, affine, hook, donors,
-                                                output / case / f"scene{index:04d}")
-                        break
-                    except Exception as error:
-                        if not _out_of_memory(error) or attempt == 3:
-                            raise
-                        # Another worker is at its GPU peak: free ours, wait, retry the same scene.
-                        render.release_gpu(args.device)
-                        wait = random.uniform(10.0, 40.0)
-                        print(f"[oom] {case} scene{index:04d}: retry {attempt + 1}/3 in {wait:.0f}s", flush=True)
-                        time.sleep(wait)
+                record = with_oom_retry(
+                    lambda: generate_scene(ctx, case, patient, index, args, affine, bank, donors,
+                                           output / case / f"scene{index:04d}"),
+                    f"{case} scene{index:04d}", args.device)
                 timings.append(record["timing_s"])
                 gpu_peaks.append(record["gpu_peak_gb"])
                 render.release_gpu(args.device)
             donors.add(ctx)
             print(f"[{number + 1}/{len(cases)}] {case}: {len(pending)} scenes, setup {setups[-1]:.0f}s, "
-                  f"missing segs={missing}, elapsed {time.time() - started:.0f}s, "
+                  + (f"devices {banks[-1]['seconds']:.0f}s (+{banks[-1]['wait']:.0f}s waiting for a GPU slot), "
+                     if bank else "")
+                  + f"missing segs={missing}, elapsed {time.time() - started:.0f}s, "
                   f"{3600 * len(timings) / (time.time() - started):.0f} scenes/h", flush=True)
-            del ctx, hook
+            del ctx, bank
         except Exception as error:  # keep going; record the failure
             print(f"[error] {case}: {type(error).__name__}: {error}", flush=True)
             with (output / f"errors_slice{args.slice_index}.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(dict(case=case, error=repr(error))) + "\n")
-            ctx = hook = None
+            ctx = bank = None
             render.release_gpu(args.device)
-    summary = speed_summary(setups, timings, time.time() - started, args.device, gpu_peaks)
+    summary = speed_summary(setups, timings, time.time() - started, args.device, gpu_peaks, banks)
     (output / "logs").mkdir(exist_ok=True)
     (output / "logs" / f"speed_slice{args.slice_index}.json").write_text(json.dumps(summary, indent=1) + "\n",
                                                                          encoding="utf-8")
     print("[speed] " + json.dumps(summary), flush=True)
     if args.benchmark and timings:
-        print("[projection] " + json.dumps(projection(summary, len(every), args.target_scenes_per_ct), indent=1),
-              flush=True)
+        print("[projection] " + json.dumps(projection(summary, len(every), args.target_scenes_per_ct,
+                                                      args.gpu_slots), indent=1), flush=True)
     return 0
 
 

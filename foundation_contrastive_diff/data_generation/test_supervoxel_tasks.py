@@ -158,6 +158,38 @@ class GeneratorTests(unittest.TestCase):
         self.assertGreater(scale, 0)
         np.testing.assert_allclose(sparse, reference_delta.numpy(), atol=1e-4 * scale)
 
+    def test_device_bank_overlays_and_oom_retry(self):
+        import torch
+
+        base = torch.zeros(4, 5, 6)
+        devices = base.clone()
+        devices[1, 2, 3] = 900.0
+        bank = corpus.DeviceBank.__new__(corpus.DeviceBank)
+        bank.probability, bank.pairs = 1.0, [[corpus.DeviceBank._sparse(devices, base), None]]
+        self.assertEqual(bank.pairs[0][0][0].tolist(), [1 * 30 + 2 * 6 + 3])
+        sides = set()
+        for seed in range(20):
+            prior, current, names = bank(base, np.random.default_rng(seed))
+            self.assertEqual(names, ["ExternalDevices"])
+            self.assertEqual(float(base.abs().sum()), 0.0)  # the shared base volume is never modified
+            sides.add((float(prior[1, 2, 3]), float(current[1, 2, 3])))
+        self.assertEqual(sides, {(900.0, 0.0), (0.0, 900.0)})
+        bank.probability = 0.0
+        self.assertIs(bank(base, np.random.default_rng(0))[0], base)
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+            return "done"
+
+        with unittest.mock.patch.object(corpus.time, "sleep"):
+            self.assertEqual(corpus.with_oom_retry(flaky, "test", "cpu"), "done")
+        self.assertEqual(len(calls), 2)
+        with self.assertRaises(ValueError):
+            corpus.with_oom_retry(lambda: (_ for _ in ()).throw(ValueError("other")), "test", "cpu")
+
     def test_progress_regress_and_stable_modes(self):
         change = tasks.sample_change(self.ctx, "nodule", np.random.default_rng(2))
         self.assertIsNotNone(change)
