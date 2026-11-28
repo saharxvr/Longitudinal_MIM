@@ -198,7 +198,7 @@ def generate_scene(ctx, case, patient, index, args, affine, devices_hook, donors
     started = time.time()
     scene = render.render_scene(ctx, changes, rng, device=args.device,
                                 devices_hook=devices_hook, prior_nuisance=nuisance)
-    timing["render"] = time.time() - started
+    timing["devices"], timing["render"] = scene["seconds"]["devices"], scene["seconds"]["render"]
     started = time.time()
     out_dir.mkdir(parents=True, exist_ok=True)
     save_nifti(scene["prior"].T, affine, out_dir / "prior.nii.gz")
@@ -229,6 +229,8 @@ def generate_scene(ctx, case, patient, index, args, affine, devices_hook, donors
                              changes="changes.npz", ellipses="ellipses.json"))
     timing["save"] = time.time() - started
     record["timing_s"] = {key: round(value, 2) for key, value in timing.items()}
+    record["gpu_peak_gb"] = {key: (round(value, 2) if value is not None else None)
+                             for key, value in scene["gpu_peak_gb"].items()}
     (out_dir / "params.json").write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
     return record
 
@@ -303,19 +305,25 @@ def _memory_gb():
         return None, None
 
 
-def speed_summary(setups, timings, elapsed, device):
+def speed_summary(setups, timings, elapsed, device, gpu_peaks=()):
     import torch
 
     cuda = str(device).startswith("cuda") and torch.cuda.is_available()
-    stages = {key: round(float(np.mean([timing[key] for timing in timings])), 2)
-              for key in ("changes", "render", "save")} if timings else {}
+    stages = {key: round(float(np.mean([timing.get(key, 0.0) for timing in timings])), 2)
+              for key in ("changes", "devices", "render", "save")} if timings else {}
+    total = sum(stages.values()) if stages else 0.0
+    peaks = [max(value for value in peak.values() if value is not None) for peak in gpu_peaks
+             if any(value is not None for value in peak.values())]
     peak_rss, total_ram = _memory_gb()
     return dict(cases=len(setups), scenes=len(timings), elapsed_s=round(elapsed, 1),
                 setup_s_per_ct=round(float(np.mean(setups)), 2) if setups else None,
-                scene_s=stages, scene_s_total=round(sum(stages.values()), 2) if stages else None,
+                scene_s=stages, scene_s_total=round(total, 2) if stages else None,
                 scenes_per_hour=round(3600 * len(timings) / elapsed, 1) if elapsed > 0 else None,
                 gpu=torch.cuda.get_device_name(0) if cuda else None,
-                gpu_peak_gb=round(torch.cuda.max_memory_allocated() / 2 ** 30, 2) if cuda else None,
+                gpu_peak_gb=round(max(peaks), 2) if peaks else None,
+                gpu_peak_gb_median=round(float(np.median(peaks)), 2) if peaks else None,
+                gpu_busy_fraction=(round((stages["devices"] + stages["render"]) / total, 2)
+                                   if stages and total > 0 else None),
                 gpu_total_gb=round(torch.cuda.get_device_properties(0).total_memory / 2 ** 30, 1) if cuda else None,
                 ram_peak_gb=peak_rss, ram_total_gb=total_ram,
                 cpu_count=_cpu_count(), omp_threads=os.environ.get("OMP_NUM_THREADS"))
@@ -326,15 +334,21 @@ def projection(summary, n_cases, scenes_per_ct):
     per_ct = (summary["setup_s_per_ct"] or 0.0) + scenes_per_ct * (summary["scene_s_total"] or 0.0)
     hours = n_cases * per_ct / 3600.0
     limits = dict(cpu=max(1, summary["cpu_count"] - 2))
+    notes = {}
     if summary.get("gpu_peak_gb"):
-        # + ~0.6 GB CUDA context per process; keep 15% headroom for device insertion spikes.
-        limits["gpu"] = max(1, int(0.85 * summary["gpu_total_gb"] // (summary["gpu_peak_gb"] + 0.6)))
+        # Workers release GPU memory after every scene, so only workers inside the devices / render
+        # step hold their peak. Budget 2x the busy fraction (+0.6 GB CUDA context each), 15% headroom;
+        # an out-of-memory scene is retried, so a rare overlap costs time, not data.
+        busy = min(1.0, 2.0 * (summary.get("gpu_busy_fraction") or 1.0))
+        limits["gpu"] = max(1, int(0.85 * summary["gpu_total_gb"] // (0.6 + summary["gpu_peak_gb"] * busy)))
+        notes["gpu_if_every_worker_peaks_together"] = max(
+            1, int(0.85 * summary["gpu_total_gb"] // (summary["gpu_peak_gb"] + 0.6)))
     if summary.get("ram_peak_gb"):
         limits["ram"] = max(1, int(0.8 * summary["ram_total_gb"] // summary["ram_peak_gb"]))
     workers = min(limits.values())
     return dict(train_cases=n_cases, scenes_per_ct=scenes_per_ct, scenes=n_cases * scenes_per_ct,
                 single_worker_hours=round(hours, 1), worker_limits=limits, suggested_workers=workers,
-                hours_with_suggested_workers=round(hours / workers, 1),
+                hours_with_suggested_workers=round(hours / workers, 1), **notes,
                 note="Ideal scaling; CPU/memory contention makes the real rate lower. Launch, wait ~15 min, "
                      "then use --status for the measured rate and ETA.")
 
@@ -394,6 +408,11 @@ def parse_args(argv=None):
     return args
 
 
+def _out_of_memory(error):
+    """torch.cuda.OutOfMemoryError or cupy's OutOfMemoryError (gryds in the device insertion)."""
+    return type(error).__name__ == "OutOfMemoryError" or "out of memory" in str(error).lower()
+
+
 def check_environment(args):
     """Fail at startup (not once per CT) when a dependency or the GPU is missing."""
     import torch
@@ -407,12 +426,24 @@ def check_environment(args):
     if args.devices_prob > 0:
         sys.path.insert(0, str(CT_ENTITIES))
         sys.path.insert(0, str(CT_ENTITIES.parent))
+        hint = ("pip install kornia cupy-cuda12x 'git+https://github.com/tueimage/gryds' in this venv "
+                "(the PyPI gryds fork has no CUDA classes), use FCD_VENV=<DRR venv>, or pass --devices_prob 0")
         try:
             from External_Devices import ExternalDevices  # noqa: F401
+            import gryds
         except ImportError as error:
             raise SystemExit(f"Device nuisance needs the DRR generator dependencies (missing {error.name}): "
-                             "pip install kornia gryds in this venv, use FCD_VENV=<DRR venv>, "
-                             "or pass --devices_prob 0") from error
+                             + hint) from error
+        if not all(hasattr(gryds, name) for name in ("BSplineTransformationCuda", "BSplineInterpolatorCuda")):
+            raise SystemExit("gryds has no BSplineTransformationCuda / BSplineInterpolatorCuda (needs cupy and the "
+                             "tueimage gryds): " + hint)
+        try:
+            import cupy
+
+            int((cupy.arange(8) * 2).sum())  # compiles a kernel: needs NVRTC on LD_LIBRARY_PATH
+        except Exception as error:
+            raise SystemExit(f"cupy cannot run a kernel ({type(error).__name__}: {error}); run through "
+                             "training/run_few_shot.sh (adds the venv's nvidia/cuda_nvrtc/lib) or check CUDA") from error
 
 
 def main(argv=None):
@@ -436,7 +467,7 @@ def main(argv=None):
         encoding="utf-8")
     donors = DonorBank(seed=args.slice_index)
     started = time.time()
-    setups, timings = [], []
+    setups, timings, gpu_peaks = [], [], []
     for number, (case, ct_path, patient) in enumerate(cases):
         pending = [index for index in range(args.scenes_per_ct)
                    if not (output / case / f"scene{index:04d}" / "params.json").is_file()]
@@ -455,9 +486,22 @@ def main(argv=None):
             hook = make_devices_hook(args.devices_prob, ctx.segs["lungs"], scene_seed(case, 9999))
             setups.append(time.time() - setup_started)
             for index in pending:
-                record = generate_scene(ctx, case, patient, index, args, affine, hook, donors,
-                                        output / case / f"scene{index:04d}")
+                for attempt in range(4):
+                    try:
+                        record = generate_scene(ctx, case, patient, index, args, affine, hook, donors,
+                                                output / case / f"scene{index:04d}")
+                        break
+                    except Exception as error:
+                        if not _out_of_memory(error) or attempt == 3:
+                            raise
+                        # Another worker is at its GPU peak: free ours, wait, retry the same scene.
+                        render.release_gpu(args.device)
+                        wait = random.uniform(10.0, 40.0)
+                        print(f"[oom] {case} scene{index:04d}: retry {attempt + 1}/3 in {wait:.0f}s", flush=True)
+                        time.sleep(wait)
                 timings.append(record["timing_s"])
+                gpu_peaks.append(record["gpu_peak_gb"])
+                render.release_gpu(args.device)
             donors.add(ctx)
             print(f"[{number + 1}/{len(cases)}] {case}: {len(pending)} scenes, setup {setups[-1]:.0f}s, "
                   f"missing segs={missing}, elapsed {time.time() - started:.0f}s, "
@@ -467,7 +511,9 @@ def main(argv=None):
             print(f"[error] {case}: {type(error).__name__}: {error}", flush=True)
             with (output / f"errors_slice{args.slice_index}.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(dict(case=case, error=repr(error))) + "\n")
-    summary = speed_summary(setups, timings, time.time() - started, args.device)
+            ctx = hook = None
+            render.release_gpu(args.device)
+    summary = speed_summary(setups, timings, time.time() - started, args.device, gpu_peaks)
     (output / "logs").mkdir(exist_ok=True)
     (output / "logs" / f"speed_slice{args.slice_index}.json").write_text(json.dumps(summary, indent=1) + "\n",
                                                                          encoding="utf-8")

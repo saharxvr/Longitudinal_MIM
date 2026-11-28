@@ -8,6 +8,10 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source "${FCD_VENV:-/cs/labs/josko/sahar_aharon/fcd_venv}/bin/activate"
 export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version 2>/dev/null || echo none)/lib:${LD_LIBRARY_PATH:-}"
+# cupy (gryds B-spline CUDA, used by the DRR device insertion) compiles kernels with the venv's NVRTC.
+for nvrtc in "${VIRTUAL_ENV:-}"/lib/python3*/site-packages/nvidia/cuda_nvrtc/lib; do
+  [[ -d "$nvrtc" ]] && export LD_LIBRARY_PATH="$nvrtc:$LD_LIBRARY_PATH"
+done
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 CONFIG="${CONFIG:-configs/few_shot_6_9_12.yaml}"

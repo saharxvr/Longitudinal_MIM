@@ -426,7 +426,7 @@ class GeneratorTests(unittest.TestCase):
                              "--scenes_per_ct", "2", "--devices_prob", "0", "--benchmark"])
             speed = json.loads((root / "corpus" / "logs" / "speed_slice0.json").read_text())
             self.assertEqual((speed["cases"], speed["scenes"]), (1, 2))
-            self.assertEqual(set(speed["scene_s"]), {"changes", "render", "save"})
+            self.assertEqual(set(speed["scene_s"]), {"changes", "devices", "render", "save"})
             record = json.loads((root / "corpus" / "caseA" / "scene0001" / "params.json").read_text())
             self.assertIn("render", record["timing_s"])
             progress = corpus.status(root / "corpus")

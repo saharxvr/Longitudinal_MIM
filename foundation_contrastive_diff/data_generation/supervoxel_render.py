@@ -12,6 +12,7 @@ cleanup), so prior/current images and per-change GT are consistent by constructi
 from __future__ import annotations
 
 import math
+import time
 from typing import Callable, Optional
 
 import numpy as np
@@ -99,7 +100,31 @@ def _normalized(size, start, stop, device):
     return (2.0 * torch.arange(start, stop, device=device, dtype=torch.float32) + 1.0) / size - 1.0
 
 
-CHUNK_VOXELS = 1 << 24  # output voxels sampled at once (grid ~200 MB)
+CHUNK_VOXELS = 1 << 22  # output voxels sampled at once (grid ~50 MB)
+
+
+def gpu_memory_gb(device):
+    """Peak torch allocation since the last reset plus memory held by cupy's pools (gryds); None on CPU."""
+    import sys
+
+    if torch.device(device).type != "cuda":
+        return None
+    total = torch.cuda.max_memory_allocated(device)
+    if "cupy" in sys.modules:
+        total += sys.modules["cupy"].get_default_memory_pool().total_bytes()
+    return total / 2 ** 30
+
+
+def release_gpu(device):
+    """Return cached torch / cupy blocks to the driver so concurrent workers can use them."""
+    import sys
+
+    if torch.device(device).type != "cuda":
+        return
+    if "cupy" in sys.modules:
+        sys.modules["cupy"].get_default_memory_pool().free_all_blocks()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device)
 
 
 class FrameRenderer:
@@ -193,7 +218,8 @@ class FrameRenderer:
 
     def base(self, volume):
         """Clamped CT -> ray-sum of (HU + 1000), reflection padding as the existing generator."""
-        shifted = torch.clamp_min(self._as_volume(volume), -1000.0) + 1000.0
+        shifted = torch.clamp_min(self._as_volume(volume), -1000.0)
+        shifted += 1000.0
         return _resize(self._ray_sum(shifted, self._crop_block(), "reflection"))
 
     def delta(self, volume):
@@ -254,14 +280,24 @@ def render_scene(ctx, changes, rng, device="cpu", rotation_params=DEFAULT_ROTATI
 
     current_angles, prior_angles = angles or (sample_angles(rng, rotation_params),
                                               sample_angles(rng, rotation_params))
+    cuda = torch.device(device).type == "cuda"
+    if cuda:
+        torch.cuda.reset_peak_memory_stats(device)
+    started = time.time()
     ct = device_volume(ctx, "ct", device)
     lungs = device_volume(ctx, "lungs", device)
     base_prior = base_current = ct
     device_names = []
     if devices_hook is not None:
         base_prior, base_current, device_names = devices_hook(ct)
+    seconds = dict(devices=time.time() - started)
+    gpu_peak = dict(devices=gpu_memory_gb(device))
+    if cuda:
+        torch.cuda.reset_peak_memory_stats(device)
+    started = time.time()
     frame = FrameRenderer(ctx.segs["lungs"], current_angles, device, lungs_tensor=lungs)
     base_projection = frame.base(base_current)
+    del base_current
     current = base_projection.clone()
     registered_prior = base_projection.clone()
     differences = []
@@ -283,15 +319,18 @@ def render_scene(ctx, changes, rng, device="cpu", rotation_params=DEFAULT_ROTATI
     maps, scale = change_maps(differences, base_projection.cpu().numpy(), frame.footprint.cpu().numpy(),
                               [1.0] * len(differences))
     prior_volume = torch.as_tensor(base_prior, dtype=torch.float32, device=device).clone()
+    del base_prior
     for delta in [prior for prior, _ in pairs if prior is not None] + (
             [prior_nuisance] if prior_nuisance is not None else []):
         prior_volume[delta.box] += torch.as_tensor(np.asarray(delta.values, np.float32), device=device)
     prior = FrameRenderer(ctx.segs["lungs"], prior_angles, device, lungs_tensor=lungs).base(prior_volume)
     del prior_volume
+    seconds["render"] = time.time() - started
+    gpu_peak["render"] = gpu_memory_gb(device)
     return dict(prior=prior.cpu().numpy(), current=current.cpu().numpy(),
                 registered_prior=registered_prior.cpu().numpy(), maps=maps, scale=scale,
                 current_angles=list(current_angles), prior_angles=list(prior_angles),
-                device_names=list(device_names))
+                device_names=list(device_names), seconds=seconds, gpu_peak_gb=gpu_peak)
 
 
 # ---------------------------------------------------------------------------- coarse labels

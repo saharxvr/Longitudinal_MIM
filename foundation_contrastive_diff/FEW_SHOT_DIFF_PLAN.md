@@ -322,8 +322,11 @@ Not yet implemented:
    - `bash training/run_few_shot.sh generate_launch <N> [--scenes_per_ct 8]`: N background workers
      on this PC, slice i of N each, with pid/log files in `<corpus>/logs`. `GPUS="0 1"` spreads the
      workers over GPUs, `WORKER_THREADS` sets threads per worker (default 2), and `FCD_VENV`
-     selects the venv. Device nuisance needs `kornia` and `gryds` in it; the generator checks this
-     at startup. Keep N fixed for one corpus; stop all workers before relaunching with another N.
+     selects the venv. Device nuisance needs `kornia`, `cupy-cuda12x` and the original gryds
+     (`git+https://github.com/tueimage/gryds`; the PyPI `gryds` is a fork without the CUDA classes)
+     in it; the generator checks this at startup. Workers free GPU memory after every scene and
+     retry a scene after an out-of-memory error. Keep N fixed for one corpus; stop all workers
+     before relaunching with another N.
    - `bash training/run_few_shot.sh generate_status`: scenes done / expected, the measured
      rate over the last 30 minutes, ETA, error count, each worker's last log line, and GPU memory.
    - Then `manifest` and `stores`.
