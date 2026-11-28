@@ -126,12 +126,16 @@ def change_maps(delta_projections, base_projection, footprint, signs):
 
 def render_scene(ctx, changes, rng, device="cpu", rotation_params=DEFAULT_ROTATION_PARAMS,
                  devices_hook: Optional[Callable] = None, prior_nuisance=None, angles=None):
-    """Render one scene; ``changes`` = [(ChangeSpec, 'prior'|'current'), ...].
+    """Render one scene; ``changes`` = [(ChangeSpec, mode), ...] with a supervoxel_tasks timepoint mode
+    (appear / resolve / progress / regress / stable; 'current' / 'prior' are aliases of appear / resolve).
 
-    Returns raw projections in the DRR [z, x] frame plus per-change signed maps.
+    Returns raw projections in the DRR [z, x] frame plus per-change signed maps
+    GT = P(current delta - prior delta) / scale (stable changes give an all-zero map).
     ``prior_nuisance`` is a VolumeDelta applied only to the prior render (never in GT).
     ``devices_hook(base) -> (prior_volume, current_volume)`` adds device nuisance.
     """
+    from data_generation.supervoxel_tasks import timepoint_deltas
+
     current_angles, prior_angles = angles or (sample_angles(rng, rotation_params),
                                               sample_angles(rng, rotation_params))
     base_prior = base_current = ctx.ct
@@ -140,23 +144,30 @@ def render_scene(ctx, changes, rng, device="cpu", rotation_params=DEFAULT_ROTATI
         base_prior, base_current, device_names = devices_hook(ctx.ct)
     frame = FrameRenderer(ctx.segs["lungs"], current_angles, device)
     base_projection = frame.base(base_current)
-    projections = [frame.delta(change.delta.full(ctx.shape)) for change, _ in changes]
     current = base_projection.clone()
     registered_prior = base_projection.clone()
-    for projection, (_, timepoint) in zip(projections, changes):
-        if timepoint == "current":
-            current += projection
-        elif timepoint == "prior":
-            registered_prior += projection
+    differences = []
+    pairs = [timepoint_deltas(change, mode) for change, mode in changes]
+    for prior_delta, current_delta in pairs:
+        current_projection = frame.delta(current_delta.full(ctx.shape)) if current_delta is not None else None
+        if prior_delta is current_delta:
+            prior_projection = current_projection
         else:
-            raise ValueError("Timepoint must be prior or current")
-    signs = [1.0 if timepoint == "current" else -1.0 for _, timepoint in changes]
-    maps, scale = change_maps([p.cpu().numpy() for p in projections],
-                              base_projection.cpu().numpy(), frame.footprint.cpu().numpy(), signs)
+            prior_projection = frame.delta(prior_delta.full(ctx.shape)) if prior_delta is not None else None
+        difference = torch.zeros_like(base_projection)
+        if current_projection is not None:
+            current += current_projection
+            difference += current_projection
+        if prior_projection is not None:
+            registered_prior += prior_projection
+            difference -= prior_projection
+        differences.append(difference.cpu().numpy())
+    maps, scale = change_maps(differences, base_projection.cpu().numpy(), frame.footprint.cpu().numpy(),
+                              [1.0] * len(differences))
     prior_volume = np.array(base_prior, np.float32, copy=True)
-    for change, timepoint in changes:
-        if timepoint == "prior":
-            prior_volume[change.delta.box] += change.delta.values
+    for prior_delta, _ in pairs:
+        if prior_delta is not None:
+            prior_volume[prior_delta.box] += prior_delta.values
     if prior_nuisance is not None:
         prior_volume[prior_nuisance.box] += prior_nuisance.values
     prior = FrameRenderer(ctx.segs["lungs"], prior_angles, device).base(prior_volume)

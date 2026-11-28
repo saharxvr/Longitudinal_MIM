@@ -6,11 +6,13 @@ optional <case>/reference_pairs/*). Output (new folder; contains medical images,
                                        tight GT, ellipse label (all in the upright model frame)
     contact_<tier>.png                 one thumbnail per family (current DRR + GT)
     scenes/<case>_scene<k>.png         composed scenes: all changes, one task target, distractors
+    modes/<case>_<family>.png          one change in every timepoint mode (appear, resolve, progress,
+                                       regress, stable) with prior/current DRR and GT
     nuisance/<case>_inspiration.png    breathing-depth nuisance (never in GT)
     reference/<pair>.png               existing synthetic pathology pairs of the same CT
     index.md, stats.json               per-family realized areas and failures
 
-Every family is rendered at the CURRENT timepoint (a prior-timepoint change only flips the sign).
+Family panels show the appear mode (change in the current only; resolve only flips the sign).
 Devices are not available locally (campus device library) and are omitted.
 
     python -m data_generation.preview_supervoxel_families --cases_root <dir> --output <new dir>
@@ -169,6 +171,37 @@ def scene_panel(ctx, scene, changes, records, path):
     plt.close(figure)
 
 
+def modes_panel(ctx, change, rng, angles, path):
+    """One change in every timepoint mode: prior DRR, current DRR, GT (rows = modes)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    partial, method = tasks.make_partial(ctx, change, rng, 0.5)
+    change.partial = partial
+    modes = [mode for mode in tasks.TIMEPOINT_MODES if partial is not None or mode not in ("progress", "regress")]
+    figure, axes = plt.subplots(len(modes), 3, figsize=(10, 3.3 * len(modes)), squeeze=False)
+    summary = []
+    for row, mode in zip(axes, modes):
+        scene = render.render_scene(ctx, [(change, mode)], rng, angles=angles)
+        gt = scene["maps"][0]
+        stats = render.realized_statistics(gt)
+        row[0].imshow(norm(scene["prior"]), cmap="gray")
+        row[0].set_title(f"{mode}: prior (other angle)", fontsize=8)
+        row[1].imshow(norm(scene["current"]), cmap="gray")
+        row[1].set_title(f"{mode}: current", fontsize=8)
+        overlay(row[2], scene["current"], gt, f"GT {render.gt_sign(stats)} {stats['area_001']}px max {stats['max_abs']:.3f}")
+        for axis in row:
+            axis.axis("off")
+        summary.append(dict(mode=mode, gt_sign=render.gt_sign(stats), area_001=stats["area_001"]))
+    figure.suptitle(f"{change.family}: timepoint modes (progress/regress smaller version: {method}, fraction 0.5)",
+                    fontsize=9)
+    figure.tight_layout()
+    figure.savefig(path, dpi=60)
+    plt.close(figure)
+    return summary
+
+
 def nuisance_panel(ctx, prior_angles, rng, path):
     import matplotlib
     matplotlib.use("Agg")
@@ -294,6 +327,15 @@ def preview_case(folder, args, output, families):
         path = output / "scenes" / f"{folder.name}_scene{index}.png"
         scene_panel(ctx, scene, changes, records, path)
         scenes.append(dict(png=path.relative_to(output).as_posix(), changes=records))
+    (output / "modes").mkdir(exist_ok=True)
+    for family in [name for name in args.mode_families if name in tasks.FAMILIES]:
+        mode_rng = np.random.default_rng(seed_for(args.seed, folder.name, "modes", family))
+        change = tasks.sample_change(ctx, family, mode_rng, donors if "cutpaste" in family else None)
+        if change is not None:
+            path = output / "modes" / f"{folder.name}_{family.replace('@', '_at_')}.png"
+            summary = modes_panel(ctx, change, mode_rng, (current_angles, prior_angles), path)
+            info.setdefault("modes", []).append(dict(family=family, png=path.relative_to(output).as_posix(),
+                                                     modes=summary))
     (output / "nuisance").mkdir(exist_ok=True)
     nuisance_panel(ctx, prior_angles, np.random.default_rng(seed_for(args.seed, folder.name, "nuisance")),
                    output / "nuisance" / f"{folder.name}_inspiration.png")
@@ -331,6 +373,10 @@ def write_index(output, infos, rows, scenes, references):
     lines += [f"- [{scene['png']}]({scene['png']}): " + "; ".join(
         f"{c['family']}@{c['timepoint']} {c['gt_sign']} {c['area_001']}px" for c in scene["changes"])
         for scene in scenes]
+    lines += ["", "## Timepoint modes (appear / resolve / progress / regress / stable)", ""]
+    lines += [f"- [{item['png']}]({item['png']}) {info['case']} {item['family']}: " + "; ".join(
+        f"{mode['mode']} {mode['gt_sign']} {mode['area_001']}px" for mode in item["modes"])
+        for info in infos for item in info.get("modes", [])]
     lines += ["", "## Nuisance", ""] + [f"- [{path.name}](nuisance/{path.name})"
                                         for path in sorted((output / "nuisance").glob("*.png"))]
     lines += ["", "## Existing synthetic pathology pairs (same CTs, for comparison)", ""]
@@ -346,6 +392,9 @@ def main(argv=None):
     parser.add_argument("--output", required=True)
     parser.add_argument("--tiers", nargs="+", default=["T1", "T2", "T2near"])
     parser.add_argument("--families", nargs="*", help="Substring filters, e.g. heart nodule t1_grow")
+    parser.add_argument("--mode_families", nargs="*",
+                        default=["t1_density@lungs", "nodule", "heart_resize", "diaphragm_shift", "mediastinal_shift"],
+                        help="Families shown in every timepoint mode (modes/ panels); empty list disables")
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--scenes", type=int, default=3)
     parser.add_argument("--n_supervoxels", type=int, default=1500)

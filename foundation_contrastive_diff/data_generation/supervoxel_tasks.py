@@ -134,6 +134,8 @@ class ChangeSpec:
     effect: str  # denser | lighter | mixed (HU direction in the modified volume)
     delta: VolumeDelta
     params: Dict = field(default_factory=dict)
+    partial: Optional[VolumeDelta] = field(default=None, repr=False)  # smaller version (progress/regress)
+    replay: Optional[tuple] = field(default=None, repr=False)  # (rng state, donor) of the successful draw
 
 
 def bounded_delta(base, box, target):
@@ -687,10 +689,11 @@ def _replace_in(ctx, box, region, value, rng, sigma_mm=1.0, noise=12.0):
     return bounded_delta(ctx.ct, box, ctx.ct[box] * (1 - soft) + filled * soft)
 
 
-def _ball(ctx, center, radii_mm, rng=None, region=None, rotate=False):
+def _ball(ctx, center, radii_mm, rng=None, region=None, rotate=False, scale=1.0):
+    """Ellipsoid of radii_mm * scale; the box always fits the full radii (same box for any scale)."""
     radii_mm = _vector(radii_mm)
     box = box_around(center, ctx.vox(radii_mm.max()), ctx.shape, margin=2)
-    ball = ellipsoid(box, center, radii_mm, ctx.spacing, random_rotation(rng) if rotate and rng else None)
+    ball = ellipsoid(box, center, radii_mm * scale, ctx.spacing, random_rotation(rng) if rotate and rng else None)
     if region is not None:
         ball &= ctx.mask(region, box)
     return box, ball
@@ -717,8 +720,9 @@ def _scale_structure(ctx, name, scale, fill_out):
     return bounded_delta(ctx.ct, box, _smooth_inside(ctx, target, scaled | inside, box)), dict(scale=scale)
 
 
-def heart_resize(ctx, rng):
+def heart_resize(ctx, rng, fraction=1.0):
     scale = rng.uniform(1.06, 1.25) if rng.random() < 0.6 else rng.uniform(0.82, 0.95)
+    scale = 1.0 + fraction * (scale - 1.0)
 
     def surrounding(box, uncovered):
         heart = ctx.segs["heart"][box]
@@ -729,19 +733,19 @@ def heart_resize(ctx, rng):
     return _finish(ctx, delta, "heart_resize", "T2", "heart", params)
 
 
-def pericardial_shell(ctx, rng):
+def pericardial_shell(ctx, rng, fraction=1.0):
     heart = ctx.segs.get("heart")
     if heart is None or not heart.any():
         return None
     thickness = rng.uniform(3.0, max(4.0, 0.04 * ctx.scale))
     box = mask_box(heart, ctx.vox(thickness) + 3)
-    shell = dilate(heart[box], thickness, ctx.spacing) & ~heart[box] & ctx.mask("body", box)
+    shell = dilate(heart[box], thickness * fraction, ctx.spacing) & ~heart[box] & ctx.mask("body", box)
     keep = smooth_noise(shell.shape, 6.0, rng, ctx.spacing) > rng.uniform(-1.0, 0.0)
     delta = _replace_in(ctx, box, shell & keep, HU_FLUID, rng)
-    return _finish(ctx, delta, "pericardial_shell", "T2", "heart", dict(thickness_mm=thickness))
+    return _finish(ctx, delta, "pericardial_shell", "T2", "heart", dict(thickness_mm=thickness * fraction))
 
 
-def mediastinal_widening(ctx, rng):
+def mediastinal_widening(ctx, rng, fraction=1.0):
     """Upper mediastinum widens laterally into the lungs (z-tapered, asymmetric between sides)."""
     z_lo, z_hi = sorted((ctx.lung_z_fraction(0.0), ctx.lung_z_fraction(0.5)))
     upper = ctx.compartments["mediastinum"].copy()
@@ -766,32 +770,34 @@ def mediastinal_widening(ctx, rng):
     sides[rng.integers(2)] = 1.0
     center_x = np.argwhere(medi)[:, 1].mean()
     side = np.where(np.arange(medi.shape[1]) < center_x, sides[0], sides[1])
-    grown = lungs & (distance <= width * profile[:, None, None] * side[None, :, None])
-    inner = mask_box(grown, 2)
+    reach = profile[:, None, None] * side[None, :, None]
+    full = lungs & (distance <= width * reach)
+    grown = lungs & (distance <= width * fraction * reach)
+    inner = mask_box(full, 2)
     if inner is None:
         return None
     absolute = tuple(slice(outer.start + item.start, outer.start + item.stop) for outer, item in zip(box, inner))
     delta = _replace_in(ctx, absolute, grown[inner], HU_SOFT, rng)
     return _finish(ctx, delta, "mediastinal_widening", "T2", "mediastinum",
-                   dict(width_mm=width, side_weights=sides.tolist()))
+                   dict(width_mm=width * fraction, side_weights=sides.tolist()))
 
 
-def mediastinal_mass(ctx, rng):
+def mediastinal_mass(ctx, rng, fraction=1.0):
     """Mass on the mediastinal border bulging into a lung (soft tissue replacing lung)."""
     center = _compartment_point(ctx, "mediastinum", rng,
                                 sorted((ctx.lung_z_fraction(0.05), ctx.lung_z_fraction(0.6))), near_lungs_mm=6.0)
     if center is None:
         return None
     radii = [rng.uniform(0.05, 0.12) * ctx.scale for _ in range(3)]
-    box, region = _ball(ctx, center, radii, rng, rotate=True)
+    box, region = _ball(ctx, center, radii, rng, rotate=True, scale=fraction)
     region &= ctx.mask("body", box) & ~ctx.mask("bone", box)
-    if (region & ctx.mask("lungs", box)).sum() < 0.2 * region.sum():
+    if fraction == 1.0 and (region & ctx.mask("lungs", box)).sum() < 0.2 * region.sum():
         return None
     delta = _replace_in(ctx, box, region, HU_SOFT, rng)
     return _finish(ctx, delta, "mediastinal_mass", "T2", "mediastinum", dict(radii_mm=radii))
 
 
-def mediastinal_shift(ctx, rng):
+def mediastinal_shift(ctx, rng, fraction=1.0):
     region = ctx.compartments["mediastinum"].copy()
     if "heart" in ctx.segs:
         region |= ctx.compartments["heart_ds"]
@@ -804,9 +810,9 @@ def mediastinal_shift(ctx, rng):
     box = mask_box(full, ctx.vox(abs(shift)) + 4)
     weight = feather(dilate(full[box], abs(shift), ctx.spacing), abs(shift), ctx.spacing)
     weight /= weight.max() + 1e-6
-    warped = displacement(ctx, box, ctx.ct[box], weight, (0.0, shift, 0.0))
+    warped = displacement(ctx, box, ctx.ct[box], weight, (0.0, shift * fraction, 0.0))
     delta = bounded_delta(ctx.ct, box, warped)
-    return _finish(ctx, delta, "mediastinal_shift", "T2", "mediastinum", dict(shift_mm=shift))
+    return _finish(ctx, delta, "mediastinal_shift", "T2", "mediastinum", dict(shift_mm=shift * fraction))
 
 
 def _trachea(ctx):
@@ -820,12 +826,12 @@ def _trachea(ctx):
     return labels == int(np.argmax(sizes)) + 1
 
 
-def tracheal_deviation(ctx, rng):
+def tracheal_deviation(ctx, rng, fraction=1.0):
     trachea = _trachea(ctx)
     if trachea is None or trachea.sum() * ctx.voxel_mm3 < 100:
         return None
     shift_mm = rng.uniform(4.0, max(5.0, 0.05 * ctx.scale)) * (1 if rng.random() < 0.5 else -1)
-    shift = int(round(shift_mm / ctx.spacing[1]))
+    shift = int(round(shift_mm * fraction / ctx.spacing[1]))
     box = mask_box(trachea, ctx.vox(abs(shift_mm)) + 3)
     old = trachea[box]
     new = np.roll(old, shift, axis=1)
@@ -834,7 +840,7 @@ def tracheal_deviation(ctx, rng):
     target[new & ~old] = HU_AIR
     region = dilate(old | new, 1.0, ctx.spacing)
     delta = bounded_delta(ctx.ct, box, _smooth_inside(ctx, target, region, box))
-    return _finish(ctx, delta, "tracheal_deviation", "T2", "airways", dict(shift_mm=shift_mm))
+    return _finish(ctx, delta, "tracheal_deviation", "T2", "airways", dict(shift_mm=shift_mm * fraction))
 
 
 def _airway_region(ctx, rng, radius_fraction=(0.06, 0.15)):
@@ -850,12 +856,12 @@ def _airway_region(ctx, rng, radius_fraction=(0.06, 0.15)):
     return (box, local) if local.sum() * ctx.voxel_mm3 > 20 else None
 
 
-def bronchial_dilation(ctx, rng):
+def bronchial_dilation(ctx, rng, fraction=1.0):
     region = _airway_region(ctx, rng)
     if region is None:
         return None
     box, airways = region
-    width = rng.uniform(1.5, 4.0)
+    width = rng.uniform(1.5, 4.0) * fraction
     grown = dilate(airways, width, ctx.spacing) & ~airways & ctx.mask("lungs", box)
     delta = _replace_in(ctx, box, grown, HU_AIR, rng, sigma_mm=0.7, noise=5)
     return _finish(ctx, delta, "bronchial_dilation", "T2", "airways", dict(width_mm=width))
@@ -872,17 +878,17 @@ def mucus_plug(ctx, rng):
     return _finish(ctx, delta, "mucus_plug", "T2", "airways", {})
 
 
-def hilar_mass(ctx, rng):
+def hilar_mass(ctx, rng, fraction=1.0):
     center = _compartment_point(ctx, "hila", rng)
     if center is None:
         return None
     radii = [rng.uniform(0.03, 0.08) * ctx.scale for _ in range(3)]
-    box, region = _ball(ctx, center, radii, rng, rotate=True)
+    box, region = _ball(ctx, center, radii, rng, rotate=True, scale=fraction)
     delta = _replace_in(ctx, box, region & ctx.mask("body", box), HU_SOFT, rng)
     return _finish(ctx, delta, "hilar_mass", "T2", "hila", dict(radii_mm=radii))
 
 
-def pa_dilation(ctx, rng):
+def pa_dilation(ctx, rng, fraction=1.0):
     vessels = ctx.segs.get("lung_vessels")
     center = _compartment_point(ctx, "hila", rng)
     if vessels is None or center is None:
@@ -892,7 +898,7 @@ def pa_dilation(ctx, rng):
     local = vessels[box] & ball
     if local.sum() * ctx.voxel_mm3 < 20:
         return None
-    width = rng.uniform(1.5, 4.0)
+    width = rng.uniform(1.5, 4.0) * fraction
     grown = dilate(local, width, ctx.spacing) & ~local & ctx.mask("body", box)
     delta = _replace_in(ctx, box, grown, HU_SOFT, rng, sigma_mm=0.7)
     return _finish(ctx, delta, "pa_dilation", "T2", "hila", dict(width_mm=width))
@@ -911,13 +917,14 @@ def _base_depth(ctx, lung):
     return depth * ctx.spacing[0], columns
 
 
-def diaphragm_shift(ctx, rng):
+def diaphragm_shift(ctx, rng, fraction=1.0):
     """Unilateral dome elevation (lung base -> soft tissue) or depression (soft -> lung)."""
     side = "right" if rng.random() < 0.5 else "left"
     lung = ctx.segs[f"lung_{side}"]
-    height = rng.uniform(0.03, 0.10) * ctx.lung_height_mm
+    full_height = rng.uniform(0.03, 0.10) * ctx.lung_height_mm
+    height = full_height * fraction
     elevate = rng.random() < 0.5
-    box = mask_box(lung, ctx.vox(height) + 3)
+    box = mask_box(lung, ctx.vox(full_height) + 3)
     local = lung[box]
     depth, columns = _base_depth(ctx, local)
     if elevate:
@@ -933,18 +940,19 @@ def diaphragm_shift(ctx, rng):
                    dict(side=side, elevate=elevate, height_mm=height))
 
 
-def free_air(ctx, rng):
+def free_air(ctx, rng, fraction=1.0):
     """Air crescent under a dome, separated from the lung base by the diaphragm (gap_mm)."""
     side = "right" if rng.random() < 0.6 else "left"
     lung = ctx.segs[f"lung_{side}"]
-    gap, thickness = rng.uniform(3.0, 6.0), rng.uniform(3.0, 10.0)
-    box = mask_box(lung, ctx.vox(gap + thickness) + 3)
+    gap, full_thickness = rng.uniform(3.0, 6.0), rng.uniform(3.0, 10.0)
+    thickness = full_thickness * fraction
+    box = mask_box(lung, ctx.vox(gap + full_thickness) + 3)
     depth, columns = _base_depth(ctx, lung[box])
-    region = (ctx.mask("body", box) & ~ctx.mask("lungs", box) & ~ctx.mask("bone", box) & columns[None]
-              & (depth <= -gap) & (depth > -gap - thickness))
+    allowed = ctx.mask("body", box) & ~ctx.mask("lungs", box) & ~ctx.mask("bone", box) & columns[None]
     if "heart" in ctx.segs:
-        region &= ~ctx.mask("heart", box)
-    inner = mask_box(region, 2)
+        allowed &= ~ctx.mask("heart", box)
+    region = allowed & (depth <= -gap) & (depth > -gap - thickness)
+    inner = mask_box(allowed & (depth <= -gap) & (depth > -gap - full_thickness), 2)
     if inner is None:
         return None
     absolute = tuple(slice(outer.start + item.start, outer.start + item.stop) for outer, item in zip(box, inner))
@@ -953,7 +961,7 @@ def free_air(ctx, rng):
                    dict(side=side, gap_mm=gap, thickness_mm=thickness))
 
 
-def gastric_bubble(ctx, rng):
+def gastric_bubble(ctx, rng, fraction=1.0):
     """Air pocket below a dome (mostly left), kept off the diaphragm so the dome line stays."""
     side = "left" if rng.random() < 0.8 else "right"
     dome = ctx.dome_columns(ctx._down(ctx.segs[f"lung_{side}"]))
@@ -963,7 +971,7 @@ def gastric_bubble(ctx, rng):
     if center is None:
         return None
     radii = [rng.uniform(0.03, 0.08) * ctx.scale for _ in range(3)]
-    box, region = _ball(ctx, center, radii, region="sub_diaphragm")
+    box, region = _ball(ctx, center, radii, region="sub_diaphragm", scale=fraction)
     region &= ~dilate(ctx.segs["lungs"][box], 4.0, ctx.spacing)
     delta = _replace_in(ctx, box, region, HU_AIR, rng, sigma_mm=1.0, noise=5)
     return _finish(ctx, delta, "gastric_bubble", "T2", "sub_diaphragm", dict(side=side, radii_mm=radii))
@@ -979,26 +987,26 @@ def subcutaneous_emphysema(ctx, rng):
     return _finish(ctx, delta, "subcutaneous_emphysema", "T2", "chest_wall", {})
 
 
-def chest_wall_thickening(ctx, rng):
+def chest_wall_thickening(ctx, rng, fraction=1.0):
     compartment = "subcutaneous" if ctx.available("subcutaneous") else "chest_wall"
     region = sample_region(ctx, compartment, rng, (0.05, 0.15))
     if region is None:
         return None
     box, mask = region
     body = ctx.mask("body", box)
-    width = rng.uniform(6.0, max(8.0, 0.08 * ctx.scale))  # en face soft tissue needs ~1 cm to show on AP
+    width = rng.uniform(6.0, max(8.0, 0.08 * ctx.scale)) * fraction  # en face soft tissue needs ~1 cm to show on AP
     grown = dilate(mask, width, ctx.spacing) & ~body
     delta = _replace_in(ctx, box, grown | (mask & ~body), HU_SOFT, rng)
     return _finish(ctx, delta, "chest_wall_thickening", "T2", "chest_wall", dict(width_mm=width))
 
 
-def rib_lesion(ctx, rng):
+def rib_lesion(ctx, rng, fraction=1.0):
     bone = ctx.compartments["bone"] & ctx.compartments["chest_wall"]
     center = _point(ctx, ctx.full_points(bone) if bone.any() else None, rng)
     if center is None:
         return None
     radius = rng.uniform(0.03, 0.06) * ctx.scale
-    box, region = _ball(ctx, center, radius, region="bone")
+    box, region = _ball(ctx, center, radius, region="bone", scale=fraction)
     lytic = rng.random() < 0.6
     delta = _replace_in(ctx, box, region, HU_FAT if lytic else rng.uniform(1000, 1500), rng, sigma_mm=0.7)
     return _finish(ctx, delta, "rib_lesion", "T2", "chest_wall", dict(lytic=lytic, radius_mm=radius))
@@ -1014,44 +1022,45 @@ def _lung_ball(ctx, rng, radius_range):
     return center, rng.uniform(*radius_range) * ctx.scale
 
 
-def nodule(ctx, rng):
+def nodule(ctx, rng, fraction=1.0):
     found = _lung_ball(ctx, rng, (0.02, 0.07))
     if found is None:
         return None
     center, radius = found
     radii = [radius * rng.uniform(0.7, 1.3) for _ in range(3)]
-    box, region = _ball(ctx, center, radii, rng, region="lungs", rotate=True)
+    box, region = _ball(ctx, center, radii, rng, region="lungs", rotate=True, scale=fraction)
     region &= smooth_noise(region.shape, max(1.0, radius / 3), rng, ctx.spacing) > -1.2
     delta = _replace_in(ctx, box, region, HU_SOFT, rng)
-    return _finish(ctx, delta, "nodule", "T2", "lungs", dict(radius_mm=radius))
+    return _finish(ctx, delta, "nodule", "T2", "lungs", dict(radius_mm=radius * fraction))
 
 
-def cavity(ctx, rng):
+def cavity(ctx, rng, fraction=1.0):
     found = _lung_ball(ctx, rng, (0.03, 0.07))
     if found is None:
         return None
     center, radius = found
-    box, outer = _ball(ctx, center, radius, region="lungs")
-    inner = ellipsoid(box, center, radius * rng.uniform(0.4, 0.75), ctx.spacing)
+    box, outer = _ball(ctx, center, radius, region="lungs", scale=fraction)
+    inner = ellipsoid(box, center, radius * fraction * rng.uniform(0.4, 0.75), ctx.spacing)
     target = ctx.ct[box].copy()
     target[outer] = HU_SOFT
     target[inner & outer] = HU_AIR
     delta = bounded_delta(ctx.ct, box, _smooth_inside(ctx, target, dilate(outer, 1.0, ctx.spacing), box))
-    return _finish(ctx, delta, "cavity", "T2", "lungs", dict(radius_mm=radius))
+    return _finish(ctx, delta, "cavity", "T2", "lungs", dict(radius_mm=radius * fraction))
 
 
-def bulla(ctx, rng):
+def bulla(ctx, rng, fraction=1.0):
     # Lucent interior and dense wall partly cancel along the ray, so bullae must be large to show.
     found = _lung_ball(ctx, rng, (0.04, 0.1))
     if found is None:
         return None
     center, radius = found
-    box, outer = _ball(ctx, center, radius, region="lungs")
+    box, outer = _ball(ctx, center, radius, region="lungs", scale=fraction)
     wall = outer & ~erode(outer, 1.0, ctx.spacing)
     target = ctx.ct[box].copy()
     target[outer] = HU_AIR
     target[wall] = 0.0
-    return _finish(ctx, bounded_delta(ctx.ct, box, target), "bulla", "T2", "lungs", dict(radius_mm=radius))
+    return _finish(ctx, bounded_delta(ctx.ct, box, target), "bulla", "T2", "lungs",
+                   dict(radius_mm=radius * fraction))
 
 
 def calcified_dot(ctx, rng):
@@ -1078,7 +1087,7 @@ def lobar_hyperlucency(ctx, rng):
 
 
 # ---------------------------------------------------------------------------- T2-near families
-def lobar_collapse(ctx, rng):
+def lobar_collapse(ctx, rng, fraction=1.0):
     lobes = [name for name in LOBES if name in ctx.segs and ctx.segs[name].sum() * ctx.voxel_mm3 > 1000]
     hila = ctx.compartments["hila"]
     if not lobes or not hila.any():
@@ -1090,7 +1099,7 @@ def lobar_collapse(ctx, rng):
     z, x, y = box_grid(tuple(slice(0, item.stop - item.start) for item in box))
     distance = np.sqrt(((z - hilum[0]) * ctx.spacing[0]) ** 2 + ((x - hilum[1]) * ctx.spacing[1]) ** 2
                        + ((y - hilum[2]) * ctx.spacing[2]) ** 2)
-    limit = np.quantile(distance[region], rng.uniform(0.25, 0.5))
+    limit = np.quantile(distance[region], rng.uniform(0.25, 0.5) * fraction)
     collapsed = region & (distance <= limit)
     target = ctx.ct[box] + rng.uniform(400, 800) * feather(collapsed, 2.0, ctx.spacing)
     return _finish(ctx, bounded_delta(ctx.ct, box, target), "lobar_collapse", "T2near", "lungs", dict(lobe=lobe))
@@ -1225,6 +1234,30 @@ for _name, _fn, _tier, _compartment, _requires, _analogue in (
     FAMILIES[_name] = dict(tier=_tier, compartment=_compartment, fn=_fn, requires=_requires,
                            analogue=_analogue)
 
+# How the smaller timepoint of a progressing / regressing change is built:
+#   param     replay the same random draws with the size / shift / scale multiplied by fraction
+#   intensity the same edit at fraction strength
+#   spatial   the same edit restricted to part of each focus (a lesion spreading from a seed)
+PARAM_PROGRESSION = ("heart_resize", "pericardial_shell", "mediastinal_widening", "mediastinal_mass",
+                     "mediastinal_shift", "tracheal_deviation", "bronchial_dilation", "hilar_mass", "pa_dilation",
+                     "diaphragm_shift", "free_air", "gastric_bubble", "chest_wall_thickening", "rib_lesion",
+                     "nodule", "cavity", "bulla", "lobar_collapse")
+for _name, _spec in FAMILIES.items():
+    if _name in PARAM_PROGRESSION:
+        _spec["progression"] = "param"
+    elif _name in ("calcified_dot", "lobar_hyperlucency"):
+        _spec["progression"] = "intensity"
+    elif _name.startswith("t1_displace") or _name in ("subcutaneous_emphysema", "pneumomediastinum", "vessel_change"):
+        _spec["progression"] = "spatial"  # a weaker warp would ghost (double edges)
+    else:
+        _spec["progression"] = "spatial_or_intensity"
+
+# Timepoint of each change. appear: current only; resolve: prior only; progress / regress: in both,
+# smaller in the prior / current; stable: identical in both (GT 0, never an episode target).
+TIMEPOINT_MODES = dict(appear=0.30, resolve=0.30, progress=0.125, regress=0.125, stable=0.15)
+MODE_ALIASES = dict(current="appear", prior="resolve")
+PROGRESSION_FRACTION = (0.35, 0.75)
+
 
 def family_names(tiers=("T1", "T2")):
     return sorted(name for name, spec in FAMILIES.items() if spec["tier"] in tiers)
@@ -1237,18 +1270,115 @@ def sample_change(ctx, family, rng, donor=None, attempts=10) -> Optional[ChangeS
         return None
     for _ in range(attempts):
         if family.startswith("t1_"):
-            change = spec["fn"](ctx, rng, donor(rng) if callable(donor) else donor)
+            patch = donor(rng) if callable(donor) else donor
+            state = rng.bit_generator.state
+            change = spec["fn"](ctx, rng, patch)
         else:
+            patch, state = None, rng.bit_generator.state
             change = spec["fn"](ctx, rng)
         if change is not None:
             change.family = family
+            change.replay = (state, patch)
             return change
     return None
 
 
+def negate(delta):
+    return VolumeDelta(delta.box, -delta.values)
+
+
+def timepoint_deltas(change, mode):
+    """(prior delta, current delta) of a change in a timepoint mode; None = absent."""
+    mode = MODE_ALIASES.get(mode, mode)
+    if mode in ("progress", "regress") and change.partial is None:
+        raise ValueError(f"{change.family}: mode {mode} needs a partial delta")
+    return dict(appear=(None, change.delta), resolve=(change.delta, None), progress=(change.partial, change.delta),
+                regress=(change.delta, change.partial), stable=(change.delta, change.delta))[mode]
+
+
+def spatial_partial(ctx, delta, rng, fraction):
+    """The same edit on part of each focus: a ball around a random seed holding ~fraction of the
+    focus volume; with several foci, each non-first focus is absent with probability 0.3 (new lesion)."""
+    support = delta.support(5.0)
+    step = np.maximum(1, np.round(2.0 / ctx.spacing)).astype(int)
+    coarse = ndi.binary_dilation(support[::step[0], ::step[1], ::step[2]], iterations=2)
+    labels, count = ndi.label(coarse)
+    if not count:
+        return None
+    up = np.ix_(*[np.minimum(np.arange(size) // factor, limit - 1)
+                  for size, factor, limit in zip(support.shape, step, labels.shape)])
+    full_labels = np.where(support, labels[up], 0)
+    z, x, y = (np.arange(size, dtype=np.float32) * np.float32(spacing)
+               for size, spacing in zip(support.shape, ctx.spacing))
+    keep = np.zeros(support.shape, bool)
+    sizes = ndi.sum(np.ones_like(labels), labels, range(1, count + 1))
+    for rank, label in enumerate(np.argsort(sizes)[::-1][:6] + 1):
+        if rank > 0 and rng.random() < 0.3:
+            continue
+        component = full_labels == label
+        points = np.argwhere(component)
+        if not len(points):
+            continue
+        seed = points[rng.integers(len(points))]
+        distance = np.sqrt((z - z[seed[0]])[:, None, None] ** 2 + (x - x[seed[1]])[None, :, None] ** 2
+                           + (y - y[seed[2]])[None, None, :] ** 2)
+        limit = np.quantile(distance[component], fraction)
+        keep |= component & (distance <= limit)
+    if not keep.any():
+        return None
+    weight = np.clip(feather(keep, 1.5, ctx.spacing) * 2.0, 0.0, 1.0)
+    return VolumeDelta(delta.box, (delta.values * weight).astype(np.float32))
+
+
+def make_partial(ctx, change, rng, fraction):
+    """Smaller version of a change (see PROGRESSION_FRACTION); returns (delta or None, method)."""
+    method = FAMILIES[change.family]["progression"]
+    if method == "spatial_or_intensity":
+        method = "spatial" if rng.random() < 0.5 else "intensity"
+    if method == "intensity":
+        return VolumeDelta(change.delta.box, (change.delta.values * fraction).astype(np.float32)), method
+    if method == "spatial":
+        return spatial_partial(ctx, change.delta, rng, fraction), method
+    state, _ = change.replay
+    replay = np.random.default_rng()
+    replay.bit_generator.state = state
+    saved, ctx.min_visibility = ctx.min_visibility, None  # only the difference has to be visible
+    try:
+        partial = FAMILIES[change.family]["fn"](ctx, replay, fraction=fraction)
+    finally:
+        ctx.min_visibility = saved
+    return (partial.delta if partial is not None else None), method
+
+
+def _visible(ctx, delta):
+    if ctx.min_visibility is None:
+        return bool(delta.support().any())
+    peak, area = ctx.visibility(delta)
+    return peak >= ctx.min_visibility[0] and area >= ctx.min_visibility[1]
+
+
+def assign_timepoint(ctx, change, rng, modes=None):
+    """Sample a timepoint mode; progress / regress fall back to appear / resolve when no visibly
+    different smaller version exists. Sets change.partial and records fraction / method."""
+    modes = TIMEPOINT_MODES if modes is None else modes
+    names = list(modes)
+    probabilities = np.array([modes[name] for name in names], np.float64)
+    mode = names[int(rng.choice(len(names), p=probabilities / probabilities.sum()))]
+    if mode in ("progress", "regress"):
+        for fraction in (rng.uniform(*PROGRESSION_FRACTION), PROGRESSION_FRACTION[0]):
+            partial, method = make_partial(ctx, change, rng, fraction)
+            if partial is not None and _visible(ctx, merge_deltas([change.delta, negate(partial)])):
+                change.partial = partial
+                change.params.update(fraction=round(float(fraction), 3), progression=method)
+                return mode
+        mode = "appear" if mode == "progress" else "resolve"
+    return mode
+
+
 def compose_scene(ctx, rng, tiers=("T1", "T2"), n_changes=(1, 3), margin_mm=3.0,
-                  donor_fn: Optional[Callable] = None, family_weights=None, attempts=40):
-    """Sample voxel-disjoint changes (>= margin_mm apart) of distinct families; each assigned to prior or current."""
+                  donor_fn: Optional[Callable] = None, family_weights=None, attempts=40, modes=None):
+    """Sample voxel-disjoint changes (>= margin_mm apart) of distinct families; each gets a timepoint
+    mode (TIMEPOINT_MODES). Returns [(ChangeSpec, mode), ...]."""
     names = [name for name in family_names(tiers)
              if all(ctx.available(item) for item in FAMILIES[name]["requires"])]
     if not names:
@@ -1269,12 +1399,16 @@ def compose_scene(ctx, rng, tiers=("T1", "T2"), n_changes=(1, 3), margin_mm=3.0,
         change = sample_change(ctx, family, rng, donor)
         if change is None:
             continue
-        support = change.delta.support()
-        if (dilate_box(ctx, occupied, change.delta.box, margin_mm) & support).any():
+        if (dilate_box(ctx, occupied, change.delta.box, margin_mm) & change.delta.support()).any():
             continue
-        occupied[change.delta.box] |= support
+        mode = assign_timepoint(ctx, change, rng, modes)
+        if change.partial is not None and mode in ("progress", "regress") and (
+                dilate_box(ctx, occupied, change.partial.box, margin_mm) & change.partial.support()).any():
+            change.partial, mode = None, ("appear" if mode == "progress" else "resolve")
+        for part in (change.delta, change.partial) if mode in ("progress", "regress") else (change.delta,):
+            occupied[part.box] |= part.support()
         used.add(family)
-        changes.append((change, "current" if rng.random() < 0.5 else "prior"))
+        changes.append((change, mode))
     return changes
 
 

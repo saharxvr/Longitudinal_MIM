@@ -128,7 +128,7 @@ class GeneratorTests(unittest.TestCase):
         combined = frame.base(self.ctx.ct + delta)
         separate = frame.base(self.ctx.ct) + frame.delta(delta)
         self.assertLess(float((combined - separate).abs().max()), 1e-2 * float(frame.delta(delta).abs().max()) + 1e-3)
-        for timepoint, sign in (("current", 1), ("prior", -1)):
+        for timepoint, sign in (("appear", 1), ("resolve", -1)):
             scene = render.render_scene(self.ctx, [(change, timepoint)], np.random.default_rng(4))
             values = scene["maps"][0]
             self.assertGreater(int((np.sign(values) == sign).sum()), 50)
@@ -137,17 +137,49 @@ class GeneratorTests(unittest.TestCase):
         moved = scene["registered_prior"] - scene["current"]
         self.assertGreater(float(np.abs(moved).max()), 0)
 
+    def test_progress_regress_and_stable_modes(self):
+        change = tasks.sample_change(self.ctx, "nodule", np.random.default_rng(2))
+        self.assertIsNotNone(change)
+        partial, method = tasks.make_partial(self.ctx, change, np.random.default_rng(0), 0.5)
+        self.assertEqual(method, "param")
+        # Replaying the same draws with half the radius gives a smaller lesion at the same place.
+        self.assertLess(int(partial.support().sum()), int(change.delta.support().sum()))
+        self.assertEqual(int((partial.support() & ~tasks.dilate(change.delta.support(), 1.0)).sum()), 0)
+        change.partial = partial
+        angles = (render.sample_angles(np.random.default_rng(8)), render.sample_angles(np.random.default_rng(9)))
+        maps = {mode: render.render_scene(self.ctx, [(change, mode)], np.random.default_rng(4), angles=angles)
+                for mode in ("appear", "progress", "regress", "stable")}
+        progress = maps["progress"]["maps"][0]
+        np.testing.assert_allclose(maps["regress"]["maps"][0], -progress, atol=1e-6)
+        self.assertGreater(int((progress > 0).sum()), 50)
+        self.assertLess(float(progress.sum()), float(maps["appear"]["maps"][0].sum()))
+        stable = maps["stable"]
+        self.assertFalse(np.any(stable["maps"][0]))
+        np.testing.assert_allclose(stable["current"], stable["registered_prior"])
+        self.assertGreater(float(np.abs(stable["current"] - maps["appear"]["registered_prior"]).max()), 0)
+        for name in ("t1_density@lungs", "lobar_hyperlucency"):
+            other = tasks.sample_change(self.ctx, name, np.random.default_rng(1))
+            smaller, how = tasks.make_partial(self.ctx, other, np.random.default_rng(1), 0.5)
+            self.assertIn(how, ("spatial", "intensity"))
+            self.assertLess(float(np.abs(smaller.values).sum()), float(np.abs(other.delta.values).sum()))
+
     def test_scene_changes_are_disjoint_distinct_families(self):
         changes = tasks.compose_scene(self.ctx, np.random.default_rng(7), n_changes=(3, 3))
         self.assertGreaterEqual(len(changes), 2)
         self.assertEqual(len({change.family for change, _ in changes}), len(changes))
         occupied = np.zeros(self.ctx.shape, int)
         for change, timepoint in changes:
-            self.assertIn(timepoint, ("prior", "current"))
+            self.assertIn(timepoint, tasks.TIMEPOINT_MODES)
+            self.assertEqual(change.partial is not None, timepoint in ("progress", "regress"))
             occupied[change.delta.box] += change.delta.support()
         self.assertLessEqual(int(occupied.max()), 1)
         tiers = {change.tier for change, _ in changes}
         self.assertTrue(tiers <= {"T1", "T2"})
+        rng, seen = np.random.default_rng(0), set()
+        for _ in range(60):
+            change = tasks.sample_change(self.ctx, "heart_resize", rng)
+            seen.add(tasks.assign_timepoint(self.ctx, change, rng))
+        self.assertEqual(seen, set(tasks.TIMEPOINT_MODES))
 
     def test_inspiration_nuisance_never_enters_gt(self):
         rng = np.random.default_rng(5)

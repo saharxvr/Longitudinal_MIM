@@ -8,6 +8,10 @@ Output layout (one directory per scene):
     <out>/<case>/scene0007/params.json        scene metadata (manifest record)
 then ``--build_manifest`` writes <out>/manifest_scenes.jsonl.
 
+Each change record's ``timepoint`` is its mode (supervoxel_tasks.TIMEPOINT_MODES): appear, resolve,
+progress, regress or stable. Stable changes have an all-zero map (realized=false), so they are
+never episode targets; they teach the model to ignore findings present in both images.
+
 Scenes are deterministic per (case, scene index) and resumable. T2-near families are only
 generated with ``--tiers T1 T2 T2near`` (use a separate --output for the ablation corpus).
 
@@ -37,7 +41,7 @@ from data_generation import supervoxel_tasks as tasks
 
 ROOT = Path(__file__).resolve().parents[1]
 CT_ENTITIES = ROOT.parent / "python_files" / "CT_entities"
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2  # 2: timepoint modes (appear / resolve / progress / regress / stable)
 SEG_ROOT = "/cs/labs/josko/itamar_sab/LongitudinalCXRAnalysis/CT_scans"
 SEG_TEMPLATES = {
     "lungs": f"{SEG_ROOT}/scans_segs/{{case}}_seg.nii.gz",
@@ -195,17 +199,17 @@ def generate_scene(ctx, case, patient, index, args, affine, devices_hook, donors
     maps = np.stack([item.T for item in scene["maps"]]) if scene["maps"] else np.zeros((0, 512, 512))
     np.savez_compressed(out_dir / "changes.npz", maps=maps.astype(np.float16))
     ellipses, records = [], []
-    for position, ((change, timepoint), signed) in enumerate(zip(changes, maps)):
+    for position, ((change, mode), signed) in enumerate(zip(changes, maps)):
         statistics = render.realized_statistics(signed)
         ellipses.append(render.fit_ellipses(signed))
         records.append(dict(index=position, family=change.family, tier=change.tier,
                             compartment=change.compartment, effect=change.effect,
-                            timepoint=timepoint, gt_sign=render.gt_sign(statistics),
+                            timepoint=mode, gt_sign=render.gt_sign(statistics),
                             realized=statistics["area_001"] > render.MIN_COMPONENT,
                             analogue=tasks.FAMILIES[change.family]["analogue"],
                             params=_jsonable(change.params), **statistics))
     (out_dir / "ellipses.json").write_text(json.dumps(ellipses) + "\n", encoding="utf-8")
-    record = dict(schema="fewshot_scene_v1", generator_version=GENERATOR_VERSION,
+    record = dict(schema="fewshot_scene_v2", generator_version=GENERATOR_VERSION,
                   scene_id=f"{case}/scene{index:04d}", case=case, patient_key=patient,
                   split="train", corpus_tiers=list(args.tiers), seed=scene_seed(case, index),
                   changes=records, num_changes=len(records),

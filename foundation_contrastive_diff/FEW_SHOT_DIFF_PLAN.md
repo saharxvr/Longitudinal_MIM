@@ -159,10 +159,34 @@ signed map = p(positive) - p(negative); CLS difference feeds the decoder as in a
 | Validation | consolidation, pleural_effusion, pneumothorax, fluid_overload | never generated here |
 | Nuisance | inspiration depth, devices, angle | never a task, never in GT |
 
-Scene generation:
+Scene generation (flow: edit the 3D CT, then render both DRRs):
 
 - 1-3 voxel-disjoint changes per scene, each from a different family; 10% nuisance-only scenes.
-- Each change is applied to prior or current with probability 0.5.
+- Each change gets a timepoint mode (`TIMEPOINT_MODES`), like the existing pathology entities
+  (appear / resolve, 'both' findings, progression):
+
+  | mode | prior | current | GT | share |
+  |---|---|---|---|---|
+  | appear | - | change | +P(change) | 30% |
+  | resolve | change | - | -P(change) | 30% |
+  | progress | smaller version | change | P(change - smaller) | 12.5% |
+  | regress | change | smaller version | -P(change - smaller) | 12.5% |
+  | stable | change | change | 0 (never a target) | 15% |
+
+- The smaller version keeps 35-75% of the size or strength. Shape and position families
+  (heart resize, shifts, widening, diaphragm, nodule, masses, cavity, bulla, dilations, free air,
+  gastric bubble, chest wall, rib, collapse) replay the same random draws with the magnitude
+  scaled, so the lesion is nested at the same place. A blend would ghost (double edges).
+  - Calcified dot and hyperlucency: weaker strength.
+  - Displacements, emphysema, pneumomediastinum, vessel change: the edit restricted to part of each
+    focus, spreading from a random seed. Extra foci can be new at the later timepoint.
+  - All other families: spatial or strength, 50/50.
+- Progress/regress fall back to appear/resolve when the difference fails the visibility gate.
+- Stable changes are rendered at both angles. They teach the model that a finding present in
+  both images is not a change, even when it projects differently.
+- Prior and current use independent rotation angles (existing distribution). Devices come from
+  the existing `ExternalDevices`: independent devices on the prior; the current and the registered
+  prior share theirs, so devices never enter the GT. 30% of priors get an inspiration change.
 - Changes below 50 GT pixels are kept as unlabeled sub-threshold changes (`realized=false`).
 
 Simplifications relative to the plan table:
