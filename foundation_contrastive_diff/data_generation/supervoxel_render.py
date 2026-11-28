@@ -139,8 +139,10 @@ class FrameRenderer:
     def __init__(self, lungs, angles, device="cpu", lungs_tensor=None):
         self.device = torch.device(device)
         self.shape = tuple(int(size) for size in lungs.shape)
-        self.theta = _theta(self.shape, angles).to(self.device)
-        self.inverse = torch.linalg.inv(self.theta[:, :3])
+        theta = _theta(self.shape, angles)
+        self.theta = theta.to(self.device)
+        # 3x3 inverse on the CPU: a GPU inverse needs a cuSOLVER handle, which fails under memory pressure.
+        self.inverse = torch.linalg.inv(theta[:, :3]).to(self.device)
         self.angles = tuple(angles)
         volume = (lungs_tensor if lungs_tensor is not None
                   else torch.as_tensor(np.asarray(lungs, np.float32), device=self.device))

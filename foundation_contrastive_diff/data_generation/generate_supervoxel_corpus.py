@@ -211,16 +211,30 @@ class DeviceBank:
             return [self._sparse(volume.float(), base) for volume in output["scans"]]
 
         for call in range(calls):
-            waited = time.time()
-            with gpu_slot(slots):
-                started = time.time()
-                self.wait_seconds += started - waited
-                if torch.device(device).type == "cuda":
-                    torch.cuda.reset_peak_memory_stats(device)
-                pair = with_oom_retry(insert, f"devices call {call}", device)
-                self.gpu_peaks.append(render.gpu_memory_gb(device))
-                render.release_gpu(device)
-                self.seconds += time.time() - started
+            for attempt in range(4):
+                waited = time.time()
+                failure = None
+                with gpu_slot(slots):
+                    started = time.time()
+                    self.wait_seconds += started - waited
+                    if torch.device(device).type == "cuda":
+                        torch.cuda.reset_peak_memory_stats(device)
+                    try:
+                        pair = insert()
+                        self.gpu_peaks.append(render.gpu_memory_gb(device))
+                    except Exception as error:
+                        if not _out_of_memory(error) or attempt == 3:
+                            raise
+                        failure = error
+                    finally:
+                        render.release_gpu(device)
+                        self.seconds += time.time() - started
+                if failure is None:
+                    break
+                # Wait OUTSIDE the slot so another worker can insert meanwhile.
+                wait = random.uniform(10.0, 40.0)
+                print(f"[oom] devices call {call}: retry {attempt + 1}/3 in {wait:.0f}s", flush=True)
+                time.sleep(wait)
             if any(layer is not None for layer in pair):
                 self.pairs.append(pair)
 
@@ -424,7 +438,7 @@ def speed_summary(setups, timings, elapsed, device, gpu_peaks=(), banks=()):
                 cpu_count=_cpu_count(), omp_threads=os.environ.get("OMP_NUM_THREADS"))
 
 
-def projection(summary, n_cases, scenes_per_ct, gpu_slots=2):
+def projection(summary, n_cases, scenes_per_ct, gpu_slots=1):
     """Full-corpus time from a single-worker benchmark and a worker suggestion.
 
     Device insertions run at most ``gpu_slots`` at a time on a GPU, so the corpus takes at least
@@ -499,8 +513,9 @@ def parse_args(argv=None):
     parser.add_argument("--devices_prob", type=float, default=0.8)
     parser.add_argument("--device_calls_per_ct", type=int, default=1,
                         help="ExternalDevices calls per CT; each gives a prior/current overlay pair reused by its scenes")
-    parser.add_argument("--gpu_slots", type=int, default=2,
-                        help="Max concurrent device insertions per GPU across the workers of one PC (0 = no limit)")
+    parser.add_argument("--gpu_slots", type=int, default=1,
+                        help="Max concurrent device insertions per GPU across the workers of one PC (0 = no limit); "
+                             "one insertion can take ~13 GB on a 24 GB card")
     parser.add_argument("--n_supervoxels", type=int, default=1500)
     parser.add_argument("--slice_index", type=int, default=0)
     parser.add_argument("--num_slices", type=int, default=1)

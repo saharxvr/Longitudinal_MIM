@@ -328,10 +328,12 @@ Not yet implemented:
      volumes (~9 s and up to ~15 GB GPU per call on an RTX 4090), so it runs once per CT
      (`--device_calls_per_ct 1`). Its prior/current outputs are stored as sparse overlays and reused
      by that CT's scenes: as is, swapped, or one side only, with p = `--devices_prob` 0.8, the same
-     as the existing pairs. At most `--gpu_slots` (default 2) insertions run at once per GPU across
-     the workers of a PC. Workers free GPU memory after every scene and retry a scene after an
-     out-of-memory error. Keep N fixed for one corpus; stop all workers before relaunching with
-     another N.
+     as the existing pairs. At most `--gpu_slots` (default 1) insertions run at once per GPU across
+     the workers of a PC: one insertion can take ~13 GB on a 24 GB RTX 4090, and two at once ran out of
+     memory. The insertions therefore set the minimum time: about n_CTs x calls x ~9.4 s (RTX 4090).
+     Workers free GPU memory after every scene, retry a scene after an out-of-memory error, and
+     release the insertion slot while waiting to retry. Keep N fixed for one corpus; stop all workers
+     before relaunching with another N.
    - `bash training/run_few_shot.sh generate_status`: scenes done / expected, the measured
      rate over the last 30 minutes, ETA, error count, each worker's last log line, and GPU memory.
    - Then `manifest` and `stores`.
