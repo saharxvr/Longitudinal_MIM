@@ -315,7 +315,22 @@ Not yet implemented:
      <= 1 mm, the same rule as the campus cohort filter. The renderer rotates in voxel units like
      the existing DRR generator, so CTs with thicker slices are sheared by the rotation and are
      not representative.
-3. `generate <slice> <num_slices>` on several GPU nodes (resumable), then `manifest`, then `stores`.
+3. Generate the corpus (one or more GPU PCs; every stage is resumable per scene):
+   - `bash training/run_few_shot.sh generate_bench`: one worker, 3 CTs x 4 scenes into
+     `<corpus>_bench`. It prints per-stage seconds, setup per CT, GPU and RAM peak, and a
+     full-corpus projection with a suggested worker count (CPU, GPU-memory and RAM limits).
+   - `bash training/run_few_shot.sh generate_launch <N> [--scenes_per_ct 8]`: N background workers
+     on this PC, slice i of N each, with pid/log files in `<corpus>/logs`. `GPUS="0 1"` spreads the
+     workers over GPUs, `WORKER_THREADS` sets threads per worker (default 2), and `FCD_VENV`
+     selects the venv. Device nuisance needs `kornia` and `gryds` in it; the generator checks this
+     at startup. Keep N fixed for one corpus; stop all workers before relaunching with another N.
+   - `bash training/run_few_shot.sh generate_status`: scenes done / expected, the measured
+     rate over the last 30 minutes, ETA, error count, each worker's last log line, and GPU memory.
+   - Then `manifest` and `stores`.
+   - Workers are CPU-bound (building the changes takes a few seconds per scene on numpy/scipy).
+     Rendering runs on the GPU in depth chunks inside the lung crop, and each change is sampled
+     from its own box. So a worker holds the CT, the lung mask and one prior volume on the GPU (plus
+     device-insertion copies), not a full-volume grid. `generate_bench` reports the measured peak.
 4. `benchmark`; set `max_support` to `chosen_max_support`.
 5. `train` (locked, resumable), then `eval_synthetic`.
 6. Freeze the recipe, then `eval_icu` (set `ARM_A=<arm A best checkpoint>`). Publish aggregates only.

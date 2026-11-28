@@ -48,19 +48,25 @@ def _rotation_matrix(angles):
     return (rz @ ry @ rx).float()
 
 
-def sampling_grid(shape, angles, device):
-    """Grid for a rotation about the volume center in voxel units (anisotropic-safe)."""
+def _theta(shape, angles):
+    """affine_grid theta [3, 4] of a rotation about the volume center in voxel units (anisotropic-safe)."""
     depth, height, width = shape
     rotation = _rotation_matrix(angles)  # acts on (z, x, y) voxel offsets
     half = torch.tensor([depth / 2, height / 2, width / 2])
     inverse = rotation.T
     # affine_grid coordinates are ordered (x=width, y=height, z=depth) and normalized.
     order = [2, 1, 0]
-    theta = torch.zeros(1, 3, 4)
+    theta = torch.zeros(3, 4)
     for row_out, axis_out in enumerate(order):
         for column, axis_in in enumerate(order):
-            theta[0, row_out, column] = inverse[axis_out, axis_in] * half[axis_in] / half[axis_out]
-    return F.affine_grid(theta.to(device), (1, 1, depth, height, width), align_corners=False)
+            theta[row_out, column] = inverse[axis_out, axis_in] * half[axis_in] / half[axis_out]
+    return theta
+
+
+def sampling_grid(shape, angles, device):
+    """Full-volume grid (reference implementation; FrameRenderer builds the grid in chunks)."""
+    depth, height, width = shape
+    return F.affine_grid(_theta(shape, angles)[None].to(device), (1, 1, depth, height, width), align_corners=False)
 
 
 def rotate(volume, grid, padding="zeros"):
@@ -80,29 +86,129 @@ def lung_crop(rotated_lungs, ext=7):
 
 def project(rotated, crop, offset=0.0):
     image = (rotated[crop] + offset).sum(-1)
+    return _resize(image)
+
+
+def _resize(image):
     return F.interpolate(image[None, None], size=(OUTPUT_SIZE, OUTPUT_SIZE), mode="bilinear",
                          antialias=True, align_corners=False)[0, 0]
 
 
-class FrameRenderer:
-    """Renders several volumes with one rotation and one lung crop (one camera frame)."""
+def _normalized(size, start, stop, device):
+    """align_corners=False normalized coordinates of voxel indices start..stop-1."""
+    return (2.0 * torch.arange(start, stop, device=device, dtype=torch.float32) + 1.0) / size - 1.0
 
-    def __init__(self, lungs, angles, device="cpu"):
-        self.grid = sampling_grid(lungs.shape, angles, device)
-        rotated_lungs = rotate(lungs.astype(np.float32), self.grid)
-        self.crop = lung_crop(rotated_lungs)
-        footprint = rotated_lungs[self.crop].amax(-1)
-        self.footprint = F.interpolate(footprint[None, None], size=(OUTPUT_SIZE, OUTPUT_SIZE),
-                                       mode="bilinear", antialias=True, align_corners=False)[0, 0]
+
+CHUNK_VOXELS = 1 << 24  # output voxels sampled at once (grid ~200 MB)
+
+
+class FrameRenderer:
+    """Renders several volumes with one rotation and one lung crop (one camera frame).
+
+    Equivalent to rotating the whole volume with ``sampling_grid`` and ray-summing the lung crop,
+    but the grid is generated in depth chunks inside the crop only, and a sparse change
+    (VolumeDelta) is sampled from its own box over the output block it can reach. Peak memory is
+    one chunk instead of a full-volume grid, and changes cost time in proportion to their size.
+    """
+
+    def __init__(self, lungs, angles, device="cpu", lungs_tensor=None):
+        self.device = torch.device(device)
+        self.shape = tuple(int(size) for size in lungs.shape)
+        self.theta = _theta(self.shape, angles).to(self.device)
+        self.inverse = torch.linalg.inv(self.theta[:, :3])
         self.angles = tuple(angles)
+        volume = (lungs_tensor if lungs_tensor is not None
+                  else torch.as_tensor(np.asarray(lungs, np.float32), device=self.device))
+        depth, height, width = self.shape
+        hit, footprint = [], []
+        for rows in self._chunks(0, depth, height * width):
+            sampled = self._sample(volume, (rows, (0, height), (0, width)), "zeros")
+            hit.append((sampled > 0.5).any(-1))
+            footprint.append(sampled.amax(-1))
+        coordinates = torch.nonzero(torch.cat(hit))
+        if not len(coordinates):
+            raise ValueError("Rotated lung mask is empty")
+        low, high = coordinates.min(0).values, coordinates.max(0).values
+        self.crop = (slice(max(int(low[0]) - 7, 0), min(int(high[0]) + 7, depth)),
+                     slice(max(int(low[1]) - 7, 0), min(int(high[1]) + 7, height)))
+        self.footprint = _resize(torch.cat(footprint)[self.crop])
+
+    @staticmethod
+    def _chunks(start, stop, row_voxels):
+        rows = max(1, CHUNK_VOXELS // max(1, row_voxels))
+        return [(first, min(stop, first + rows)) for first in range(start, stop, rows)]
+
+    def _grid(self, block, box=None):
+        """Input sampling coordinates [dz, dx, dy, 3] of an output block (optionally in box coordinates)."""
+        (z0, z1), (x0, x1), (y0, y1) = block
+        depth, height, width = self.shape
+        gz = _normalized(depth, z0, z1, self.device)[:, None, None]
+        gx = _normalized(height, x0, x1, self.device)[None, :, None]
+        gy = _normalized(width, y0, y1, self.device)[None, None, :]
+        theta = self.theta
+        components = [theta[c, 0] * gy + theta[c, 1] * gx + theta[c, 2] * gz + theta[c, 3] for c in range(3)]
+        if box is not None:  # component c samples array axis 2 - c; re-normalize to the box extent
+            for c, item in enumerate(reversed(box)):
+                size = self.shape[2 - c]
+                components[c] = ((components[c] + 1.0) * size - 2.0 * item.start) / (item.stop - item.start) - 1.0
+        return torch.stack(torch.broadcast_tensors(*components), -1)
+
+    def _sample(self, volume, block, padding, box=None):
+        return F.grid_sample(volume[None, None], self._grid(block, box)[None], mode="bilinear",
+                             padding_mode=padding, align_corners=False)[0, 0]
+
+    def _ray_sum(self, volume, block, padding, box=None):
+        """AP ray-sum [dz, dx] of an output block, in depth chunks."""
+        (z0, z1), rows_x, rows_y = block
+        parts = [self._sample(volume, (rows, rows_x, rows_y), padding, box).sum(-1)
+                 for rows in self._chunks(z0, z1, (rows_x[1] - rows_x[0]) * (rows_y[1] - rows_y[0]))]
+        return torch.cat(parts)
+
+    def _crop_block(self):
+        return ((self.crop[0].start, self.crop[0].stop), (self.crop[1].start, self.crop[1].stop), (0, self.shape[2]))
+
+    def _reach(self, box):
+        """Output block (inside the crop) whose samples can fall inside box (one voxel margin)."""
+        corners = []
+        for z in (box[0].start - 1, box[0].stop):
+            for x in (box[1].start - 1, box[1].stop):
+                for y in (box[2].start - 1, box[2].stop):
+                    corners.append([(2.0 * index + 1.0) / size - 1.0
+                                    for index, size in zip((y, x, z), self.shape[::-1])])
+        corners = torch.tensor(corners, dtype=torch.float32, device=self.device)
+        output = (corners - self.theta[:, 3]) @ self.inverse.T  # normalized (y, x, z)
+        indices = ((output + 1.0) * torch.tensor(self.shape[::-1], device=self.device) - 1.0) / 2.0
+        low, high = indices.min(0).values.floor().int() - 1, indices.max(0).values.ceil().int() + 2
+        crop = self._crop_block()
+        block = []
+        for axis, (first, last) in zip((0, 1, 2), crop):
+            component = 2 - axis
+            block.append((max(first, int(low[component])), min(last, int(high[component]))))
+        return block if all(start < stop for start, stop in block) else None
+
+    def _as_volume(self, volume):
+        if torch.is_tensor(volume):
+            return volume.to(self.device, torch.float32)
+        return torch.as_tensor(np.asarray(volume, np.float32), device=self.device)
 
     def base(self, volume):
         """Clamped CT -> ray-sum of (HU + 1000), reflection padding as the existing generator."""
-        rotated = rotate(np.maximum(volume, -1000.0) + 1000.0, self.grid, "reflection")
-        return project(rotated, self.crop)
+        shifted = torch.clamp_min(self._as_volume(volume), -1000.0) + 1000.0
+        return _resize(self._ray_sum(shifted, self._crop_block(), "reflection"))
 
     def delta(self, volume):
-        return project(rotate(volume, self.grid, "zeros"), self.crop)
+        """Projection of a change: a VolumeDelta (sampled from its box) or a full volume."""
+        if not hasattr(volume, "box"):
+            return _resize(self._ray_sum(self._as_volume(volume), self._crop_block(), "zeros"))
+        crop = self._crop_block()
+        image = torch.zeros(crop[0][1] - crop[0][0], crop[1][1] - crop[1][0], device=self.device)
+        block = self._reach(volume.box)
+        if block is not None:
+            values = torch.as_tensor(np.asarray(volume.values, np.float32), device=self.device)
+            image[block[0][0] - crop[0][0]:block[0][1] - crop[0][0],
+                  block[1][0] - crop[1][0]:block[1][1] - crop[1][0]] = self._ray_sum(values, block, "zeros",
+                                                                                     volume.box)
+        return _resize(image)
 
 
 def clean_map(signed, threshold=GT_THRESHOLD, min_component=MIN_COMPONENT):
@@ -124,6 +230,16 @@ def change_maps(delta_projections, base_projection, footprint, signs):
     return maps, scale
 
 
+def device_volume(ctx, name, device):
+    """ctx.ct ('ct') or the lung mask ('lungs') as a float32 tensor, cached on ctx per device."""
+    cache = ctx.__dict__.setdefault("_device_volumes", {})
+    key = (name, str(device))
+    if key not in cache:
+        source = ctx.ct if name == "ct" else ctx.segs["lungs"]
+        cache[key] = torch.as_tensor(np.asarray(source, np.float32), device=device)
+    return cache[key]
+
+
 def render_scene(ctx, changes, rng, device="cpu", rotation_params=DEFAULT_ROTATION_PARAMS,
                  devices_hook: Optional[Callable] = None, prior_nuisance=None, angles=None):
     """Render one scene; ``changes`` = [(ChangeSpec, mode), ...] with a supervoxel_tasks timepoint mode
@@ -132,28 +248,30 @@ def render_scene(ctx, changes, rng, device="cpu", rotation_params=DEFAULT_ROTATI
     Returns raw projections in the DRR [z, x] frame plus per-change signed maps
     GT = P(current delta - prior delta) / scale (stable changes give an all-zero map).
     ``prior_nuisance`` is a VolumeDelta applied only to the prior render (never in GT).
-    ``devices_hook(base) -> (prior_volume, current_volume)`` adds device nuisance.
+    ``devices_hook(base tensor) -> (prior tensor, current tensor, names)`` adds device nuisance.
     """
     from data_generation.supervoxel_tasks import timepoint_deltas
 
     current_angles, prior_angles = angles or (sample_angles(rng, rotation_params),
                                               sample_angles(rng, rotation_params))
-    base_prior = base_current = ctx.ct
+    ct = device_volume(ctx, "ct", device)
+    lungs = device_volume(ctx, "lungs", device)
+    base_prior = base_current = ct
     device_names = []
     if devices_hook is not None:
-        base_prior, base_current, device_names = devices_hook(ctx.ct)
-    frame = FrameRenderer(ctx.segs["lungs"], current_angles, device)
+        base_prior, base_current, device_names = devices_hook(ct)
+    frame = FrameRenderer(ctx.segs["lungs"], current_angles, device, lungs_tensor=lungs)
     base_projection = frame.base(base_current)
     current = base_projection.clone()
     registered_prior = base_projection.clone()
     differences = []
     pairs = [timepoint_deltas(change, mode) for change, mode in changes]
     for prior_delta, current_delta in pairs:
-        current_projection = frame.delta(current_delta.full(ctx.shape)) if current_delta is not None else None
+        current_projection = frame.delta(current_delta) if current_delta is not None else None
         if prior_delta is current_delta:
             prior_projection = current_projection
         else:
-            prior_projection = frame.delta(prior_delta.full(ctx.shape)) if prior_delta is not None else None
+            prior_projection = frame.delta(prior_delta) if prior_delta is not None else None
         difference = torch.zeros_like(base_projection)
         if current_projection is not None:
             current += current_projection
@@ -164,13 +282,12 @@ def render_scene(ctx, changes, rng, device="cpu", rotation_params=DEFAULT_ROTATI
         differences.append(difference.cpu().numpy())
     maps, scale = change_maps(differences, base_projection.cpu().numpy(), frame.footprint.cpu().numpy(),
                               [1.0] * len(differences))
-    prior_volume = np.array(base_prior, np.float32, copy=True)
-    for prior_delta, _ in pairs:
-        if prior_delta is not None:
-            prior_volume[prior_delta.box] += prior_delta.values
-    if prior_nuisance is not None:
-        prior_volume[prior_nuisance.box] += prior_nuisance.values
-    prior = FrameRenderer(ctx.segs["lungs"], prior_angles, device).base(prior_volume)
+    prior_volume = torch.as_tensor(base_prior, dtype=torch.float32, device=device).clone()
+    for delta in [prior for prior, _ in pairs if prior is not None] + (
+            [prior_nuisance] if prior_nuisance is not None else []):
+        prior_volume[delta.box] += torch.as_tensor(np.asarray(delta.values, np.float32), device=device)
+    prior = FrameRenderer(ctx.segs["lungs"], prior_angles, device, lungs_tensor=lungs).base(prior_volume)
+    del prior_volume
     return dict(prior=prior.cpu().numpy(), current=current.cpu().numpy(),
                 registered_prior=registered_prior.cpu().numpy(), maps=maps, scale=scale,
                 current_angles=list(current_angles), prior_angles=list(prior_angles),

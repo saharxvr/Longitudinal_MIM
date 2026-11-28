@@ -137,6 +137,27 @@ class GeneratorTests(unittest.TestCase):
         moved = scene["registered_prior"] - scene["current"]
         self.assertGreater(float(np.abs(moved).max()), 0)
 
+    def test_chunked_box_renderer_matches_full_grid_reference(self):
+        angles = (9.0, -12.0, 5.0)
+        lungs = self.ctx.segs["lungs"]
+        grid = render.sampling_grid(lungs.shape, angles, "cpu")
+        rotated = render.rotate(lungs.astype(np.float32), grid)
+        crop = render.lung_crop(rotated)
+        change = tasks.sample_change(self.ctx, "nodule", np.random.default_rng(2))
+        reference_base = render.project(render.rotate(np.maximum(self.ctx.ct, -1000.0) + 1000.0, grid, "reflection"),
+                                        crop)
+        reference_delta = render.project(render.rotate(change.delta.full(self.ctx.shape), grid, "zeros"), crop)
+        with unittest.mock.patch.object(render, "CHUNK_VOXELS", 5000):
+            frame = render.FrameRenderer(lungs, angles)
+            self.assertEqual(frame.crop, crop)
+            np.testing.assert_allclose(frame.footprint.numpy(), render._resize(rotated[crop].amax(-1)).numpy(),
+                                       atol=1e-5)
+            np.testing.assert_allclose(frame.base(self.ctx.ct).numpy(), reference_base.numpy(), rtol=1e-4)
+            sparse = frame.delta(change.delta).numpy()
+        scale = float(np.abs(reference_delta.numpy()).max())
+        self.assertGreater(scale, 0)
+        np.testing.assert_allclose(sparse, reference_delta.numpy(), atol=1e-4 * scale)
+
     def test_progress_regress_and_stable_modes(self):
         change = tasks.sample_change(self.ctx, "nodule", np.random.default_rng(2))
         self.assertIsNotNone(change)
@@ -399,6 +420,20 @@ class GeneratorTests(unittest.TestCase):
             self.assertTrue((root / "gallery" / "nuisance" / "caseA_inspiration.png").is_file())
             self.assertEqual(len(stats["references"]), 1)
             self.assertIn("heart_resize", (root / "gallery" / "index.md").read_text())
+            with unittest.mock.patch.object(tasks, "CTContext", side_effect=lambda c, s, **k: original(
+                    c, s, downsample=2, supervoxel_downsample=2, n_supervoxels=300, supervoxels=k.get("supervoxels"))):
+                corpus.main(["--cases_root", str(root / "bundle"), "--output", str(root / "corpus"),
+                             "--scenes_per_ct", "2", "--devices_prob", "0", "--benchmark"])
+            speed = json.loads((root / "corpus" / "logs" / "speed_slice0.json").read_text())
+            self.assertEqual((speed["cases"], speed["scenes"]), (1, 2))
+            self.assertEqual(set(speed["scene_s"]), {"changes", "render", "save"})
+            record = json.loads((root / "corpus" / "caseA" / "scene0001" / "params.json").read_text())
+            self.assertIn("render", record["timing_s"])
+            progress = corpus.status(root / "corpus")
+            self.assertEqual((progress["done"], progress["expected"], progress["cases_with_errors"]), (2, 2, 0))
+            estimate = corpus.projection(speed, 2000, 8)
+            self.assertGreater(estimate["single_worker_hours"], 0)
+            self.assertGreaterEqual(estimate["suggested_workers"], 1)
         available = [(name, "", "p", {}) for name in ("train_1_a_1", "train_2_a_1", "1.3.6.1.x", "volume-3")]
         kinds = {export.source_kind(item[0]) for item in export.diverse_choice(available, 3, 0)}
         self.assertEqual(kinds, {"ct_rate", "luna", "lits"})

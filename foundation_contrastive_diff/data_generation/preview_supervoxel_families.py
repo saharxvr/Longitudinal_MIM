@@ -191,7 +191,7 @@ class ModeFrames:
                 return np.zeros_like(self.base_current)
             key = (id(frame), id(delta))
             if key not in cache:
-                cache[key] = frame.delta(delta.full(self.ctx.shape)).numpy()
+                cache[key] = frame.delta(delta).numpy()
             return cache[key]
 
         results = {}
@@ -376,7 +376,7 @@ def preview_case(folder, args, output, families):
                 rows.append(dict(case=folder.name, family=family, sample=sample, tier=tasks.FAMILIES[family]["tier"],
                                  produced=False))
                 continue
-            projection = frame.delta(change.delta.full(ctx.shape)).numpy()
+            projection = frame.delta(change.delta).numpy()
             gt = render.clean_map(projection / scale)
             current_image = base_projection + projection
             ellipses = render.fit_ellipses(gt)

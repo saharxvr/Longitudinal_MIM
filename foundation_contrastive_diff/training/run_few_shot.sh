@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Few-shot pipeline stages (see FEW_SHOT_DIFF_PLAN.md and configs/README.md "Few-shot ...").
 # Usage: bash training/run_few_shot.sh <stage> [extra args]
-#   audit | generate <slice> <num_slices> | manifest | stores | benchmark | train | eval_synthetic | eval_icu
+#   audit | generate <slice> <num_slices> | generate_bench | generate_launch <workers> | generate_status
+#   | manifest | stores | benchmark | train | eval_synthetic | eval_icu
 # Every stage is resumable/idempotent where possible; no process is stopped by this script.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-source /cs/labs/josko/sahar_aharon/fcd_venv/bin/activate
+source "${FCD_VENV:-/cs/labs/josko/sahar_aharon/fcd_venv}/bin/activate"
 export LD_LIBRARY_PATH="/usr/local/APP/nvidia/$(awk '{print $8}' /proc/driver/nvidia/version 2>/dev/null || echo none)/lib:${LD_LIBRARY_PATH:-}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
@@ -30,6 +31,38 @@ case "$stage" in
     python -u -m data_generation.generate_supervoxel_corpus --source_manifest "$DATA/manifest_split.jsonl" \
       --output "$CORPUS" --slice_index "$slice" --num_slices "$slices" --device cuda "$@" \
       >> "$CORPUS/logs/generate_slice${slice}.log" 2>&1 ;;
+  generate_bench)
+    # One worker, 3 CTs x 4 scenes into a scratch folder: per-stage times, GPU/RAM peak, full-corpus projection.
+    python -u -m data_generation.generate_supervoxel_corpus --source_manifest "$DATA/manifest_split.jsonl" \
+      --output "${CORPUS}_bench" --device cuda --benchmark --scenes_per_ct 4 "$@" ;;
+  generate_launch)
+    # N background workers on this PC (slice i of N each; resumable). Keep N fixed for one corpus:
+    # stop all workers before relaunching with another N. GPUS="0 1" spreads workers over GPUs.
+    workers="${1:?number of workers}"; shift
+    mkdir -p "$CORPUS/logs"
+    read -r -a gpus <<< "${GPUS:-0}"
+    for ((i = 0; i < workers; i++)); do
+      pid_file="$CORPUS/logs/generate_slice$i.pid"
+      if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        echo "worker $i already running (pid $(cat "$pid_file"))"; continue
+      fi
+      gpu="${gpus[$((i % ${#gpus[@]}))]}"
+      CUDA_VISIBLE_DEVICES="$gpu" OMP_NUM_THREADS="${WORKER_THREADS:-2}" nohup python -u \
+        -m data_generation.generate_supervoxel_corpus --source_manifest "$DATA/manifest_split.jsonl" \
+        --output "$CORPUS" --slice_index "$i" --num_slices "$workers" --device cuda "$@" \
+        >> "$CORPUS/logs/generate_slice$i.log" 2>&1 &
+      echo $! > "$pid_file"
+      echo "worker $i/$workers: pid $!, GPU $gpu, log $CORPUS/logs/generate_slice$i.log"
+    done
+    echo "Stop all workers: kill \$(cat $CORPUS/logs/generate_slice*.pid)" ;;
+  generate_status)
+    python -u -m data_generation.generate_supervoxel_corpus --output "$CORPUS" --status
+    for log in "$CORPUS"/logs/generate_slice*.log; do
+      [[ -f "$log" ]] && echo "$(basename "$log"): $(tail -n 1 "$log")"
+    done
+    if command -v nvidia-smi > /dev/null; then
+      nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader
+    fi ;;
   manifest)
     python -u -m data_generation.generate_supervoxel_corpus --output "$CORPUS" --build_manifest ;;
   stores)
