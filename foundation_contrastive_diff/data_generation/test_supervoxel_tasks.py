@@ -157,6 +157,12 @@ class GeneratorTests(unittest.TestCase):
         self.assertFalse(np.any(stable["maps"][0]))
         np.testing.assert_allclose(stable["current"], stable["registered_prior"])
         self.assertGreater(float(np.abs(stable["current"] - maps["appear"]["registered_prior"]).max()), 0)
+        from data_generation import preview_supervoxel_families as preview
+        fast = preview.ModeFrames(self.ctx, angles).modes(change)
+        for mode in ("progress", "stable"):
+            np.testing.assert_allclose(fast[mode]["gt"], maps[mode]["maps"][0], atol=1e-4)
+            np.testing.assert_allclose(fast[mode]["current"], maps[mode]["current"], rtol=1e-4)
+            np.testing.assert_allclose(fast[mode]["prior"], maps[mode]["prior"], rtol=1e-3)
         for name in ("t1_density@lungs", "lobar_hyperlucency"):
             other = tasks.sample_change(self.ctx, name, np.random.default_rng(1))
             smaller, how = tasks.make_partial(self.ctx, other, np.random.default_rng(1), 0.5)

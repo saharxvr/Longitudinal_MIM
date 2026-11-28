@@ -171,35 +171,118 @@ def scene_panel(ctx, scene, changes, records, path):
     plt.close(figure)
 
 
-def modes_panel(ctx, change, rng, angles, path):
+class ModeFrames:
+    """Current / prior frames and base DRRs rendered once per case; each change is added by
+    linearity of rotation + ray-sum (same result as render_scene, ~5x faster for many modes)."""
+
+    def __init__(self, ctx, angles):
+        self.ctx = ctx
+        self.current = render.FrameRenderer(ctx.segs["lungs"], angles[0])
+        self.prior = render.FrameRenderer(ctx.segs["lungs"], angles[1])
+        self.base_current = self.current.base(ctx.ct).numpy()
+        self.base_prior = self.prior.base(ctx.ct).numpy()
+        self.scale = float((self.base_current * self.current.footprint.numpy()).max())
+
+    def modes(self, change):
+        cache = {}
+
+        def project(frame, delta):
+            if delta is None:
+                return np.zeros_like(self.base_current)
+            key = (id(frame), id(delta))
+            if key not in cache:
+                cache[key] = frame.delta(delta.full(self.ctx.shape)).numpy()
+            return cache[key]
+
+        results = {}
+        for mode in tasks.TIMEPOINT_MODES:
+            if mode in ("progress", "regress") and change.partial is None:
+                continue
+            prior_delta, current_delta = tasks.timepoint_deltas(change, mode)
+            in_current = project(self.current, current_delta)
+            gt = render.clean_map((in_current - project(self.current, prior_delta)) / self.scale)
+            results[mode] = dict(prior=self.base_prior + project(self.prior, prior_delta),
+                                 current=self.base_current + in_current, gt=gt,
+                                 finding=np.abs(in_current) / self.scale > render.GT_THRESHOLD,
+                                 stats=render.realized_statistics(gt))
+        return results
+
+
+def mode_examples(ctx, change, rng, frames):
+    """Build the smaller version exactly as the generator does and render the change in every mode."""
+    partial, method, fraction, kept = tasks.smaller_version(ctx, change, rng)
+    change.partial = partial
+    return dict(family=change.family, tier=change.tier, method=method, fraction=fraction, kept=kept,
+                modes=frames.modes(change))
+
+
+def _mode_title(mode, item):
+    stats = item["stats"]
+    return f"{mode}: GT {render.gt_sign(stats)} {stats['area_001']}px"
+
+
+def modes_panel(example, path):
     """One change in every timepoint mode: prior DRR, current DRR, GT (rows = modes)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    partial, method = tasks.make_partial(ctx, change, rng, 0.5)
-    change.partial = partial
-    modes = [mode for mode in tasks.TIMEPOINT_MODES if partial is not None or mode not in ("progress", "regress")]
+    modes = example["modes"]
     figure, axes = plt.subplots(len(modes), 3, figsize=(10, 3.3 * len(modes)), squeeze=False)
-    summary = []
-    for row, mode in zip(axes, modes):
-        scene = render.render_scene(ctx, [(change, mode)], rng, angles=angles)
-        gt = scene["maps"][0]
-        stats = render.realized_statistics(gt)
-        row[0].imshow(norm(scene["prior"]), cmap="gray")
+    for row, (mode, item) in zip(axes, modes.items()):
+        row[0].imshow(norm(item["prior"]), cmap="gray")
         row[0].set_title(f"{mode}: prior (other angle)", fontsize=8)
-        row[1].imshow(norm(scene["current"]), cmap="gray")
-        row[1].set_title(f"{mode}: current", fontsize=8)
-        overlay(row[2], scene["current"], gt, f"GT {render.gt_sign(stats)} {stats['area_001']}px max {stats['max_abs']:.3f}")
+        row[1].imshow(norm(item["current"]), cmap="gray")
+        row[1].contour(item["finding"], levels=[0.5], colors="yellow", linewidths=0.5)
+        row[1].set_title(f"{mode}: current (yellow = finding present)", fontsize=8)
+        overlay(row[2], item["current"], item["gt"], _mode_title(mode, item) + f" max {item['stats']['max_abs']:.3f}")
         for axis in row:
             axis.axis("off")
-        summary.append(dict(mode=mode, gt_sign=render.gt_sign(stats), area_001=stats["area_001"]))
-    figure.suptitle(f"{change.family}: timepoint modes (progress/regress smaller version: {method}, fraction 0.5)",
-                    fontsize=9)
+    figure.suptitle(_example_caption(example), fontsize=9)
     figure.tight_layout()
     figure.savefig(path, dpi=60)
     plt.close(figure)
-    return summary
+
+
+def _example_caption(example):
+    if not any(mode in example["modes"] for mode in ("progress", "regress")):
+        return f"{example['family']}: no smaller version ({example['method']}) -> progress/regress use appear/resolve"
+    status = "kept" if example["kept"] else "difference too faint -> generator falls back to appear/resolve"
+    return f"{example['family']}: smaller version = {example['method']} x{example['fraction']:.2f} ({status})"
+
+
+def modes_sheets(examples, output, case, rows_per_sheet=12):
+    """Contact sheets per tier: rows = families, columns = modes; yellow outline = finding in the
+    current image, colour = GT (red = denser in current, blue = lighter)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    names, written = list(tasks.TIMEPOINT_MODES), []
+    for tier in ("T1", "T2", "T2near"):
+        tier_examples = [example for example in examples if example["tier"] == tier]
+        for start in range(0, len(tier_examples), rows_per_sheet):
+            chunk = tier_examples[start:start + rows_per_sheet]
+            figure, axes = plt.subplots(len(chunk), len(names), figsize=(2.6 * len(names), 2.8 * len(chunk)),
+                                        squeeze=False)
+            for row, example in zip(axes, chunk):
+                for axis, mode in zip(row, names):
+                    axis.axis("off")
+                    item = example["modes"].get(mode)
+                    if item is None:
+                        axis.set_title(f"{mode}: n/a", fontsize=7)
+                        continue
+                    overlay(axis, item["current"], item["gt"], _mode_title(mode, item), alpha=0.7)
+                    axis.title.set_fontsize(7)
+                    axis.contour(item["finding"], levels=[0.5], colors="yellow", linewidths=0.4)
+                faint = "" if example["kept"] or "progress" not in example["modes"] else " (progress too faint)"
+                row[0].text(-8, 128, example["family"] + faint, fontsize=7, rotation=90, ha="right", va="center")
+            figure.tight_layout()
+            path = output / f"modes_{case}_{tier}_{start // rows_per_sheet + 1}.png"
+            figure.savefig(path, dpi=55)
+            plt.close(figure)
+            written.append(path.name)
+    return written
 
 
 def nuisance_panel(ctx, prior_angles, rng, path):
@@ -328,14 +411,31 @@ def preview_case(folder, args, output, families):
         scene_panel(ctx, scene, changes, records, path)
         scenes.append(dict(png=path.relative_to(output).as_posix(), changes=records))
     (output / "modes").mkdir(exist_ok=True)
-    for family in [name for name in args.mode_families if name in tasks.FAMILIES]:
+    mode_families = (tasks.family_names(tuple(args.tiers)) if args.mode_families == ["all"]
+                     else [name for name in args.mode_families if name in tasks.FAMILIES])
+    frames = ModeFrames(ctx, (current_angles, prior_angles)) if mode_families else None
+    examples = []
+    for family in mode_families:
         mode_rng = np.random.default_rng(seed_for(args.seed, folder.name, "modes", family))
         change = tasks.sample_change(ctx, family, mode_rng, donors if "cutpaste" in family else None)
-        if change is not None:
-            path = output / "modes" / f"{folder.name}_{family.replace('@', '_at_')}.png"
-            summary = modes_panel(ctx, change, mode_rng, (current_angles, prior_angles), path)
-            info.setdefault("modes", []).append(dict(family=family, png=path.relative_to(output).as_posix(),
-                                                     modes=summary))
+        if change is None:
+            print(f"[{folder.name}] modes {family}: not produced", flush=True)
+            continue
+        example = mode_examples(ctx, change, mode_rng, frames)
+        path = output / "modes" / f"{folder.name}_{family.replace('@', '_at_')}.png"
+        modes_panel(example, path)
+        for item in example["modes"].values():
+            item.pop("prior")
+            for key in ("current", "gt", "finding"):
+                item[key] = item[key][::2, ::2]
+        examples.append(example)
+        info.setdefault("modes", []).append(dict(
+            family=family, png=path.relative_to(output).as_posix(), method=example["method"],
+            fraction=round(example["fraction"], 2), progress_kept=bool(example["kept"]),
+            modes=[dict(mode=mode, gt_sign=render.gt_sign(item["stats"]), area_001=item["stats"]["area_001"])
+                   for mode, item in example["modes"].items()]))
+        print(f"[{folder.name}] modes {family}: {example['method']} kept={example['kept']}", flush=True)
+    info["mode_sheets"] = modes_sheets(examples, output, folder.name) if examples else []
     (output / "nuisance").mkdir(exist_ok=True)
     nuisance_panel(ctx, prior_angles, np.random.default_rng(seed_for(args.seed, folder.name, "nuisance")),
                    output / "nuisance" / f"{folder.name}_inspiration.png")
@@ -374,9 +474,13 @@ def write_index(output, infos, rows, scenes, references):
         f"{c['family']}@{c['timepoint']} {c['gt_sign']} {c['area_001']}px" for c in scene["changes"])
         for scene in scenes]
     lines += ["", "## Timepoint modes (appear / resolve / progress / regress / stable)", ""]
-    lines += [f"- [{item['png']}]({item['png']}) {info['case']} {item['family']}: " + "; ".join(
-        f"{mode['mode']} {mode['gt_sign']} {mode['area_001']}px" for mode in item["modes"])
-        for info in infos for item in info.get("modes", [])]
+    lines += ["Sheets (rows = families, columns = modes; yellow = finding in the current image, "
+              "red/blue = GT): " + ", ".join(f"[{name}]({name})" for info in infos
+                                             for name in info.get("mode_sheets", [])), ""]
+    lines += [f"- [{item['png']}]({item['png']}) {info['case']} {item['family']} "
+              f"({item['method']} x{item['fraction']}, progress {'kept' if item['progress_kept'] else 'falls back'}): "
+              + "; ".join(f"{mode['mode']} {mode['gt_sign']} {mode['area_001']}px" for mode in item["modes"])
+              for info in infos for item in info.get("modes", [])]
     lines += ["", "## Nuisance", ""] + [f"- [{path.name}](nuisance/{path.name})"
                                         for path in sorted((output / "nuisance").glob("*.png"))]
     lines += ["", "## Existing synthetic pathology pairs (same CTs, for comparison)", ""]
@@ -394,7 +498,9 @@ def main(argv=None):
     parser.add_argument("--families", nargs="*", help="Substring filters, e.g. heart nodule t1_grow")
     parser.add_argument("--mode_families", nargs="*",
                         default=["t1_density@lungs", "nodule", "heart_resize", "diaphragm_shift", "mediastinal_shift"],
-                        help="Families shown in every timepoint mode (modes/ panels); empty list disables")
+                        help="Families shown in every timepoint mode (modes/ panels and sheets); 'all' = every "
+                             "family of --tiers; empty list disables")
+    parser.add_argument("--cases", nargs="*", help="Only these case folder names")
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--scenes", type=int, default=3)
     parser.add_argument("--n_supervoxels", type=int, default=1500)
@@ -407,6 +513,8 @@ def main(argv=None):
     families = selected_families(args.tiers, args.families)
     infos, rows, scenes, references = [], [], [], []
     for folder in case_folders(args.cases_root):
+        if args.cases and folder.name not in args.cases:
+            continue
         info, case_rows, case_scenes, case_references = preview_case(folder, args, output, families)
         infos.append(info)
         rows += case_rows

@@ -1357,6 +1357,17 @@ def _visible(ctx, delta):
     return peak >= ctx.min_visibility[0] and area >= ctx.min_visibility[1]
 
 
+def smaller_version(ctx, change, rng):
+    """Smaller timepoint for progress / regress: a random fraction, then the smallest fraction
+    (largest difference). Returns (partial or None, method, fraction, visible difference)."""
+    partial, method, fraction = None, FAMILIES[change.family]["progression"], PROGRESSION_FRACTION[0]
+    for fraction in (float(rng.uniform(*PROGRESSION_FRACTION)), PROGRESSION_FRACTION[0]):
+        partial, method = make_partial(ctx, change, rng, fraction)
+        if partial is not None and _visible(ctx, merge_deltas([change.delta, negate(partial)])):
+            return partial, method, fraction, True
+    return partial, method, fraction, False
+
+
 def assign_timepoint(ctx, change, rng, modes=None):
     """Sample a timepoint mode; progress / regress fall back to appear / resolve when no visibly
     different smaller version exists. Sets change.partial and records fraction / method."""
@@ -1365,12 +1376,11 @@ def assign_timepoint(ctx, change, rng, modes=None):
     probabilities = np.array([modes[name] for name in names], np.float64)
     mode = names[int(rng.choice(len(names), p=probabilities / probabilities.sum()))]
     if mode in ("progress", "regress"):
-        for fraction in (rng.uniform(*PROGRESSION_FRACTION), PROGRESSION_FRACTION[0]):
-            partial, method = make_partial(ctx, change, rng, fraction)
-            if partial is not None and _visible(ctx, merge_deltas([change.delta, negate(partial)])):
-                change.partial = partial
-                change.params.update(fraction=round(float(fraction), 3), progression=method)
-                return mode
+        partial, method, fraction, visible = smaller_version(ctx, change, rng)
+        if visible:
+            change.partial = partial
+            change.params.update(fraction=round(fraction, 3), progression=method)
+            return mode
         mode = "appear" if mode == "progress" else "resolve"
     return mode
 
